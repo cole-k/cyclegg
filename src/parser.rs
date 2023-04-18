@@ -93,7 +93,8 @@ impl ParserState {
         lhs_str = format!("({} {} ?x{})", APPLY, lhs_str, i);
       }
       let lhs: Pat = lhs_str.parse().unwrap();
-      Some(Rewrite::new(ParserState::part_app_rule(name), lhs, rhs).unwrap())
+      let destructive_applier = DestructiveRewrite { original_pattern: lhs.clone(), add_pattern: rhs };
+      Some(Rewrite::new(ParserState::part_app_rule(name), lhs, destructive_applier).unwrap())
     }
   }  
 }
@@ -128,6 +129,16 @@ pub fn parse_file(filename: &str) -> Result<Vec<Goal>, SexpError> {
         let searcher: Pattern<SymbolLang> = lhs.parse().unwrap();
         let applier: Pattern<SymbolLang> = rhs.parse().unwrap();        
         let rw = Rewrite::new(lhs, searcher, applier).unwrap();
+        state.rules.push(rw);
+      }
+      "~>" => {
+        // This is a destructive rule: parse lhs and rhs:
+        let lhs = decl.list()?[1].to_string();
+        let rhs = decl.list()?[2].to_string();
+        let searcher: Pattern<SymbolLang> = lhs.parse().unwrap();
+        let applier: Pattern<SymbolLang> = rhs.parse().unwrap();
+        let destructive_applier = DestructiveRewrite { original_pattern: searcher.clone(), add_pattern: applier };
+        let rw = Rewrite::new(lhs.clone(), searcher, destructive_applier).unwrap();
         state.rules.push(rw);
       }
       "===" => {

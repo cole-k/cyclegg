@@ -1,4 +1,4 @@
-use std::{collections::{VecDeque, HashSet}};
+use std::{collections::{VecDeque, HashSet, HashMap}};
 use egg::{*};
 use log::{warn};
 use colored::Colorize;
@@ -12,8 +12,8 @@ use egraph::{*};
 use config::{*};
 
 // We will use SymbolLang with no analysis for now
-pub type Eg = EGraph<SymbolLang, ()>;
-pub type Rw = Rewrite<SymbolLang, ()>;
+pub type Eg = EGraph<SymbolLang, MemoAnalysis>;
+pub type Rw = Rewrite<SymbolLang, MemoAnalysis>;
 
 /// A special scrutinee name used to signal that case split bound has been exceeded
 const BOUND_EXCEEDED: &str = "__";
@@ -50,7 +50,7 @@ impl SmallerVar {
   }
 }
 
-impl Condition<SymbolLang, ()> for SmallerVar {
+impl Condition<SymbolLang, MemoAnalysis> for SmallerVar {
   /// Returns true if the substitution is into a smaller tuple of variables
   fn check(&self, egraph: &mut Eg, _eclass: Id, subst: &Subst) -> bool {
     let extractor = Extractor::new(egraph, AstSize);
@@ -207,7 +207,9 @@ impl Goal {
     if !existing_lemmas.any(|r| r.name.to_string() == name) {
       // Only add the lemma if we don't already have it:
       warn!("creating lemma: {} => {}", lhs, rhs);
-      let lemma = Rewrite::new(name, lhs, ConditionalApplier {condition: cond, applier: rhs}).unwrap();
+      // let applier = DestructiveRewrite { original_pattern: lhs.clone(), add_pattern: rhs };
+      // let lemma = Rewrite::new(name, lhs, ConditionalApplier {condition: cond, applier }).unwrap();
+      let lemma = Rewrite::new(name, lhs, ConditionalApplier {condition: cond, applier: rhs }).unwrap();
       rewrites.push(lemma);
     }
   }
@@ -457,4 +459,127 @@ pub fn prove(mut goal: Goal) -> Outcome {
   }
   // All goals have been discharged, so the conjecture is valid:
   Outcome::Valid
+}
+
+#[derive(Default, Clone)]
+pub struct MemoAnalysis;
+
+#[derive(Clone, Debug)]
+pub struct Data {
+    previous_rewrites: HashSet<(Symbol, Subst, PatternAst<SymbolLang>)>,
+}
+
+impl Analysis<SymbolLang> for MemoAnalysis {
+    type Data = Data;
+    fn merge(&mut self, to: &mut Data, from: Data) -> DidMerge {
+        let before_len = to.previous_rewrites.len();
+        let from_before_len = from.previous_rewrites.len();
+        to.previous_rewrites.extend(from.previous_rewrites);
+        DidMerge(before_len != to.previous_rewrites.len(), to.previous_rewrites.len() != from_before_len)
+    }
+
+    fn make(_egraph: &EGraph<SymbolLang, MemoAnalysis>, _enode: &SymbolLang) -> Data {
+        Data { previous_rewrites: HashSet::default() }
+    }
+}
+
+// TODO: this and its applier can probably be generalized over languages L that
+// implement match_enode
+pub struct DestructiveRewrite {
+    pub original_pattern: Pattern<SymbolLang>,
+    pub add_pattern: Pattern<SymbolLang>,
+}
+
+impl Applier<SymbolLang, MemoAnalysis> for DestructiveRewrite {
+    fn apply_one(
+        &self,
+        egraph: &mut egg::EGraph<SymbolLang, MemoAnalysis>,
+        eclass: Id,
+        subst: &Subst,
+        searcher_ast: Option<&PatternAst<SymbolLang>>,
+        rule_name: Symbol,
+    ) -> Vec<Id> {
+        // let memo = (rule_name, subst.clone(), self.original_pattern.ast.clone());
+        // if egraph[eclass].data.previous_rewrites.contains(&memo) {
+        //     return vec!();
+        // }
+        // egraph[eclass].data.previous_rewrites.insert(memo);
+        let mut ids = self.add_pattern.apply_one(egraph, eclass, subst, searcher_ast, rule_name);
+        if prune_enodes_matching(egraph, &self.original_pattern.ast, subst, &eclass, rule_name) {
+            ids.push(eclass);
+        }
+        ids
+    }
+    fn get_pattern_ast(&self) -> Option<&PatternAst<SymbolLang>> {
+        Some(&self.add_pattern.ast)
+    }
+}
+
+/// Removes enodes matching the rec_expr from the egraph.
+fn prune_enodes_matching(egraph: &mut egg::EGraph<SymbolLang, MemoAnalysis>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, subst: &Subst, eclass: &Id, rule_name: Symbol) -> bool {
+    let mut memo = HashMap::default();
+    let rec_expr_id: Id = (rec_expr.as_ref().len() - 1).into();
+    // Handles cycles - if we get back here then it matches.
+    memo.insert((rec_expr_id, *eclass), true);
+    let original_len = egraph[*eclass].nodes.len();
+
+    if original_len == 1 {
+        return false;
+    }
+    egraph[*eclass].nodes = egraph[*eclass].nodes
+        .to_owned()
+        .into_iter()
+        .filter(|node| {
+            let res = match_enode(egraph, &rec_expr, &rec_expr_id, subst, node, &mut memo);
+            // if res {
+            //     // println!("{} filtering node {:?}", rule_name, node)
+            // }
+            !res
+        })
+        .collect();
+    original_len > egraph[*eclass].nodes.len()
+}
+
+/// This function recursively traverses the rec_expr and enode in lock step. If
+/// they have matching constants, then we can simply check their equality. Most
+/// of the cases, however, come from recursively checking the contained rec_expr
+/// nodes against contained eclasses.
+fn match_enode(egraph: &egg::EGraph<SymbolLang, MemoAnalysis>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, rec_expr_id: &Id, subst: &Subst, enode: &SymbolLang, memo: &mut HashMap<(Id, Id), bool>) -> bool {
+    match &rec_expr[*rec_expr_id] {
+        ENodeOrVar::ENode(n) => {
+            let symbols_match = n.op == enode.op;
+            let lengths_match = n.children.len() == enode.children.len();
+            symbols_match && lengths_match &&
+            n.children.iter().zip(enode.children.iter())
+                             .all(|(child_re, child)| any_enode_in_eclass_matches(egraph, rec_expr, child_re, subst, child, memo))
+        }
+        // I think this is incomparable - an enode is not an eclass. Perhaps
+        // they are equal if the enode is in the eclass? I kind of don't think
+        // so.
+        ENodeOrVar::Var(_) => false,
+    }
+}
+
+/// In this case, we have a concrete AST node (ENodeOrVar::EnNode) or Var
+/// (ENodeOrVar::Var) in the rec_expr that we want to compare to an entire
+/// eclass. Comparing a Var to an eclass is a base case - we just check to see
+/// if they're the same. Otherwise, we need to check if there is any enode in
+/// the class that we can match with the concrete AST node.
+fn any_enode_in_eclass_matches(egraph: &egg::EGraph<SymbolLang, MemoAnalysis>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, rec_expr_id: &Id, subst: &Subst, eclass: &Id, memo: &mut HashMap<(Id, Id), bool>) -> bool {
+    if let Some(res) = memo.get(&(*rec_expr_id, *eclass)) {
+        return *res
+    }
+    let res = {
+        // This is the second and last base case (aside from cycles) where we can
+        // conclude a pattern matches.
+        if let ENodeOrVar::Var(v) = rec_expr[*rec_expr_id] {
+            return subst[v] == *eclass;
+        }
+        // If we cycle back to this node, then the pattern matches.
+        memo.insert((*rec_expr_id, *eclass), true);
+        egraph[*eclass].iter().any(|node| match_enode(egraph, rec_expr, &rec_expr_id, subst, node, memo))
+    };
+    // Update the memo since we only set it to 'true' temporarily to handle cycles.
+    memo.insert((*rec_expr_id, *eclass), res);
+    res
 }

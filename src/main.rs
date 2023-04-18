@@ -21,7 +21,7 @@ fn main() -> std::io::Result<()> {
     let start = Instant::now();
     let result = prove(goal);
     let duration = start.elapsed();
-    println!("{} ({:.2} sec)", result, duration.as_secs_f32());
+    println!("{} ({} ms)", result, duration.as_millis());
 
     if let Some(ref mut file) = result_file {
       let line = format!("{},{:?},{}\n", goal_name, result, duration.as_secs_f32());
