@@ -127,8 +127,9 @@ pub fn parse_file(filename: &str) -> Result<Vec<Goal>, SexpError> {
         let lhs = decl.list()?[1].to_string();
         let rhs = decl.list()?[2].to_string();
         let searcher: Pattern<SymbolLang> = lhs.parse().unwrap();
-        let applier: Pattern<SymbolLang> = rhs.parse().unwrap();        
-        let rw = Rewrite::new(lhs, searcher, applier).unwrap();
+        let applier: Pattern<SymbolLang> = rhs.parse().unwrap();
+        let destructive_applier = DestructiveRewrite { original_pattern: searcher.clone(), add_pattern: applier };
+        let rw = Rewrite::new(lhs, searcher, destructive_applier).unwrap();
         state.rules.push(rw);
       }
       "~>" => {
