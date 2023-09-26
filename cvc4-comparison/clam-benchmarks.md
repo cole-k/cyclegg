@@ -44,13 +44,13 @@ Definitions of the functions can be found in
     - G60: `rev (append (append x (cons y nil)) nil) = cons y (rev (append x nil))`
 - **G12**: `qreva x y = append (rev x) y`
     - G61: `append (append x (cons y nil)) z = append x (cons y z)`
-- **G13**: `(half (plus x x)) = x`
+- **G13**: `half (plus x x) = x`
     - G51: `plus x (succ y) = succ (plus x y)`
-- **G14**: `sorted (sort x)`
+- **G14**: `sorted (sort x) = True`
     - G62: `sorted x => sorted (insort y x)`
 - **G15**: `plus x (succ x) = succ (plus x x)`
     - G51: `plus x (succ y) = succ (plus x y)`
-- **G16**: `even (plus x x)`
+- **G16**: `even (plus x x) = True`
     - G51: `plus x (succ y) = succ (plus x y)`
 - **G17**: `rev (rev (append x y)) = append (rev (rev x)) (rev (rev y))`
     - G58: `rev (append x (cons y nil)) = cons y (rev x)`
@@ -59,7 +59,7 @@ Definitions of the functions can be found in
     - G63: `append (append x y) (cons z nil) = append x (append y (cons z nil))`
 - **G19**: `append (rev (rev x)) y = rev (rev (append x y))`
     - G58: `rev (append x (cons y nil)) = cons y (rev x)`
-- **G20**: `even (len (append x x))`
+- **G20**: `even (len (append x x)) = True`
     - G52: `len (append x (cons y z)) = succ (len (append x z))`
 - **G21**: `rotate (len x) (append x y) = append y x`
     - G61: `append (append x (cons y nil)) z = append x (cons y z)`
