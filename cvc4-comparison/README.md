@@ -3,13 +3,16 @@
 ## Notes
 
 The property numbers do not necessarily match those in
-[../examples/cycleq.ceg](../examples/cycleq.ceg), which is why in
+[examples/cycleq.ceg](../examples/cycleq.ceg), which is why in
 [cvc4-results.csv](./cvc4-results.csv) there is a `prop` section that indicates
 the property. The properties
-[../examples/isaplanner.ceg](../examples/isaplanner.ceg) should match exactly.
+[examples/isaplanner.ceg](../examples/isaplanner.ceg) should match exactly.
 
-The properties in [cvc4-results.csv](./cvc4-results.csv) have been reordered to
-numeric order instead of the default lexicographic order.
+The properties in [cvc4-results-isaplanner.csv](./cvc4-results-isaplanner.csv)
+have been reordered to numeric order instead of the default lexicographic order.
+
+[clam-benchmarks.md](./clam-benchmarks.md) provides human-readable versions of
+the CLAM benchmarks and a comparison.
 
 ## Install
 
