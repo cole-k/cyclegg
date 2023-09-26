@@ -1,7 +1,7 @@
 use colored::Colorize;
 use egg::*;
 use log::warn;
-use std::collections::{hash_map::Entry, HashMap, VecDeque};
+use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
 use std::fmt::Display;
 use std::time::{Duration, Instant};
 use symbolic_expressions::{parser, Sexp};
@@ -598,11 +598,30 @@ impl<'a> Goal<'a> {
       })
       .collect();
     let rewrites = self.reductions.iter().chain(lemmas.iter());
+    let num_congr = self.egraph.get_num_congr();
+    let prev_eqs: HashSet<_> = self.egraph.get_union_equalities().into_iter().collect();
+    let prev_ids: HashSet<Id> = self.egraph.classes().map(|class| class.id).collect();
     let runner = Runner::default()
       .with_explanations_enabled()
       .with_egraph(self.egraph)
       .run(rewrites);
     self.egraph = runner.egraph;
+    let resolved_prev_ids: HashSet<Id> = prev_ids.into_iter().map(|id| self.egraph.find(id)).collect();
+    let new_num_congr = self.egraph.get_num_congr();
+    let new_eqs: HashSet<_> = self.egraph.get_union_equalities().into_iter().collect();
+    let diff_eqs = new_eqs.difference(&prev_eqs);
+    // if new_num_congr - num_congr == 0 {
+    //   println!("no new congrs");
+    // }
+    let mut num_diff_congrs = 0; // new_num_congr - num_congr;
+    println!("ran goal: {}", self.name);
+    for (id1, id2, expl) in diff_eqs {
+      if resolved_prev_ids.contains(id1) || resolved_prev_ids.contains(id2) {
+        num_diff_congrs += 1;
+        println!("new equality: {} and {} b/c {}", id1, id2, expl);
+      }
+    }
+    println!("new congrs: {}", num_diff_congrs);
     self
   }
 
