@@ -138,7 +138,7 @@ Definitions of the functions can be found in
 ## CVC4 -i results
 To obtain results, run
 ```shell
-python3 run-benchmarks.py cvc4 ind/benchmarks-dt/clam/ -o results-clam.csv -t 5000
+$ python3 run-benchmarks.py cvc4 ind/benchmarks-dt/clam/ -o results-clam.csv -t 5000
 ```
 
 Can prove the following
@@ -155,7 +155,7 @@ Can prove the following
 ## CVC4 -i results with lemmas
 To obtain results, run
 ```shell
-python3 run-benchmarks.py cvc4 ind/benchmarks-dt/clam/sg -o results-clam-sg.csv -t 5000
+$ python3 run-benchmarks.py cvc4 ind/benchmarks-dt/clam/sg -o results-clam-sg.csv -t 5000
 ```
 
 Can prove all _except_
@@ -164,3 +164,27 @@ Can prove all _except_
 - G26
 - G81-G82
 - G84-86
+
+Total provable: 42
+
+## Cyclegg
+Run on 239f4ad with
+```shell
+$ cargo run --release -- examples/clam.ceg -t 2
+```
+
+3 goals (G14, G49, G50) do not have some lemmas that CVC4 gets because we don't
+support conditional lemmas yet.
+
+Can prove all _except_
+- G6-G7
+- G12
+- G14 (needs conditional lemma)
+- G18
+- G21
+- G24
+- G31
+- G49-G50 (needs conditional lemmas)
+- G75-G86
+
+Total provable: 28
