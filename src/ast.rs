@@ -1,7 +1,7 @@
 use egg::*;
 use lazy_static::lazy_static;
 
-use std::{collections::HashMap, fmt::Display, str::FromStr};
+use std::{collections::HashMap, fmt::Display, str::FromStr, iter::zip};
 use symbolic_expressions::{Sexp, SexpError};
 
 use crate::config::CONFIG;
@@ -16,6 +16,16 @@ pub struct Type {
 impl Type {
   pub fn new(repr: Sexp) -> Self {
     Self { repr }
+  }
+
+  /// Is the type an arrow?
+  pub fn is_arrow(&self) -> bool {
+    match &self.repr {
+      Sexp::String(_) => false,
+      // Is the head (which should be a string) equal to ARROW?
+      Sexp::List(xs) => xs[0].string().unwrap().as_str() == ARROW,
+      _ => panic!("arity: type is empty"),
+    }
   }
 
   /// If this type is a datatype, returns its name and otherwise return error.
@@ -350,6 +360,36 @@ pub fn is_constructor(var_name: &str) -> bool {
   var_name.chars().next().unwrap().is_uppercase()
 }
 
+pub fn is_function(e: &SymbolLang) -> bool {
+  if e.is_leaf() {
+    return false;
+  }
+  // Constructors begin with an uppercase, functions with a lowercase
+  e.op.as_str().chars().next().unwrap().is_lowercase()
+}
+
+/// This is an ad-hoc struct made to try and only ever extract functions
+/// from an e-class at the top level, extracting something else otherwise.
+///
+/// In practice, using this allows us to figure out via extraction whether
+/// an e-class contains only vars/constructors.
+///
+/// The "is function" analysis _only_ applies at the top level (i.e. among the
+/// enodes in the e-class you're extracting from)! The extraction is otherwise
+/// just AstSize.
+pub struct AstSizePreferFunction;
+impl CostFunction<SymbolLang> for AstSizePreferFunction {
+  type Cost = (bool, usize);
+  fn cost<C>(&mut self, enode: &SymbolLang, mut costs: C) -> Self::Cost
+  where
+      C: FnMut(Id) -> Self::Cost,
+  {
+    let is_not_function = !is_function(enode);
+    let cost = enode.fold(1, |sum: usize, id| sum.saturating_add(costs(id).1));
+    (is_not_function, cost)
+  }
+}
+
 // Convert a symbol into a wildcard by prepending a '?' to it
 pub fn to_wildcard(s: &Symbol) -> Var {
   format!("?{}", s).parse().unwrap()
@@ -395,6 +435,139 @@ pub fn mk_context(descr: &[(&str, &str)]) -> Context {
     ctx.insert(Symbol::from(*name), ty.parse().unwrap());
   }
   ctx
+}
+
+pub struct DataTypeSize {
+  pub min_size: usize,
+  // No max means that it's unbounded (i.e. recursive). Most datatypes will have
+  // an unbounded max_size.
+  pub max_size: Option<usize>,
+}
+
+impl Default for DataTypeSize {
+  fn default() -> Self {
+    DataTypeSize {
+      min_size: 0,
+      max_size: Some(0),
+    }
+  }
+}
+
+impl DataTypeSize {
+  /// Merges by adding the sizes (since max_size = None is infinity, we use
+  /// and_then)
+  pub fn merge_add(&self, other: &Self) -> Self {
+    Self {
+      min_size: self.min_size + other.min_size,
+      max_size: self.max_size.and_then(|self_max_size| other.max_size.and_then(|other_max_size| Some(self_max_size + other_max_size))),
+    }
+  }
+
+  /// Merges by taking the minimum of the min_size and maximum of the max_size
+  pub fn merge_min_max(&self, other:&Self) -> Self {
+    Self {
+      min_size: std::cmp::min(self.min_size, other.min_size),
+      max_size: self.max_size.and_then(|self_max_size| other.max_size.and_then(|other_max_size| Some(std::cmp::max(self_max_size, other_max_size)))),
+    }
+  }
+}
+
+/// The size returned represents the minimum and maximum sizes
+/// achievable across all constructors
+///
+/// e.g.
+/// data Unit = Unit :: Unit
+///
+/// data Tree a
+///   = Leaf :: Tree a
+///   | Node :: Tree a -> a -> Tree a -> Tree a
+///
+/// data_type_size(Unit) = DataTypeSize {
+///   min_size: 1,
+///   max_size: Some(1),
+/// }
+///
+/// data_type_size(Tree Unit) = DataTypeSize {
+///   min_size: 1,
+///   max_size: None
+/// }
+///
+pub fn data_type_size(ty: &Type, env:&Env, ctx: &Context) -> DataTypeSize {
+  data_type_sizes(ty, env, ctx).iter().fold(DataTypeSize::default(), |acc, (_cons, size)| {
+    acc.merge_min_max(size)
+  })
+}
+
+/// Returns a vec of (Constructor, DataTypeSize)
+pub fn data_type_sizes(ty: &Type, env: &Env, ctx: &Context) -> Vec<(Symbol, DataTypeSize)> {
+  if ty.is_arrow() {
+    panic!("data_type_sizes: Type {} is unsupported (arrow types not allowed)", ty);
+  }
+
+  // Extract a datatype from a type as well as the types of its arguments
+  //
+  // e.g.
+  //
+  // Bool -> (Bool, [])
+  // List (Tree a) -> (List, [Tree a])
+  let (dt, arg_types) = match &ty.repr {
+    Sexp::String(dt) => {
+      (dt, Vec::default())
+    }
+    Sexp::List(lst) => {
+      let mut lst_iter = lst.iter();
+      let dt = lst_iter.next().unwrap().string().unwrap();
+      let arg_types = lst_iter.map(|arg| Type::new(arg.clone())).collect();
+      (dt, arg_types)
+    }
+    Sexp::Empty => {
+      panic!("data_type_sizes: Empty type");
+    }
+  };
+  let (vars, cons) = env.get(&Symbol::from_str(dt).unwrap()).unwrap();
+
+  // Match the vars with the args so we know what we need to substitute
+  let type_var_map: HashMap<String, Type> = zip(vars.iter().cloned(), arg_types).collect();
+  cons.iter().map(|con| {
+    let con_type = ctx.get(con).unwrap();
+    // Base case: nullary constructors, e.g. those in
+    //
+    // data Bool
+    //   = True :: Bool
+    //   | False :: Bool
+    //
+    // We don't check that the type matches the datatype,
+    // but it really should.
+    if !con_type.is_arrow() {
+        return (*con, DataTypeSize {
+          min_size: 1,
+          max_size: Some(1),
+        })
+    }
+
+    // Ignore the return type, we'll again assume
+    // that it matches the datatype.
+    let (arg_types, _ret) = con_type.args_ret();
+    // The starting values of 1 accounts for the fact that the constructor is its own base case.
+    let total_size = arg_types.iter().fold(DataTypeSize { min_size: 1, max_size: Some(1) }, |acc, arg_type| {
+      let arg_type = match &arg_type.repr {
+        // If it's a type variable, it'll be in the map, so resolve it
+        Sexp::String(var) if var.chars().next().unwrap().is_ascii_lowercase() => {
+          type_var_map.get(var).unwrap()
+        }
+        // Otherwise, don't change it
+        _ => arg_type,
+      };
+      //FIXME: will infinitely loop for any recursive type. need to find the
+      // minimum among the base cases to put as the minimum and put the maximum
+      // as None.
+      let arg_size = data_type_size(arg_type, env, ctx);
+      acc.merge_add(&arg_size)
+    });
+
+    (*con, total_size)
+
+  }).collect()
 }
 
 // CK: Function is unused and I didn't feel like extending it to account for the change from

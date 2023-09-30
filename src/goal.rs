@@ -1,7 +1,7 @@
 use colored::Colorize;
 use egg::*;
 use log::warn;
-use std::collections::{hash_map::Entry, HashMap, VecDeque};
+use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
 use std::fmt::Display;
 use std::time::{Duration, Instant};
 use symbolic_expressions::{parser, Sexp};
@@ -1048,6 +1048,80 @@ impl<'a> Goal<'a> {
     // println!("new types: {:?}", ret);
     ret
   }
+
+  /// Searches for possible generalizations by trying to unify two e-classes and
+  /// see if the theorem is provable with them.
+  fn look_for_generalizations(&self) -> bool {
+    let lhs_id = self.egraph.find(self.eq.lhs.id);
+    let rhs_id = self.egraph.find(self.eq.rhs.id);
+    let mut seen = HashSet::new();
+    let mut any_proven = false;
+    // Necessary to look for functions first
+    let extractor = egg::Extractor::new(&self.egraph, AstSize);
+    println!("Proving {} failed, egraph is of size {}, looking for generalizations...", self.name, self.egraph.total_size());
+    for c1 in self.egraph.classes() {
+      for c2 in self.egraph.classes() {
+        // We've tried this already
+        if seen.contains(&(c1.id, c2.id)) || seen.contains(&(c1.id, c2.id)) {
+          continue
+        }
+        // We'd union the LHS and RHS, which trivially will solve our goal
+        if c1.id == lhs_id && c2.id == rhs_id || c1.id == rhs_id && c2.id == lhs_id {
+          continue;
+        }
+        // We'd union the same e-class (won't do anything)
+        if c1.id == c2.id {
+          continue;
+        }
+        // Probably only need to do one order but whatever.
+        seen.insert((c1.id, c2.id));
+        seen.insert((c2.id, c1.id));
+        let c1_representative = extractor.find_best(c1.id).1;
+        let c2_representative = extractor.find_best(c2.id).1;
+
+        // If neither e-class contains any functions, we will continue, since
+        // it should be unsound to blindly union two vars or constructors.
+        //
+        // This is sound because our extractor should always extract a function
+        // if it exists.
+        let c1_rep_root = c1_representative.as_ref().iter().last().unwrap();
+        let c2_rep_root = c2_representative.as_ref().iter().last().unwrap();
+        if !is_function(c1_rep_root) && !is_function(c2_rep_root) {
+          continue;
+        }
+
+        let mut new_egraph = self.egraph.clone();
+        new_egraph.union_trusted(c1.id, c2.id, "assume-equal");
+        // TODO: extract as a helper function
+        let lemmas: Vec<Rw> = self
+          .lemmas
+          .iter()
+          .map(|(name, (lhs, rhs, cond))| {
+            Rewrite::new(
+              name,
+              lhs.clone(),
+              ConditionalApplier {
+                applier: rhs.clone(),
+                condition: cond.clone(),
+              },
+            )
+            .unwrap()
+          })
+          .collect();
+        let rewrites = self.reductions.iter().chain(lemmas.iter());
+        let runner = Runner::default()
+          // .with_explanations_enabled()
+          .with_egraph(new_egraph)
+          .run(rewrites);
+
+        if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
+          println!("Proved by unioning {} and {}.", c1_representative, c2_representative);
+          any_proven = true;
+        }
+      }
+    }
+    any_proven
+  }
 }
 
 impl<'a> Display for Goal<'a> {
@@ -1250,6 +1324,15 @@ pub fn prove(mut goal: Goal, is_cyclic: bool) -> (Outcome, ProofState) {
       if CONFIG.verbose {
         for remaining_goal in &state.goals {
           println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
+        }
+      }
+      if CONFIG.look_for_generalizations && !is_cyclic {
+        // If we can prove the goal with a generalization, continue going to
+        // see if we could prove the other goals too.
+        if goal.look_for_generalizations() {
+          // NOTE: We don't insert an explanation for this, so don't try to
+          // generate a proof for it!
+          continue;
         }
       }
       return (Outcome::Unknown, state);
