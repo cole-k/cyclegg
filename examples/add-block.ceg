@@ -1,0 +1,19 @@
+(
+(data Nat (Z S))
+(:: Z Nat)
+(:: S (-> (Nat) Nat))
+
+(:: add (-> (Nat Nat) Nat))
+(let add (Z Z) Z)
+(let add (Z (S ?y)) (S (add Z ?y)))
+(let add ((S ?x) ?y) (S (add ?x ?y)))
+
+(// let add (Z ?y) ?y)
+(// let add ((S ?x) ?y) (S (add ?x ?y)))
+
+(=== add_comm (n m) (Nat Nat)
+    (add n m)
+    (add m n)
+)
+
+)

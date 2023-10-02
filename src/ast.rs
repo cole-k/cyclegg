@@ -90,7 +90,7 @@ pub fn mangle_name(name: &str) -> String {
     return name.to_string();
   }
   if CONFIG.mangle_names {
-    if name.chars().next().unwrap().is_ascii_uppercase() {
+    if is_constructor(name) {
       format!("Cyclegg_{}", name)
     } else {
       format!("cyclegg_{}", name)

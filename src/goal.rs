@@ -2,6 +2,7 @@ use colored::Colorize;
 use egg::*;
 use log::warn;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 use symbolic_expressions::{parser, Sexp};
 
@@ -10,11 +11,39 @@ use crate::config::*;
 use crate::egraph::*;
 
 // We will use SymbolLang with no analysis for now
-pub type Eg = EGraph<SymbolLang, ()>;
-pub type Rw = Rewrite<SymbolLang, ()>;
+pub type Eg = EGraph<SymbolLang, VarAnalysis>;
+pub type Rw = Rewrite<SymbolLang, VarAnalysis>;
 
 /// A special scrutinee name used to signal that case split bound has been exceeded
 const BOUND_EXCEEDED: &str = "__";
+
+#[derive(Default, Clone)]
+pub struct VarAnalysis;
+
+#[derive(Debug, Clone)]
+pub struct Vars {
+  vars: HashSet<Symbol>,
+}
+
+impl Analysis<SymbolLang> for VarAnalysis {
+  type Data = Vars;
+
+  fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
+    let old_len = to.vars.len();
+    to.vars.extend(&from.vars);
+    DidMerge(old_len != to.vars.len(), to.vars.len() != from.vars.len())
+  }
+
+  fn make(_egraph: &Eg, enode: &SymbolLang) -> Self::Data {
+    let mut vars = HashSet::new();
+    // println!("enode: {:?}", enode);
+    // enode represents a variable if it has no children and its name starts with a lower case letter
+    if enode.children.len() == 0 && !is_constructor(&enode.op.as_str()) {
+      vars.insert(enode.op.clone());
+    }
+    Vars { vars }
+  }
+}
 
 /// Condition that checks whether the substitution is into a smaller tuple of variable
 #[derive(Clone)]
@@ -94,7 +123,7 @@ impl SmallerVar {
   }
 }
 
-impl Condition<SymbolLang, ()> for SmallerVar {
+impl Condition<SymbolLang, VarAnalysis> for SmallerVar {
   /// Returns true if the substitution is into a smaller tuple of variables
   fn check(&self, egraph: &mut Eg, _eclass: Id, subst: &Subst) -> bool {
     let extractor = Extractor::new(egraph, AstSize);
@@ -407,6 +436,7 @@ impl<'a> Goal<'a> {
       defns,
     };
     for (name, ty) in params {
+      // println!("adding scrutinee {} with type {}", name, ty);
       res.add_scrutinee(name, &ty, 0);
       res.local_context.insert(name, ty);
     }
@@ -654,7 +684,26 @@ impl<'a> Goal<'a> {
     // let half_lemmas = self.mk_half_lemma_rewrites(state);
 
     // Get the next variable to case-split on
+    // TODO AG: This is probably where we do the blocking variable analysis to identify which var to case split on
+
+    // let mut var = *self.scrutinees.front().unwrap();
+    // let mut block_found = false;
+
+    let mut blocking_var_list: Vec<&Symbol> = vec![];
+
+    for reduction in self.reductions {
+      let mut bvs = self.bv_reduction(reduction);
+      blocking_var_list.append(&mut bvs);
+    }
+
+    // let mut var: &Symbol = &Symbol::
+
+    for bv in blocking_var_list.iter() {
+      println!("blocking var: {}", **bv);
+    }
+
     let var = self.scrutinees.pop_front().unwrap();
+
     let var_str = var.to_string();
     warn!("case-split on {}", var);
     let var_node = SymbolLang::leaf(var);
@@ -673,6 +722,7 @@ impl<'a> Goal<'a> {
     // For each constructor, create a new goal and push it onto the proof state
     // (we process constructors in reverse order so that base case ends up at the top of the stack)
     for &con in cons.iter().rev() {
+      // println!("con: {}", con);
       let mut new_goal = self.copy();
       new_goal.name = format!("{}:", self.name);
       if mk_lemmas {
@@ -774,6 +824,7 @@ impl<'a> Goal<'a> {
       let con_app: Expr = con_app_string.parse().unwrap();
 
       new_goal.name = format!("{}{}={}", new_goal.name, var, con_app);
+      // println!("new goal name: {}", new_goal.name);
 
       instantiated_cons_and_goals.push((con_app_string, new_goal.name.clone()));
 
@@ -789,7 +840,14 @@ impl<'a> Goal<'a> {
       );
       new_goal.egraph.rebuild();
 
+      // print the eclass analysis
+      let ecid = new_goal.egraph.lookup(SymbolLang::leaf(var)).unwrap();
+      // println!("vars before remove: {:?}", new_goal.egraph[ecid].data.vars);
+
       // Remove old variable from the egraph and context
+      let mut ec_data = new_goal.egraph[ecid].data.clone();
+      ec_data.vars.remove(&var);
+      new_goal.egraph.set_analysis_data(ecid, ec_data);
       remove_node(&mut new_goal.egraph, &SymbolLang::leaf(var));
       // warn!("removing var {}", var);
       // FIXME: is this OK? add a full_context?
@@ -823,6 +881,54 @@ impl<'a> Goal<'a> {
         ProofTerm::CaseSplit(var_str, instantiated_cons_and_goals),
       );
     }
+  }
+
+  fn bv_reduction(&self, reduction: &Rewrite<SymbolLang, VarAnalysis>) -> Vec<&Symbol> {
+    let mut blocking_vars = vec![];
+    let lhs_rec = reduction.searcher.get_pattern_ast().unwrap();
+    let var_list = reduction.searcher.vars();
+    let head = lhs_rec.as_ref().last().unwrap();
+
+    match head {
+      // the assumption here is that function applications are not allowed in the args
+      // so if the head is an enode with children, we need to look at each of the children
+      // if the child is a constructor, we need to replace it with a fresh pattern var
+      // and then recursively look at the children of the constructor
+      ENodeOrVar::ENode(p) => {
+        for child in p.children.iter() {
+          let child_node = &lhs_rec[*child];
+          match child_node {
+            ENodeOrVar::ENode(c) => {
+              if is_constructor(c.op.as_str()) {
+                // if the arg is a constructor, we need to do stuff
+                // 1. replace this entire arg with a fresh pattern var that is not in var_list
+                // 2. recursively look at the children of the constructor
+                let (fresh_var, mod_expr) =
+                  replace_arg_with_pattern_var(&var_list, reduction, head, child);
+
+                let mod_searcher: Pattern<SymbolLang> = mod_expr.clone().into();
+
+                let matches = mod_searcher.search(&self.egraph);
+
+                // look at the e-class analysis for each matched e-class, if any of them has a variable, use it
+                for m in matches {
+                  let ecid = m.substs.get(0).unwrap().get(fresh_var).unwrap();
+                  if let Some(&blocking_var) =
+                    Vec::from_iter(self.egraph[*ecid].data.vars.iter()).first()
+                  {
+                    blocking_vars.push(blocking_var);
+                  }
+                }
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+      _ => {}
+    }
+
+    blocking_vars
   }
 
   /// Save e-graph to file
@@ -875,6 +981,40 @@ impl<'a> Goal<'a> {
   //   }
   //   false
   // }
+}
+
+fn replace_arg_with_pattern_var(
+  var_list: &Vec<Var>,
+  reduction: &Rewrite<SymbolLang, VarAnalysis>,
+  head: &ENodeOrVar<SymbolLang>,
+  child: &Id,
+) -> (Var, RecExpr<ENodeOrVar<SymbolLang>>) {
+  let mut fresh_var_idx = 1;
+  while var_list.contains(&Var::from_str(format!("?fresh_{}", fresh_var_idx).as_str()).unwrap()) {
+    fresh_var_idx += 1;
+  }
+  let fresh_var = Var::from_str(format!("?fresh_{}", fresh_var_idx).as_str()).unwrap();
+
+  let modified_searcher = reduction.searcher.clone();
+  let mut mod_expr: RecExpr<ENodeOrVar<SymbolLang>> = RecExpr::default();
+
+  modified_searcher
+    .get_pattern_ast()
+    .unwrap()
+    .as_ref()
+    .to_owned()
+    .iter()
+    .for_each(|h| {
+      if h == head {
+        let new_id = mod_expr.add(ENodeOrVar::Var(fresh_var));
+        let mut ho = h.to_owned();
+        ho.update_children(|ch| if ch == *child { new_id } else { ch });
+        mod_expr.add(ho);
+      } else {
+        mod_expr.add(h.clone());
+      }
+    });
+  (fresh_var, mod_expr)
 }
 
 #[derive(Clone, Debug)]
