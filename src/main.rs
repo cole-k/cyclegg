@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 pub mod ast;
 pub mod config;
+pub mod analysis;
 pub mod egraph;
 pub mod explain;
 pub mod goal;
@@ -35,6 +36,11 @@ fn main() -> Result<()> {
   for raw_goal in parser_state.raw_goals.iter() {
     let (reductions, defns) =
       parser_state.get_reductions_and_definitions(raw_goal, raw_goal.local_rules.clone());
+    if let Some(prop_name) = &CONFIG.prop {
+      if &raw_goal.name != prop_name {
+        continue;
+      }
+    }
     let mut goal = Goal::top(
       &raw_goal.name,
       &raw_goal.equation,
@@ -43,13 +49,9 @@ fn main() -> Result<()> {
       &parser_state.env,
       &parser_state.context,
       &reductions,
+      &parser_state.cvec_rules,
       &defns,
     );
-    if let Some(prop_name) = &CONFIG.prop {
-      if &goal.name != prop_name {
-        continue;
-      }
-    }
     num_goals_attempted += 1;
     println!(
       "{} {}: {}",

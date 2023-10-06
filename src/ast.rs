@@ -21,18 +21,19 @@ impl Type {
     Self { repr }
   }
 
-  /// If this type is a datatype, returns its name and otherwise return error.
-  pub fn datatype(&self) -> Result<&String, SexpError> {
+  /// If this type is a datatype, returns its name and arguments in order (if it
+  /// has any) and otherwise return error.
+  pub fn datatype(&self) -> Result<(&String, Vec<Type>), SexpError> {
     match &self.repr {
-      Sexp::String(s) => Ok(s), // This type is a D
-      Sexp::List(xs) => {
-        // This type is a type constructor application
-        match xs[0].string()?.as_str() {
-          ARROW => Err(SexpError::Other(
-            "expected datatype and got arrow".to_string(),
-          )),
-          _ => xs[0].string(),
+      Sexp::String(s) => Ok((s, Vec::default())), // This type is a D
+      Sexp::List(lst) => {
+        let mut lst_iter = lst.iter();
+        let dt = lst_iter.next().unwrap().string()?;
+        if dt == ARROW {
+          return Err(SexpError::Other("datatype: unexpected arrow".to_string()));
         }
+        let arg_types = lst_iter.map(|arg| Type::new(arg.clone())).collect();
+        Ok((dt, arg_types))
       }
       _ => panic!("arity: type is empty"),
     }
@@ -61,6 +62,16 @@ impl Type {
       _ => panic!("arity: type is empty"),
     }
   }
+
+  pub fn is_arrow(&self) -> bool {
+    match &self.repr {
+      Sexp::List(xs) => {
+        xs[0].string().unwrap().as_str() == ARROW
+      }
+      _ => false
+    }
+  }
+
 }
 
 impl FromStr for Type {
@@ -327,7 +338,7 @@ pub fn lookup_vars<'a, I: Iterator<Item = &'a Symbol>, A: Analysis<SymbolLang>>(
   let mut subst = IndexMap::new();
   for var in vars {
     match egraph.lookup(SymbolLang::leaf(*var)) {
-      Some(id) => subst.insert(var.clone(), id),
+      Some(id) => subst.insert(*var, id),
       None => panic!("lookup_vars: variable {} not found in egraph", var),
     };
   }

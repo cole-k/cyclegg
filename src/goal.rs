@@ -8,6 +8,7 @@ use std::fmt::Display;
 use std::time::{Duration, Instant};
 use symbolic_expressions::{parser, Sexp};
 
+use crate::analysis::{CycleggAnalysis, CanonicalFormAnalysis, CanonicalForm, Cvec, CvecAnalysis, cvecs_equal};
 use crate::ast::*;
 use crate::config::*;
 use crate::egraph::*;
@@ -15,8 +16,9 @@ use crate::parser::RawEquation;
 use crate::utils::*;
 
 // We will use SymbolLang for now
-pub type Eg = EGraph<SymbolLang, CanonicalFormAnalysis>;
-pub type Rw = Rewrite<SymbolLang, CanonicalFormAnalysis>;
+pub type Eg = EGraph<SymbolLang, CycleggAnalysis>;
+pub type Rw = Rewrite<SymbolLang, CycleggAnalysis>;
+pub type CvecRw = Rewrite<SymbolLang, ()>;
 
 /// A special scrutinee name used to signal that case split bound has been exceeded
 const BOUND_EXCEEDED: &str = "__";
@@ -36,7 +38,7 @@ pub struct Soundness {
 
 impl Soundness {
   /// Substitution as a string, for debugging purposes
-  fn _pretty_subst(subst: &Vec<(Symbol, Expr, Expr)>) -> String {
+  fn _pretty_subst(subst: &[(Symbol, Expr, Expr)]) -> String {
     let strings: Vec<String> = subst
       .iter()
       .map(|(x, orig, new)| {
@@ -57,7 +59,7 @@ impl Soundness {
   fn smaller_tuple(&self, triples: &Vec<(Symbol, Expr, Expr)>) -> bool {
     let mut has_strictly_smaller = false;
     for (_, orig, new) in triples {
-      match is_subterm(&new, &orig) {
+      match is_subterm(new, orig) {
         StructuralComparison::LT => {
           has_strictly_smaller = true;
         }
@@ -72,7 +74,7 @@ impl Soundness {
 
   /// Apply subst to self.premise (if any)
   /// and check whether the resulting terms are equal in the egraph
-  fn check_premise(premise: &Equation, triples: &Vec<(Symbol, Expr, Expr)>, egraph: &Eg) -> bool {
+  fn check_premise(premise: &Equation, triples: &[(Symbol, Expr, Expr)], egraph: &Eg) -> bool {
     // let info = SmallerVar::pretty_subst(triples);
     // println!("checking premise {} = {} for {}", premise.lhs.sexp, premise.rhs.sexp, info);
 
@@ -114,7 +116,7 @@ impl Soundness {
   }
 
   /// Check all of the premises of this condition
-  fn check_premises(&self, triples: &Vec<(Symbol, Expr, Expr)>, egraph: &Eg) -> bool {
+  fn check_premises(&self, triples: &[(Symbol, Expr, Expr)], egraph: &Eg) -> bool {
     self
       .premises
       .iter()
@@ -122,7 +124,7 @@ impl Soundness {
   }
 }
 
-impl SearchCondition<SymbolLang, CanonicalFormAnalysis> for Soundness {
+impl SearchCondition<SymbolLang, CycleggAnalysis> for Soundness {
   /// Returns true if the substitution is into a smaller tuple of variables
   fn check(&self, egraph: &Eg, _eclass: Id, subst: &Subst) -> bool {
     // Create an iterator over triples: (variable, old canonical form, new canonical form)
@@ -139,7 +141,7 @@ impl SearchCondition<SymbolLang, CanonicalFormAnalysis> for Soundness {
         // Same for the original argument:
         // it might not be canonical if it's inconsistent, in which case there's no point applying any lemmas
         let orig_canonical = CanonicalFormAnalysis::extract_canonical(egraph, *orig_id)?;
-        Some((x.clone(), orig_canonical, new_canonical))
+        Some((*x, orig_canonical, new_canonical))
       })
       .collect::<Option<Vec<(Symbol, Expr, Expr)>>>();
 
@@ -150,166 +152,8 @@ impl SearchCondition<SymbolLang, CanonicalFormAnalysis> for Soundness {
         // and that the actual premise holds
         let terminates = self.smaller_tuple(&triples);
         // Let's not check the premises if the termination check doesn't hold:
-        let sound = terminates && self.check_premises(&triples, egraph);
+        terminates && self.check_premises(&triples, egraph)
         // println!("trying IH with subst {}; checks: {} {}", SmallerVar::pretty_subst(&triples), terminates, sound);
-        sound
-      }
-    }
-  }
-}
-
-/// The set of constructors in an e-class.
-/// The order of variants is important: since we use the derived order during the merge.
-#[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone)]
-pub enum CanonicalForm {
-  /// This class has neither constructors nor variables
-  Stuck,
-  /// This class has a variable but no constructors
-  Var(SymbolLang),
-  /// This class has a single constructor;
-  /// because the analysis merges the children of the same constructor,
-  /// there cannot be two different constructor e-nodes with the same head constructor in an e-class.
-  Const(SymbolLang),
-  /// This class has at least two different constructors
-  /// or it contains an infinite term (this class is reachable from an argument of its constructor);
-  /// in any case, this is an inconsistency.
-  Inconsistent(SymbolLang, SymbolLang),
-}
-
-#[derive(Default, Clone)]
-pub struct CanonicalFormAnalysis {}
-
-impl CanonicalFormAnalysis {
-  /// Extract the canonical form of an e-class if it exists.
-  /// Note: this function does not check for cycles, so it should only be called
-  /// after the analysis has finished.
-  pub fn extract_canonical(egraph: &Eg, id: Id) -> Option<Expr> {
-    match &egraph[id].data {
-      CanonicalForm::Const(n) => {
-        // Extract canonical forms of the children:
-        let children: HashMap<Id, Expr> =
-          n.children
-            .iter()
-            .try_fold(HashMap::new(), |mut acc, child| {
-              let child_expr = Self::extract_canonical(egraph, *child)?;
-              acc.insert(*child, child_expr);
-              Some(acc)
-            })?;
-        // Join those forms into a single expression:
-        let expr = n.join_recexprs(|child_id| children.get(&child_id).unwrap());
-        Some(expr)
-      }
-      CanonicalForm::Var(n) => Some(vec![n.clone()].into()),
-      _ => None,
-    }
-  }
-
-  /// Check if the canonical form of eclass id (whose constructor node is n)
-  /// has a cycle back to itself made up of only constructors.
-  /// This means that the eclass represents an infinite term.
-  fn is_canonical_cycle(egraph: &Eg, n: &SymbolLang, id: Id) -> bool {
-    // We have to keep track of visited nodes because there might also be a lasso
-    // (i.e. a cycle not starting at id)
-    let mut visited: HashSet<Id> = HashSet::new();
-    visited.insert(id);
-    Self::is_reachable(egraph, n, id, &mut visited)
-  }
-
-  fn is_reachable(egraph: &Eg, n: &SymbolLang, id: Id, visited: &mut HashSet<Id>) -> bool {
-    n.children.iter().any(|c| {
-      let c = egraph.find(*c);
-      if c == id {
-        true
-      } else if visited.contains(&c) {
-        // We return false here because a) this might just be a DAG and
-        // b) if there is a cycle at c, it will be detected in c's modify call
-        false
-      } else {
-        visited.insert(c);
-        if let CanonicalForm::Const(n2) = &egraph[c].data {
-          Self::is_reachable(egraph, n2, id, visited)
-        } else {
-          false
-        }
-      }
-    })
-  }
-}
-
-impl Analysis<SymbolLang> for CanonicalFormAnalysis {
-  type Data = CanonicalForm;
-
-  fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-    // If we are merging classes with two different constructors,
-    // record that this class is now inconsistent
-    // (and remember both constructors, we'll need them to build an explanation)
-    if let CanonicalForm::Const(n1) = to {
-      if let CanonicalForm::Const(ref n2) = from {
-        if n1.op != n2.op {
-          *to = CanonicalForm::Inconsistent(n1.clone(), n2.clone());
-          return DidMerge(true, true);
-        }
-      }
-    }
-    // Otherwise, just take the max constructor set
-    merge_max(to, from)
-  }
-
-  fn make(_: &EGraph<SymbolLang, Self>, enode: &SymbolLang) -> Self::Data {
-    if is_constructor(enode.op.into()) {
-      CanonicalForm::Const(enode.clone())
-    } else if enode.children.is_empty() {
-      CanonicalForm::Var(enode.clone())
-    } else {
-      CanonicalForm::Stuck
-    }
-  }
-
-  fn modify(egraph: &mut EGraph<SymbolLang, Self>, id: Id) {
-    if let CanonicalForm::Const(ref n1) = egraph[id].data {
-      let n1 = n1.clone();
-      // We have just merged something into a constructor.
-      // 1) Check if there are any other constructors in this class with the same head and union their children
-      let other_constructors: Vec<SymbolLang> = egraph[id]
-        .nodes
-        .iter()
-        .filter(|n2| n1 != **n2 && n1.op == n2.op)
-        .cloned()
-        .collect();
-
-      for n2 in other_constructors {
-        // The extraction is only here for logging purposes
-        let extractor = Extractor::new(egraph, AstSize);
-        let expr1 = extract_with_node(&n1, &extractor);
-        let expr2 = extract_with_node(&n2, &extractor);
-        if CONFIG.verbose && expr1.to_string() != expr2.to_string() {
-          println!("INJECTIVITY {} = {}", expr1, expr2);
-        }
-        // Unify the parameters of the two constructors
-        for (c1, c2) in n1.children.iter().zip(n2.children.iter()) {
-          let c1 = egraph.find(*c1);
-          let c2 = egraph.find(*c2);
-          if c1 != c2 {
-            egraph.union_trusted(
-              c1,
-              c2,
-              format!("constructor-injective {} = {}", expr1, expr2),
-            );
-          }
-        }
-      }
-      // 2) Check if we created a cycle made up of only constructors,
-      // and if so, report inconsistency (infinite term)
-      if Self::is_canonical_cycle(egraph, &n1, id) {
-        // The extraction is only here for logging purposes
-        let extractor = Extractor::new(egraph, AstSize);
-        let n2 = extractor.find_best_node(id);
-        let expr1 = extract_with_node(&n1, &extractor);
-        let expr2 = extract_with_node(n2, &extractor);
-        if CONFIG.verbose {
-          println!("INFINITE TERM {} = {}", expr1, expr2);
-        }
-        egraph[id].data = CanonicalForm::Inconsistent(n1.clone(), n2.clone());
       }
     }
   }
@@ -431,6 +275,9 @@ pub struct Goal<'a> {
   pub egraph: Eg,
   /// Rewrites are split into reductions (invertible rules) and lemmas (non-invertible rules)
   reductions: &'a Vec<Rw>,
+  // HACK: an identical copy to the reductions used for the cvec egraph.
+  // This is because of type system stuff.
+  cvec_reductions: &'a Vec<CvecRw>,
   lemmas: HashMap<String, Rw>,
   /// Mapping from all universally-quantified variables of the goal to their types
   /// (note this includes both current and old variables, which have been case-split away)
@@ -472,6 +319,7 @@ impl<'a> Goal<'a> {
     env: &'a Env,
     global_context: &'a Context,
     reductions: &'a Vec<Rw>,
+    cvec_reductions: &'a Vec<CvecRw>,
     defns: &'a Defns,
   ) -> Self {
     let mut egraph: Eg = EGraph::default().with_explanations_enabled();
@@ -485,13 +333,14 @@ impl<'a> Goal<'a> {
       name: name.to_string(),
       // The only instantiation we have so far is where the parameters map to themselves
       var_classes: var_classes.clone(),
-      grounding_instantiations: vec![var_classes],
+      grounding_instantiations: vec![var_classes.clone()],
       egraph,
       explanation: None,
       reductions,
+      cvec_reductions,
       lemmas: HashMap::new(),
       local_context: Context::new(),
-      params: params.iter().map(|(x, _)| x.clone()).collect(),
+      params: params.iter().map(|(x, _)| *x).collect(),
       guard_exprs: HashMap::new(),
       scrutinees: VecDeque::new(),
       eq,
@@ -502,6 +351,11 @@ impl<'a> Goal<'a> {
       defns,
     };
     for (name, ty) in params {
+      if !ty.is_arrow() {
+        let var_id = var_classes.get(&name).unwrap();
+        let var_cvec = res.egraph.analysis.cvec_analysis.make_cvec_for_type(&ty, res.env, &res.global_context);
+        res.egraph[*var_id].data.cvec_data = var_cvec;
+      }
       res.add_scrutinee(name, &ty, 0);
       res.local_context.insert(name, ty);
     }
@@ -513,6 +367,7 @@ impl<'a> Goal<'a> {
       name: self.name.clone(),
       egraph: self.egraph.clone(),
       reductions: self.reductions,
+      cvec_reductions: self.cvec_reductions,
       lemmas: HashMap::new(), // the lemmas will be re-generated immediately anyway
       local_context: self.local_context.clone(),
       var_classes: self.var_classes.clone(),
@@ -544,7 +399,7 @@ impl<'a> Goal<'a> {
 
   /// Check if the goal has been discharged,
   /// and if so, create an explanation.
-  pub fn check_validity(&mut self) {
+  pub fn check_validity(&mut self) -> bool {
     // for eclass in self.egraph.classes() {
     //   println!("{}: {:?} CANONICAL {}", eclass.id, eclass.nodes, ConstructorFolding::extract_canonical(&self.egraph, eclass.id).unwrap_or(vec![].into()));
     // }
@@ -556,10 +411,19 @@ impl<'a> Goal<'a> {
           .egraph
           .explain_equivalence(&self.eq.lhs.expr, &self.eq.rhs.expr),
       );
+      true
     } else {
-      // Check if this case in unreachable (i.e. if there are any inconsistent e-classes in the e-graph)
+      // Check if this case in unreachable (i.e. if there are any inconsistent
+      // e-classes in the e-graph)
+      //
+      // FIXME: I've hacked it such that we only get an explanation from the
+      // contradiction. If we find a contradiction from the cvecs, we need to
+      // first find which enode the cvec came from, then we need to find explain
+      // why those nodes are equal, then we need to provide the concrete values
+      // that cause them to be unequal. This will probably require us to update
+      // the Cvec analysis to track enodes, which is a little unfortunate.
       let res = self.egraph.classes().find_map(|eclass| {
-        if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data {
+        if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data.canonical_form_data {
           // This is here only for the purpose of proof generation:
           let extractor = Extractor::new(&self.egraph, AstSize);
           let expr1 = extract_with_node(n1, &extractor);
@@ -567,14 +431,25 @@ impl<'a> Goal<'a> {
           if CONFIG.verbose {
             println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
           }
-          Some((expr1, expr2))
+          Some(((expr1, expr2), true))
+        } else if let Cvec::Contradiction(id1, id2) = &eclass.data.cvec_data {
+          let cvec_egraph = self.egraph.analysis.cvec_analysis.cvec_egraph.borrow();
+          let cvec_extractor = Extractor::new(&cvec_egraph, AstSize);
+          let (_, expr1) = cvec_extractor.find_best(*id1);
+          let (_, expr2) = cvec_extractor.find_best(*id2);
+          if CONFIG.verbose {
+            println!("{}: {} = {}", "CONTRADICTION".bright_red(), expr1, expr2);
+          }
+          Some(((expr1, expr2), false))
         } else {
           None
         }
       });
-      if let Some((expr1, expr2)) = res {
+      let is_valid = res.is_some();
+      if let Some(((expr1, expr2), true)) = res {
         self.explanation = Some(self.egraph.explain_equivalence(&expr1, &expr2));
       }
+      is_valid
     }
   }
 
@@ -668,7 +543,7 @@ impl<'a> Goal<'a> {
           .var_classes
           .iter()
           .filter(|(x, _)| lemma_vars.contains(&to_wildcard(x)))
-          .map(|(x, id)| (x.clone(), *id))
+          .map(|(x, id)| (*x, *id))
           .collect();
 
         let condition = Soundness {
@@ -727,7 +602,7 @@ impl<'a> Goal<'a> {
   /// Add var as a scrutinee if its type `ty` is a datatype;
   /// if depth bound is exceeded, add a sentinel symbol instead
   fn add_scrutinee(&mut self, var: Symbol, ty: &Type, depth: usize) {
-    if let Ok(dt) = ty.datatype() {
+    if let Ok((dt, _)) = ty.datatype() {
       if self.env.contains_key(&Symbol::from(dt)) {
         // Only add new variable to scrutinees if its depth doesn't exceed the bound
         if depth < CONFIG.max_split_depth {
@@ -753,7 +628,7 @@ impl<'a> Goal<'a> {
     for m in matches {
       for subst in m.substs {
         let guard_id = *subst.get(guard_var).unwrap();
-        if let CanonicalForm::Stuck = self.egraph[guard_id].data {
+        if let CanonicalForm::Stuck = self.egraph[guard_id].data.canonical_form_data {
           stuck_guards.insert(guard_id, subst);
         }
       }
@@ -793,14 +668,14 @@ impl<'a> Goal<'a> {
     let var_str = var.to_string();
     warn!("case-split on {}", var);
     let var_node = SymbolLang::leaf(var);
-    let var_pattern_ast: RecExpr<ENodeOrVar<SymbolLang>> = vec![ENodeOrVar::ENode(var_node)].into();
+    let var_pattern_ast: RecExpr<ENodeOrVar<SymbolLang>> = vec![ENodeOrVar::ENode(var_node.clone())].into();
     // Get the type of the variable, and then remove the variable
     let ty = match self.local_context.get(&var) {
       Some(ty) => ty,
       None => panic!("{} not in local context", var),
     };
     // Convert to datatype name
-    let dt = Symbol::from(ty.datatype().unwrap());
+    let dt = Symbol::from(ty.datatype().unwrap().0);
     // Get the constructors of the datatype
     let (_, cons) = self.env.get(&dt).unwrap();
     // We will add this to state.proof to describe the case split.
@@ -828,6 +703,11 @@ impl<'a> Goal<'a> {
         new_goal.add_scrutinee(fresh_var, arg_type, depth);
         let id = new_goal.egraph.add(SymbolLang::leaf(fresh_var));
         new_goal.var_classes.insert(fresh_var, id);
+        // We can only generate a cvec for non-arrow types.
+        if !arg_type.is_arrow() {
+          let fresh_var_cvec = self.egraph.analysis.cvec_analysis.make_cvec_for_type(arg_type, self.env, &self.global_context);
+          new_goal.egraph[id].data.cvec_data = fresh_var_cvec;
+        }
 
         if !CONFIG.is_cyclic() && ty == arg_type {
           // This is a recursive constructor parameter:
@@ -854,9 +734,8 @@ impl<'a> Goal<'a> {
 
       // Add con_app to the new goal's egraph and union it with var
       new_goal.egraph.add_expr(&con_app);
-      let _con_app_id = new_goal.egraph.lookup_expr(&con_app).unwrap();
       // Not sure if it's proper to use new_goal.name here
-      new_goal.egraph.union_instantiations(
+      let (con_app_id, _) = new_goal.egraph.union_instantiations(
         &var_pattern_ast,
         &rec_expr_to_pattern_ast(con_app.clone()),
         &Subst::default(),
@@ -865,9 +744,19 @@ impl<'a> Goal<'a> {
       new_goal.egraph.rebuild();
 
       // Remove old variable from the egraph and context
-      remove_node(&mut new_goal.egraph, &SymbolLang::leaf(var));
+      remove_node(&mut new_goal.egraph, &var_node);
       // warn!("removing var {}", var);
       new_goal.egraph.rebuild();
+
+      // After we instantiate the variable, its class's new cvec is just the instantiated value.
+      let cvec_con_app_id = new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add_expr(&con_app);
+      let mut analysis = new_goal.egraph[con_app_id].data.clone();
+      analysis.cvec_data = Cvec::Singleton(cvec_con_app_id);
+      new_goal.egraph.set_analysis_data(con_app_id, analysis);
+      // let cvec_var_id = new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow().lookup(var_node.clone()).unwrap();
+      // new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().union_trusted(cvec_var_id, cvec_con_app_id, "case split");
+      // new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().rebuild();
+      // remove_node(&mut new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut(), &var_node);
 
       // In cyclic mode: add the guard to premises,
       if CONFIG.is_cyclic() && var_str.starts_with(GUARD_PREFIX) {
@@ -1106,7 +995,7 @@ impl<'a> Goal<'a> {
           } else {
             ETerm::from_expr(new_expr, &self.egraph)
           };
-          (x.clone(), eterm, replaced)
+          (*x, eterm, replaced)
         })
         .collect();
       // If any of the canonical forms had a replacement, add a new instantiation:
@@ -1123,7 +1012,7 @@ impl<'a> Goal<'a> {
         // Add the new instantiation to the list of grounding instantiations
         let new_subst = replaced_canonicals
           .iter()
-          .map(|(x, e, _)| (x.clone(), e.id))
+          .map(|(x, e, _)| (*x, e.id))
           .collect();
         new_instantiations.push(new_subst);
       }
@@ -1131,6 +1020,51 @@ impl<'a> Goal<'a> {
 
     // Add the new instantiations to the list of grounding instantiations
     self.grounding_instantiations.extend(new_instantiations);
+  }
+
+  fn saturate_cvecs(&mut self) {
+    let cvec_analysis_egraph: EGraph<SymbolLang, ()> = self.egraph.analysis.cvec_analysis.cvec_egraph.borrow().clone();
+    let runner = Runner::default()
+      .with_egraph(cvec_analysis_egraph)
+      .run(self.cvec_reductions);
+    self.egraph.analysis.cvec_analysis.cvec_egraph.replace_with(|_| runner.egraph);
+  }
+
+  fn search_for_cc_lemmas(&mut self) {
+    self.saturate_cvecs();
+    let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
+    let resolved_rhs_id = self.egraph.find(self.eq.rhs.id);
+    let class_ids: Vec<Id> = self.egraph.classes().map(|c| c.id).collect();
+    for class_1_id in &class_ids {
+      for class_2_id in &class_ids {
+        // Resolve the ids because as we union things, we might make more
+        // equalities.
+        let class_1_id = self.egraph.find(*class_1_id);
+        let class_2_id = self.egraph.find(*class_2_id);
+        // Don't try to union two of the same e-class.
+        //
+        // Also, only try pairs (id1, id2) where id1 < id2.
+        // Since unioning doesn't care about order, we can avoid
+        // trying classes redundantly.
+        if class_1_id >= class_2_id {
+          continue;
+        }
+        // Don't try unioning the LHS and RHS, we've seen those already.
+        if class_1_id == resolved_lhs_id && class_2_id == resolved_rhs_id
+          || class_1_id == resolved_rhs_id && class_2_id == resolved_lhs_id {
+            continue
+        }
+
+        if let Some(true) = cvecs_equal(&self.egraph.analysis.cvec_analysis, &self.egraph[class_1_id].data.cvec_data, &self.egraph[class_2_id].data.cvec_data) {
+          let extractor = Extractor::new(&self.egraph, AstSize);
+          let (_, e1) = extractor.find_best(class_1_id);
+          let (_, e2) = extractor.find_best(class_2_id);
+          println!("CC lemma: {} = {}", e1, e2);
+          self.egraph.union_trusted(class_1_id, class_2_id, "CC lemma search");
+          self.egraph.rebuild();
+        }
+      }
+    }
   }
 }
 
@@ -1271,7 +1205,7 @@ pub fn prove(mut goal: Goal) -> (Outcome, ProofState) {
     if CONFIG.save_graphs {
       goal.save_egraph();
     }
-    goal.check_validity();
+    let is_valid = goal.check_validity();
     if let Some(mut explanation) = goal.explanation {
       // This goal has been discharged, proceed to the next goal
       if CONFIG.verbose {
@@ -1281,6 +1215,13 @@ pub fn prove(mut goal: Goal) -> (Outcome, ProofState) {
       state
         .solved_goal_explanation_and_context
         .insert(goal.name, (explanation, goal.local_context));
+      continue;
+    }
+    if is_valid {
+      if CONFIG.verbose {
+        println!("{} {}", "Proved case by contradiction".bright_blue(), goal.name);
+        println!("(no explanation for now)");
+      }
       continue;
     }
     if CONFIG.verbose {
@@ -1306,6 +1247,12 @@ pub fn prove(mut goal: Goal) -> (Outcome, ProofState) {
         for remaining_goal in &state.goals {
           println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
         }
+      }
+      println!("Failed to prove case {}, trying CC lemmas", goal.name);
+      goal.search_for_cc_lemmas();
+      goal = goal.saturate();
+      if goal.check_validity() || goal.explanation.is_some() {
+        continue;
       }
       return (Outcome::Unknown, state);
     }

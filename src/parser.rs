@@ -6,7 +6,10 @@ use symbolic_expressions::*;
 use crate::ast::*;
 use crate::goal::*;
 
-fn make_rewrite_for_defn(name: &str, args: &Sexp, value: &Sexp) -> Rw {
+fn make_rewrite_for_defn<A>(name: &str, args: &Sexp, value: &Sexp) -> Rewrite<SymbolLang, A>
+  where
+    A: Analysis<SymbolLang>
+{
   let name_sexp = Sexp::String(name.to_string());
   let pattern_with_name = match args {
     Sexp::Empty => name_sexp,
@@ -44,6 +47,7 @@ pub struct ParserState {
   pub context: Context,
   pub defns: Defns,
   pub rules: Vec<Rw>,
+  pub cvec_rules: Vec<CvecRw>,
   pub raw_goals: Vec<RawGoal>,
 }
 
@@ -122,7 +126,10 @@ impl ParserState {
 
   /// If type_ is an arrow type, return a rewrite that allows converting partial applications into regular first-order applications,
   /// that is: ($ ... ($ name ?x0) ... ?xn) => (name ?x0 ... ?xn).
-  fn partial_application(name: &Symbol, type_: &Type) -> Option<Rw> {
+  fn partial_application<A>(name: &Symbol, type_: &Type) -> Option<Rewrite<SymbolLang, A>>
+    where
+      A: Analysis<SymbolLang>
+  {
     let (args, _) = type_.args_ret();
     if args.is_empty() {
       // This is not a function, so we can't partially apply it
@@ -271,6 +278,11 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         if let Some(rw) = ParserState::partial_application(&mangled_name, &mangled_type) {
           state.rules.push(rw);
         }
+        // HACK: add the exact same rule to a vector of different types because
+        // we can't store universally quantified types.
+        if let Some(rw) = ParserState::partial_application(&mangled_name, &mangled_type) {
+          state.cvec_rules.push(rw);
+        }
         state.context.insert(mangled_name, mangled_type);
       }
       "let" => {
@@ -287,6 +299,11 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
           &mangled_args,
           &mangled_value,
         ));
+        // HACK: add the same rules to a list of rewrites for cvecs. This is
+        // only done because we don't have a good way of storing rules that can
+        // work as both Rw and CvecRw.
+        state.cvec_rules.push(make_rewrite_for_defn(&mangled_name, &mangled_args, &mangled_value));
+
         // Add to the hashmap
         if let Some(cases) = state.defns.get_mut(&mangled_name) {
           cases.push((mangled_args, mangled_value));

@@ -8,10 +8,10 @@
 (:: S (-> (Nat) Nat))
 
 (data List (a) (Nil Cons))
-(:: Nil  (List ?a)                    )
-(:: Cons (-> (?a (List ?a)) (List ?a)))
+(:: Nil  (List a)                    )
+(:: Cons (-> (a (List a)) (List a)))
 
-(:: id (-> (?a) ?a))
+(:: id (-> (a) a))
 (let id (?x) ?x)
 
 (:: add (-> (Nat Nat) Nat))
@@ -39,16 +39,16 @@
 (let eq ((S ?x) Z     ) False     )
 (let eq ((S ?x) (S ?y)) (eq ?x ?y))
 
-(:: ite (-> (Bool ?a ?a) ?a))
+(:: ite (-> (Bool a a) a))
 (let ite (True ?x ?y ) ?x)
 (let ite (False ?x ?y) ?y)
 (let ite (?b    ?x ?x) ?x)
 
-(:: head (-> (List ?a) ?a))
+(:: head (-> (List a) a))
 (let head (Nil) Z)
 (let head ((Cons ?x ?xs)) ?x)
 
-(:: map (-> ((-> ?a ?b) (List ?a)) (List ?b)))
+(:: map (-> ((-> a b) (List a)) (List b)))
 (let map (?f Nil          ) Nil                          )
 (let map (?f (Cons ?x ?xs)) (Cons ($ ?f ?x) (map ?f ?xs)))
 
@@ -56,7 +56,7 @@
 (let elem (?n Nil          ) False                            )
 (let elem (?n (Cons ?x ?xs)) (ite (eq ?n ?x) True (elem ?n ?xs)))
 
-(:: append (-> ((List ?a) (List ?a)) (List ?a)))
+(:: append (-> ((List a) (List a)) (List a)))
 (let append (Nil           ?ys) ?ys                       )
 (let append ((Cons ?x ?xs) ?ys) (Cons ?x (append ?xs ?ys)))
 

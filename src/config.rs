@@ -58,9 +58,26 @@ pub struct Args {
   /// Only prove the proposition with this name
   #[clap(long = "prop")]
   pub prop: Option<String>,
-
   #[clap(long = "no-blocking-analysis")]
   pub no_blocking_analysis: bool,
+  /// Number of terms to put into the cvecs used to propose equalities between
+  /// e-classes.
+  #[clap(long = "cvec-size", default_value = "5")]
+  pub cvec_size: usize,
+  /// Maximum depth for the random terms we generate for the cvecs.
+  #[clap(long = "cvec-term-max-depth", default_value = "4")]
+  pub cvec_term_max_depth: usize,
+  /// Number of times we try to make a new distinct term when generating
+  /// the random terms for a type that are used for cvecs of that type.
+  ///
+  /// If we try this many times and don't find a distinct value, we add
+  /// it to the list anyway.
+  #[clap(long = "cvec-num-rolls", default_value = "10")]
+  pub cvec_num_rolls: usize,
+  /// The number of random terms we generate for each type. We select randomly
+  /// from these each time we generate a cvec for a variable.
+  #[clap(long = "cvec-num-random-terms-per-type", default_value = "10")]
+  pub cvec_num_random_terms_per_type: usize,
 }
 
 impl Args {
@@ -96,6 +113,11 @@ pub struct Config {
   pub mangle_names: bool,
   pub proof_comments: bool,
   pub blocking_vars_analysis: bool,
+  // This could maybe be its own struct?
+  pub cvec_size: usize,
+  pub cvec_term_max_depth: usize,
+  pub cvec_num_rolls: usize,
+  pub cvec_num_random_terms_per_type: usize,
 }
 
 impl Config {
@@ -138,6 +160,10 @@ impl Config {
       proof_comments: !args.no_proof_comments,
       prop: args.prop.clone(),
       blocking_vars_analysis: !args.no_blocking_analysis,
+      cvec_size: args.cvec_size,
+      cvec_term_max_depth: args.cvec_term_max_depth,
+      cvec_num_rolls: args.cvec_num_rolls,
+      cvec_num_random_terms_per_type: args.cvec_num_random_terms_per_type,
     }
   }
 
