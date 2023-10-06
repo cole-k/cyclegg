@@ -65,11 +65,15 @@ pub struct Args {
   /// using only variables.
   #[clap(long = "no-structural-comparison")]
   pub no_structural_comparison: bool,
-  /// When a goal fails, search for generalizations by trying to unify every
+  /// When a goal fails, search for lemmas by trying to unify every
   /// pair of e-classes (except the LHS and RHS) and see if the goal is
   /// proven after that.
   ///
   /// This should be very slow and is recommended only for small e-graphs.
+  #[clap(long = "look-for-cc-lemmas")]
+  pub look_for_cc_lemmas: bool,
+  /// When a goal fails, search for lemmas by trying to generalize pairs of the
+  /// LHS and RHS.
   #[clap(long = "look-for-generalizations")]
   pub look_for_generalizations: bool,
 }
@@ -95,6 +99,7 @@ pub struct Config {
   pub proof_comments: bool,
   pub prop: Option<String>,
   pub structural_comparison: bool,
+  pub look_for_cc_lemmas: bool,
   pub look_for_generalizations: bool,
 }
 
@@ -138,6 +143,7 @@ impl Config {
       proof_comments: !args.no_proof_comments,
       prop: args.prop.clone(),
       structural_comparison: !args.no_structural_comparison,
+      look_for_cc_lemmas: args.look_for_cc_lemmas,
       look_for_generalizations: args.look_for_generalizations,
     }
   }

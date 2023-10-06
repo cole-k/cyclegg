@@ -158,6 +158,69 @@ where
   }
 }
 
+/// Unlike map_sexp, this substitutes Sexp -> Sexp, so the base case is when f
+/// returns Some(new_sexp), which replaces the Sexp entirely.
+pub fn map_sexp_sexp<F>(f: F, sexp: &Sexp) -> Sexp
+where
+  F: Copy + Fn(&Sexp) -> Option<Sexp>,
+{
+  f(sexp).unwrap_or_else(|| {
+    match sexp {
+      // Recursive case, try mapping over each child
+      Sexp::List(list) => Sexp::List(list.iter().map(|s| map_sexp_sexp(f, s)).collect()),
+      // Base case, f doesn't apply so just return the sexp unchanged
+      _ => sexp.clone(),
+    }
+  })
+}
+
+/// Iterates over every sub-sexp in the sexp, substituting it entirely if it
+/// matches the substitution.
+pub fn substitute_sexp(sexp: &Sexp, from: &Sexp, to: &Sexp) -> Sexp {
+  map_sexp_sexp(|interior_sexp| {
+    if interior_sexp == from {
+      Some(to.clone())
+    } else {
+      None
+    }
+  }, sexp)
+}
+
+/// Returns every subexpression in the sexp that contains a var, ignoring base
+/// cases. This is basically every subexpression we would consider to
+/// generalize.
+///
+/// Since Sexps can't be hashed we hack the set using their string
+/// representation...
+pub fn nontrivial_sexp_subexpressions_containing_vars(sexp: &Sexp) -> HashMap<String, Sexp> {
+  let mut subexprs = HashMap::default();
+  add_sexp_subexpressions(sexp, &mut subexprs);
+  subexprs
+}
+
+fn add_sexp_subexpressions(sexp: &Sexp, subexprs: &mut HashMap<String, Sexp>) -> bool {
+  let mut any_child_has_var = false;
+  match sexp {
+    Sexp::List(children) => {
+      let mut child_iter = children.iter();
+      // The root is a function so we shouldn't add it
+      child_iter.next();
+      child_iter.for_each(|child| {any_child_has_var |= add_sexp_subexpressions(child, subexprs);});
+    }
+    Sexp::String(s) if is_var(s) => {
+      // We won't add the variable, but we will add every subexpression
+      // containing it.
+      return true;
+    }
+    _ => {},
+  }
+  // If there's a variable in this sexp, we can generalize it.
+  if any_child_has_var {
+    subexprs.insert(sexp.to_string(), sexp.clone());
+  }
+  any_child_has_var
+}
+
 pub fn contains_function(sexp: &Sexp) -> bool {
   match sexp {
     Sexp::List(list) => {
@@ -180,6 +243,15 @@ fn starts_uppercase(string: &str) -> bool {
     .next()
     .map(|c| c.is_ascii_uppercase())
     .unwrap_or(false)
+}
+
+fn starts_lowercase(string: &str) -> bool {
+  string
+    .chars()
+    .next()
+    .map(|c| c.is_ascii_lowercase())
+    .unwrap_or(false)
+
 }
 
 fn find_instantiations_helper(proto: &Sexp, actual: &Sexp, instantiations_map: &mut SSubst) {
@@ -357,7 +429,11 @@ pub fn structural_comparision(child: &Sexp, ancestor: &Sexp) -> StructuralCompar
 }
 
 pub fn is_constructor(var_name: &str) -> bool {
-  var_name.chars().next().unwrap().is_uppercase()
+  starts_uppercase(var_name)
+}
+
+pub fn is_var(var_name: &str) -> bool {
+  starts_lowercase(var_name)
 }
 
 pub fn is_function(e: &SymbolLang) -> bool {
@@ -418,6 +494,19 @@ where
     }
   }
   Pattern::from(pattern_ast)
+}
+
+pub fn get_vars<'a, P>(e: &'a Expr, is_var: P ) -> Vec<Symbol>
+where
+  P: Fn(&'a Symbol) -> bool,
+{
+  let mut vars = Vec::new();
+  for n in e.as_ref() {
+    if is_var(&n.op) {
+      vars.push(n.op);
+    }
+  }
+  vars
 }
 
 // Environment: for now just a map from datatype names to constructor names

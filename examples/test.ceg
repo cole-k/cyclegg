@@ -76,6 +76,15 @@
 (let len Nil             Z            )
 (let len ((Cons ?x ?xs)) (S (len ?xs)))
 
+(:: fib (-> (Nat) Nat))
+(let fib Z (S Z))
+(let fib ((S Z)) (S Z))
+(let fib ((S (S ?n))) (add (fib (S ?n)) (fib ?n)))
+
+(:: fibtail (-> (Nat Nat Nat) Nat))
+(let fibtail (Z ?a ?b) ?a)
+(let fibtail ((S ?n) ?a ?b) (fibtail ?n ?b (add ?a ?b)))
+
 (=== weird (x) (Test)
   (testId x)
   x
@@ -204,6 +213,16 @@
 (=== prop_28 (x xs) (Nat (List Nat))
   (elem x (append xs (Cons x Nil)))
   True
+)
+
+(=== fibtail_fib (n) (Nat)
+  (fib n)
+  (fibtail n (S Z) (S Z))
+)
+
+(=== fibtail_lemma (n) (Nat)
+  (add (fibtail n (S Z) (S (S Z))) (fibtail n (S Z) (S Z)))
+  (fibtail n (S (S Z)) (S (S (S Z))))
 )
 
 )

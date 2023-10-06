@@ -1049,16 +1049,16 @@ impl<'a> Goal<'a> {
     ret
   }
 
-  /// Searches for possible generalizations by trying to unify two e-classes and
-  /// see if the theorem is provable with them.
-  fn look_for_generalizations(&self) -> bool {
+  /// Searches for possible cc lemmas by trying to unify two e-classes and see
+  /// if the theorem is provable with them.
+  fn look_for_cc_lemmas(&self) -> bool {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
     let mut seen = HashSet::new();
     let mut any_proven = false;
     // Necessary to look for functions first
     let extractor = egg::Extractor::new(&self.egraph, AstSize);
-    println!("Proving {} failed, egraph is of size {}, looking for generalizations...", self.name, self.egraph.total_size());
+    println!("Proving {} failed, egraph is of size {}, looking for congruence closure lemmas...", self.name, self.egraph.total_size());
     for c1 in self.egraph.classes() {
       for c2 in self.egraph.classes() {
         // We've tried this already
@@ -1121,6 +1121,37 @@ impl<'a> Goal<'a> {
       }
     }
     any_proven
+  }
+
+  fn look_for_generalizations(&self) -> bool {
+    println!("Proving {} failed, egraph is of size {}, looking for generalizations...", self.name, self.egraph.total_size());
+    let lhs_id = self.egraph.find(self.eq.lhs.id);
+    let rhs_id = self.egraph.find(self.eq.rhs.id);
+
+    let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
+
+    for lhs_expr in exprs.get(&lhs_id).unwrap() {
+      if CONFIG.irreducible_only && self.is_reducible(lhs_expr) {
+        continue;
+      }
+      let lhs_sexp = parser::parse_str(&lhs_expr.to_string()).unwrap();
+      let lhs_nontrivial_subexprs = nontrivial_sexp_subexpressions_containing_vars(&lhs_sexp);
+      for rhs_expr in exprs.get(&rhs_id).unwrap() {
+        if CONFIG.irreducible_only && self.is_reducible(rhs_expr) {
+          continue;
+        }
+        let rhs_sexp = parser::parse_str(&rhs_expr.to_string()).unwrap();
+        let rhs_nontrivial_subexprs = nontrivial_sexp_subexpressions_containing_vars(&rhs_sexp);
+        for (rhs_subexpr_str, subexpr) in &rhs_nontrivial_subexprs {
+          // should be the same subexpr so we don't need to bind it
+          if let Some(_) = lhs_nontrivial_subexprs.get(rhs_subexpr_str) {
+            let generalized = Sexp::String("FRESH".to_string());
+            println!("Candidate: {} === {}", substitute_sexp(&rhs_sexp, subexpr, &generalized), substitute_sexp(&lhs_sexp, subexpr, &generalized));
+          }
+        }
+      }
+    }
+    true
   }
 }
 
@@ -1326,9 +1357,16 @@ pub fn prove(mut goal: Goal, is_cyclic: bool) -> (Outcome, ProofState) {
           println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
         }
       }
-      if CONFIG.look_for_generalizations && !is_cyclic {
+      if CONFIG.look_for_cc_lemmas && !is_cyclic {
         // If we can prove the goal with a generalization, continue going to
         // see if we could prove the other goals too.
+        if goal.look_for_cc_lemmas() {
+          // NOTE: We don't insert an explanation for this, so don't try to
+          // generate a proof for it!
+          continue;
+        }
+      }
+      if CONFIG.look_for_generalizations && !is_cyclic {
         if goal.look_for_generalizations() {
           // NOTE: We don't insert an explanation for this, so don't try to
           // generate a proof for it!
