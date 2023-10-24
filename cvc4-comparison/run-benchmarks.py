@@ -9,13 +9,19 @@ DEFAULT_TIME_LIMIT_MS = 30000
 # Assumed UTF-8
 SHELL_ENCODING = 'utf-8'
 
-def make_cvc4_args(time_limit):
-    # --stats required for timing and file info
+def make_cvc4_i_args(time_limit):
+    # --stats and --tlimit required for timing and file info
     # All other required for running in inductive theorem proving mode
     # (see https://lara.epfl.ch/~reynolds/VMCAI2015-ind/)
     return ['--quant-ind', '--quant-cf', '--full-saturate-quant', '--stats', '--tlimit', str(time_limit)]
 
-def run_file(cvc4_binary, filename, cvc4_args=make_cvc4_args(DEFAULT_TIME_LIMIT_MS), quiet=False):
+def make_cvc4_ig_args(time_limit):
+    # --stats required for timing and file info
+    # All other required for running in theory exploration theorem proving mode
+    # (see https://lara.epfl.ch/~reynolds/VMCAI2015-ind/)
+    return ['--quant-ind',  '--quant-cf', '--conjecture-gen', '--conjecture-gen-per-round=3', '--full-saturate-quant', '--stats', '--tlimit', str(time_limit)]
+
+def run_file(cvc4_binary, filename, cvc4_args, quiet=False):
     '''
     Runs an SMT2 file containing a theorem and returns whether it was proven
     successfully and the time taken
@@ -63,6 +69,9 @@ if __name__ == '__main__':
     parser.add_argument('-q', '--quiet',
                         help='Suppress output.',
                         )
+    parser.add_argument('-g', '--theory-exploration', action='store_true',
+                        help='Runs CVC4 in theory exploration mode (defaults to inductive mode).',
+                        )
 
     args = parser.parse_args()
     cvc4_binary = args.cvc4_binary
@@ -74,7 +83,7 @@ if __name__ == '__main__':
     assert(cvc4_binary.is_file())
     assert(target.is_dir() or target.is_file())
 
-    cvc4_args = make_cvc4_args(timeout)
+    cvc4_args = make_cvc4_ig_args(timeout) if args.theory_exploration else make_cvc4_i_args(timeout)
 
     filenames = []
     if target.is_file():
