@@ -1,7 +1,8 @@
-use crate::ast::{Context, Env, Type, SSubst, resolve_sexp, Expr, is_constructor};
+use crate::ast::{Context, Env, Type, SSubst, resolve_sexp, Expr, is_constructor, is_var};
 use crate::config::CONFIG;
 use crate::egraph::extract_with_node;
 use egg::*;
+use itertools::repeat_n;
 use rand::{thread_rng, Rng};
 use rand::distributions::uniform::SampleUniform;
 use rand::distributions::weighted::WeightedIndex;
@@ -139,12 +140,16 @@ pub struct CvecAnalysis {
   num_rolls: usize,
   /// How many random terms will we generate per type?
   num_random_terms_per_type: usize,
+  pub reductions: Vec<Rewrite<SymbolLang, ()>>,
+  /// This is necessary to avoid infinitely looping when we rebuild the e-graph
+  /// analysis for cycles. We will update analyses that have older timestamps, but
+  /// break the loop when we try to merge analyses with the same timestamp.
+  pub timestamp: usize,
   // TODO: Add hashmap from Cvec to Id that we can use to efficiently find
   // candidate equalities.
 }
 
 impl Default for CvecAnalysis {
-  /// You should probably not call default on this
   fn default() -> Self {
     Self {
       cvec_egraph: RefCell::new(EGraph::new(())),
@@ -153,12 +158,14 @@ impl Default for CvecAnalysis {
       term_max_depth: CONFIG.cvec_term_max_depth,
       num_rolls: CONFIG.cvec_num_rolls,
       num_random_terms_per_type: CONFIG.cvec_num_random_terms_per_type,
+      reductions: vec!(),
+      timestamp: 0,
     }
   }
 }
 
 impl CvecAnalysis {
-  pub fn new(cvec_size: usize, term_max_depth: usize, max_tries_to_make_distinct_term: usize, num_random_terms_per_type: usize) -> Self {
+  pub fn new(cvec_size: usize, term_max_depth: usize, max_tries_to_make_distinct_term: usize, num_random_terms_per_type: usize, reductions: Vec<Rewrite<SymbolLang, ()>>) -> Self {
     assert!(cvec_size < num_random_terms_per_type, "num_random_terms_per_type must be greater than cvec_size");
     Self {
       cvec_egraph: RefCell::new(EGraph::new(())),
@@ -167,6 +174,8 @@ impl CvecAnalysis {
       term_max_depth,
       num_rolls: max_tries_to_make_distinct_term,
       num_random_terms_per_type,
+      reductions,
+      timestamp: 0,
     }
   }
 
@@ -216,19 +225,30 @@ impl CvecAnalysis {
 
   }
 
+  pub fn saturate(&mut self) {
+    self.cvec_egraph.replace_with(|egraph|{
+      let runner = Runner::default()
+        .with_egraph(egraph.to_owned())
+        .run(&self.reductions);
+      runner.egraph
+    });
+  }
+
 }
 
 /// Returns None for incomparable types (contradictions)
 pub fn cvecs_equal(cvec_analysis: &CvecAnalysis, cvec_1: &Cvec, cvec_2: &Cvec) -> Option<bool> {
-  if cvec_1.is_contradiction() || cvec_2.is_contradiction() {
-    return None;
+  match (cvec_1, cvec_2) {
+    (Cvec::Cvec(cv1), Cvec::Cvec(cv2)) => {
+      Some(zip(cv1.iter(), cv2.iter()).all(|(id1, id2)| {
+        let resolved_id1 = cvec_analysis.cvec_egraph.borrow_mut().find(*id1);
+        let resolved_id2 = cvec_analysis.cvec_egraph.borrow_mut().find(*id2);
+        resolved_id1 == resolved_id2
+      }))
+    }
+    _ => None,
   }
 
-  Some(cvec_1.zip(cvec_2).iter().all(|(id1, id2)| {
-    let resolved_id1 = cvec_analysis.cvec_egraph.borrow_mut().find(*id1);
-    let resolved_id2 = cvec_analysis.cvec_egraph.borrow_mut().find(*id2);
-    resolved_id1 == resolved_id2
-  }))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,135 +260,158 @@ pub enum Cvec {
   /// two distinct values), but once we construct Cvecs recursively there
   /// is no guarantee of distinct valuations.
   Cvec(Vec<Id>),
-  /// Singletons are vars that we can't make types for or constructors, we store
-  /// the single Id of the term they inhabit in the CvecAnalysis EGraph.
-  Singleton(Id),
-  /// Cvecs that we will not check for contradictions. These most often come
-  /// from case splits. Variables previously can take on a range of values,
-  /// but after a case split, they are narrowed.
-  ///
-  /// These may not be of size CvecAnalysis.cvec_size, and if for some reason we
-  /// need to compare with a Cvec, we will repeat its length to match the length
-  /// of it.
-  // TrustedCvec(Vec<Id>),
-  /// Arises when we union two things that disagree on their CVecs,
-  /// we store the Ids of the terms in the CvecAnalysis that disagree.
-  ///
-  /// This overrides other analyses, although we should catch it and fail
-  /// quickly.
-  Contradiction(Id, Id),
+  /// We don't know how to evaluate this cvec yet (possibly because we haven't
+  /// given information about it)
+  Stuck,
+  // /// Cvecs that we will not check for contradictions. These most often come
+  // /// from case splits. Variables previously can take on a range of values,
+  // /// but after a case split, they are narrowed.
+  // ///
+  // /// These may not be of size CvecAnalysis.cvec_size, and if for some reason we
+  // /// need to compare with a Cvec, we will repeat its length to match the length
+  // /// of it.
+  // // TrustedCvec(Vec<Id>),
+  // /// Arises when we union two things that disagree on their CVecs,
+  // /// we store the Ids of the terms in the CvecAnalysis that disagree.
+  // ///
+  // /// This overrides other analyses, although we should catch it and fail
+  // /// quickly.
+  // Contradiction(Id, Id),
 }
 
 impl Cvec {
   // FIXME: Should be an iterator, also fix code reuse below
-  pub fn zip(&self, other: &Cvec) -> Vec<(Id, Id)> {
-    match (self, other) {
-      (Cvec::Singleton(s), Cvec::Singleton(o)) => {
-        vec!((*s, *o))
-      }
-      // Dunno how to make the types work here or how to dereference the ids.
-      // Someone can fix this later.
-      (Cvec::Cvec(s), Cvec::Singleton(o)) => {
-        zip(s, repeat(o)).map(|(e1, e2)| (*e1, *e2)).collect()
-      }
-      (Cvec::Singleton(s), Cvec::Cvec(o)) => {
-        zip(repeat(s), o).map(|(e1, e2)| (*e1, *e2)).collect()
-      }
-      (Cvec::Cvec(s), Cvec::Cvec(o)) => {
-        zip(s, o).map(|(e1, e2)| (*e1, *e2)).collect()
-      }
-      _ => Vec::default(),
-    }
-  }
+  // pub fn zip(&self, other: &Cvec) -> Vec<(Id, Id)> {
+  //   match (self, other) {
+  //     // (Cvec::Stuck(s), Cvec::Stuck(o)) => {
+  //     //   vec!((*s, *o))
+  //     // }
+  //     // // Dunno how to make the types work here or how to dereference the ids.
+  //     // // Someone can fix this later.
+  //     // (Cvec::Cvec(s), Cvec::Stuck(o)) => {
+  //     //   zip(s, repeat(o)).map(|(e1, e2)| (*e1, *e2)).collect()
+  //     // }
+  //     // (Cvec::Stuck(s), Cvec::Cvec(o)) => {
+  //     //   zip(repeat(s), o).map(|(e1, e2)| (*e1, *e2)).collect()
+  //     // }
+  //     (Cvec::Cvec(s), Cvec::Cvec(o)) => {
+  //       zip(s, o).map(|(e1, e2)| (*e1, *e2)).collect()
+  //     }
+  //     _ => Vec::default(),
+  //   }
+  // }
 
-  pub fn is_contradiction(&self) -> bool {
-    match self {
-      Cvec::Contradiction(..) => true,
-      _ => false,
-    }
-  }
+  // pub fn is_contradiction(&self) -> bool {
+  //   match self {
+  //     Cvec::Contradiction(..) => true,
+  //     _ => false,
+  //   }
+  // }
 
   /// Calls get on Cvecs.
-  /// Always succeeds for Singletons, returning the sole Id.
-  /// Always fails for Contradictions.
+  /// Always fails for stuck or contradictory cvecs.
   pub fn get_at_index(&self, index: usize) -> Option<&Id> {
     match self {
       Cvec::Cvec(cv) => cv.get(index),
-      Cvec::Singleton(id) => Some(id),
-      Cvec::Contradiction(..) => None,
+      _ => None,
     }
   }
 
   fn make(egraph: &EGraph<SymbolLang, CycleggAnalysis>, enode: &SymbolLang) -> Self {
+    // println!("making cvec for enode: {}", enode);
     if enode.is_leaf() {
-      let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(enode.clone());
-      return Cvec::Singleton(id);
+      // We can't evaluate vars (we need outside input, i.e. type information to create them)
+      // This could be resolved by having a type information analysis.
+      if is_var(&enode.op.to_string()) {
+        return Cvec::Stuck;
+      } else {
+        // This cvec is for a value like Z or Leaf, so make a concrete cvec out of it.
+        let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(enode.clone());
+        let cvec = repeat_n(id, egraph.analysis.cvec_analysis.cvec_size).collect();
+        return Cvec::Cvec(cvec);
+      }
     }
 
     let op = enode.op;
-    let mut has_only_singleton_children = true;
-    let mut singleton_children = Vec::new();
-    // Don't make new terms if any child is a contradiction,
-    // instead bubble it up
-    for child in enode.children() {
-      let child_data = &egraph[*child].data.cvec_data;
-      if child_data.is_contradiction() {
-        return child_data.clone();
-      }
-      if let Cvec::Singleton(id) = child_data {
-        singleton_children.push(*id);
-      } else {
-        has_only_singleton_children = false;
-      }
-    }
-
-    // If all of the children are singletons, we only need to create a
-    // singleton. This is arguably a premature optimization.
-    if has_only_singleton_children {
-      let new_enode = SymbolLang::new(op, singleton_children);
-      let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(new_enode);
-      return Cvec::Singleton(id);
-    }
 
     let mut new_cvec = Vec::new();
     // The max size of a Cvec should be this
     for i in 0..egraph.analysis.cvec_analysis.cvec_size {
       // Get the ith element of each cvec.
-      let cvec_children = enode.children().iter().map(|child| *egraph[*child].data.cvec_data.get_at_index(i).unwrap()).collect();
-      let new_enode = SymbolLang::new(op, cvec_children);
-      let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(new_enode);
-      new_cvec.push(id);
+      match enode.children().iter().map(|child| egraph[*child].data.cvec_data.get_at_index(i).map(|id| *id)).collect() {
+        // If it's stuck, then propagate that it's stuck
+        None => return Cvec::Stuck,
+        Some(cvec_children) => {
+          let new_enode = SymbolLang::new(op, cvec_children);
+          let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(new_enode);
+          new_cvec.push(id);
+        }
+      }
     }
     Cvec::Cvec(new_cvec)
   }
 
-  fn merge(&mut self, b: Self, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> DidMerge {
-    *self = b;
-    // FIXME: why do we infinitely loop if we don't return
-    // DidMerge(false, false) here?
-    return DidMerge(false, false);
-
-    // TODO: Check for contradictions later
-    for (id1, id2) in self.zip(&b) {
-      let resolved_id1 = egraph.borrow_mut().find(id1);
-      let resolved_id2 = egraph.borrow_mut().find(id2);
-      if resolved_id1 != resolved_id2 {
-        *self = Cvec::Contradiction(resolved_id1, resolved_id2);
-        return DidMerge(true, true)
-      }
-    }
+  fn merge(&mut self, a_timestamp: usize, b: Self, b_timestamp: usize, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> DidMerge {
+    // println!("merging cvecs: {:?} and {:?}", self, b);
+    // Always replace a stuck cvec
     match (&self, &b) {
-      // Don't bother looking if it's a contradiction
-      (Cvec::Contradiction(..), _) => DidMerge(false, false),
-      // Otherwise, overwrite if we find one
-      (_, Cvec::Contradiction(..)) => {
+      (Cvec::Stuck, Cvec::Cvec(_)) => {
         *self = b;
         DidMerge(true, false)
       }
-      // If we got this far, we didn't find any contradictions,
-      // so we can use either Cvec.
-      _ => DidMerge(false, false),
+      (Cvec::Cvec(cv1), Cvec::Cvec(cv2)) => {
+        let different = zip(cv1.iter(), cv2.iter()).any(|(id1, id2)|{
+          let resolved_id1 = egraph.borrow_mut().find(*id1);
+          let resolved_id2 = egraph.borrow_mut().find(*id2);
+          if resolved_id1 != resolved_id2 {
+            let borrowed_egraph = &egraph.borrow();
+            let extractor = Extractor::new(borrowed_egraph, AstSize);
+            let expr1 = extractor.find_best(resolved_id1).1;
+            let expr2 = extractor.find_best(resolved_id2).1;
+            // println!("differing cvecs: {} {}", expr1, expr2);
+          }
+          resolved_id1 != resolved_id2
+        });
+        if different && a_timestamp < b_timestamp {
+          *self = b;
+          DidMerge(true, false)
+        } else {
+          DidMerge(false, true)
+        }
+      }
+      (Cvec::Cvec(_), Cvec::Stuck) => {
+        DidMerge(false, true)
+      }
+      (Cvec::Stuck, Cvec::Stuck) => {
+        DidMerge(false, false)
+      }
     }
+
+    // // FIXME: why do we infinitely loop if we don't return
+    // // DidMerge(false, false) here?
+    // DidMerge(false, false)
+
+    // TODO: Check for contradictions later
+    // for (id1, id2) in self.zip(&b) {
+    //   let resolved_id1 = egraph.borrow_mut().find(id1);
+    //   let resolved_id2 = egraph.borrow_mut().find(id2);
+    //   if resolved_id1 != resolved_id2 {
+    //     *self = Cvec::Contradiction(resolved_id1, resolved_id2);
+    //     return DidMerge(true, true)
+    //   }
+    // }
+    // match (&self, &b) {
+    //   // Don't bother looking if it's a contradiction
+    //   (Cvec::Contradiction(..), _) => DidMerge(false, false),
+    //   // Otherwise, overwrite if we find one
+    //   (_, Cvec::Contradiction(..)) => {
+    //     *self = b;
+    //     DidMerge(true, false)
+    //   }
+    //   // If we got this far, we didn't find any contradictions,
+    //   // so we can use either Cvec.
+    //   _ => DidMerge(false, false),
+    // }
   }
 }
 
@@ -376,8 +419,9 @@ impl Cvec {
 /// The order of variants is important: since we use the derived order during the merge.
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone)]
 pub enum CanonicalForm {
-  /// This class has neither constructors nor variables
-  Stuck,
+  /// This class has neither constructors nor variables, so it is a function we
+  /// can't evaluate
+  Stuck(SymbolLang),
   /// This class has a variable but no constructors
   Var(SymbolLang),
   /// This class has a single constructor;
@@ -391,6 +435,15 @@ pub enum CanonicalForm {
 }
 
 impl CanonicalForm {
+
+  pub fn get_enode(&self) -> &SymbolLang {
+    match self {
+      // For an inconsistent anlysis, we can take any enode
+      CanonicalForm::Stuck(enode) | CanonicalForm::Var(enode) | CanonicalForm::Const(enode) | CanonicalForm::Inconsistent(enode, _) => {
+        enode
+      }
+    }
+  }
 
   pub fn merge(&mut self, from: Self) -> DidMerge {
     // If we are merging classes with two different constructors,
@@ -414,7 +467,7 @@ impl CanonicalForm {
     } else if enode.children.is_empty() {
       CanonicalForm::Var(enode.clone())
     } else {
-      CanonicalForm::Stuck
+      CanonicalForm::Stuck(enode.clone())
     }
   }
 
@@ -532,15 +585,17 @@ impl CanonicalFormAnalysis {
 #[derive(Debug, Clone, Default)]
 pub struct CycleggAnalysis {
   pub cvec_analysis: CvecAnalysis,
+  pub blocking_vars: HashSet<Symbol>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CycleggData {
   pub cvec_data: Cvec,
-  /// Should we force update the Cvec?
-  ///
-  /// This skips checking for contradictions, which is necessary when we case
-  /// split.
+  pub timestamp: usize,
+  // /// Should we force update the Cvec?
+  // ///
+  // /// This skips checking for contradictions, which is necessary when we case
+  // /// split.
   // pub force_update_cvec: bool,
   // /// Older data will take priority over younger data if we are trying to merge
   // /// two CycleggData's Cvecs and both have force_update_cvec set.
@@ -579,7 +634,9 @@ impl Analysis<SymbolLang> for CycleggAnalysis {
     //       }
     //     }
     //   };
-    a.cvec_data.merge(b.cvec_data, &self.cvec_analysis.cvec_egraph)
+    self.cvec_analysis.saturate();
+    merge_max(&mut a.timestamp, b.timestamp)
+      | a.cvec_data.merge(a.timestamp, b.cvec_data, b.timestamp, &self.cvec_analysis.cvec_egraph)
       | a.canonical_form_data.merge(b.canonical_form_data)
   }
 
@@ -590,11 +647,13 @@ impl Analysis<SymbolLang> for CycleggAnalysis {
       cvec_data,
       // force_update_cvec: false,
       // age: 0,
-      canonical_form_data
+      canonical_form_data,
+      timestamp: egraph.analysis.cvec_analysis.timestamp,
     }
   }
 
   fn modify(egraph: &mut EGraph<SymbolLang, Self>, id: Id) {
-    CanonicalForm::modify(egraph, id)
+    CanonicalForm::modify(egraph, id);
+    // egraph.analysis.cvec_analysis.saturate();
   }
 }

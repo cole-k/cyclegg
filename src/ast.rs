@@ -2,7 +2,7 @@ use egg::*;
 use lazy_static::lazy_static;
 
 use indexmap::IndexMap;
-use std::{collections::HashMap, fmt::Display, str::FromStr};
+use std::{collections::{HashMap, HashSet}, fmt::Display, str::FromStr};
 use symbolic_expressions::{Sexp, SexpError};
 
 use crate::config::CONFIG;
@@ -194,6 +194,70 @@ where
   }
 }
 
+
+/// Unlike map_sexp, this substitutes Sexp -> Sexp, so the base case is when f
+/// returns Some(new_sexp), which replaces the Sexp entirely.
+pub fn map_sexp_sexp<F>(f: F, sexp: &Sexp) -> Sexp
+where
+  F: Copy + Fn(&Sexp) -> Option<Sexp>,
+{
+  f(sexp).unwrap_or_else(|| {
+    match sexp {
+      // Recursive case, try mapping over each child
+      Sexp::List(list) => Sexp::List(list.iter().map(|s| map_sexp_sexp(f, s)).collect()),
+      // Base case, f doesn't apply so just return the sexp unchanged
+      _ => sexp.clone(),
+    }
+  })
+}
+
+/// Iterates over every sub-sexp in the sexp, substituting it entirely if it
+/// matches the substitution.
+pub fn substitute_sexp(sexp: &Sexp, from: &Sexp, to: &Sexp) -> Sexp {
+  map_sexp_sexp(|interior_sexp| {
+    if interior_sexp == from {
+      Some(to.clone())
+    } else {
+      None
+    }
+  }, sexp)
+}
+
+/// Returns every subexpression in the sexp that contains a var, ignoring base
+/// cases. This is basically every subexpression we would consider to
+/// generalize.
+///
+/// Since Sexps can't be hashed we hack the set using their string
+/// representation...
+pub fn nontrivial_sexp_subexpressions_containing_vars(sexp: &Sexp) -> HashMap<String, Sexp> {
+  let mut subexprs = HashMap::default();
+  add_sexp_subexpressions(sexp, &mut subexprs);
+  subexprs
+}
+
+fn add_sexp_subexpressions(sexp: &Sexp, subexprs: &mut HashMap<String, Sexp>) -> bool {
+  let mut any_child_has_var = false;
+  match sexp {
+    Sexp::List(children) => {
+      let mut child_iter = children.iter();
+      // The root is a function so we shouldn't add it
+      child_iter.next();
+      child_iter.for_each(|child| {any_child_has_var |= add_sexp_subexpressions(child, subexprs);});
+    }
+    Sexp::String(s) if is_var(s) => {
+      // We won't add the variable, but we will add every subexpression
+      // containing it.
+      return true;
+    }
+    _ => {},
+  }
+  // If there's a variable in this sexp, we can generalize it.
+  if any_child_has_var {
+    subexprs.insert(sexp.to_string(), sexp.clone());
+  }
+  any_child_has_var
+}
+
 pub fn contains_function(sexp: &Sexp) -> bool {
   match sexp {
     Sexp::List(list) => {
@@ -210,38 +274,41 @@ pub fn contains_function(sexp: &Sexp) -> bool {
   }
 }
 
-fn find_instantiations_helper(proto: &Sexp, actual: &Sexp, instantiations_map: &mut SSubst) {
+fn find_instantiations_helper(proto: &Sexp, actual: &Sexp, instantiations_map: &mut SSubst) -> bool {
   match (proto, actual) {
     (Sexp::Empty, _) | (_, Sexp::Empty) => unreachable!(),
     (Sexp::String(proto_str), actual_sexp) => {
-      if is_constructor(proto_str) {
-        // It's a constant in the proto, which means it should be a constant
-        // (i.e. a string with the same value) in the actual
-        assert!(actual_sexp.is_string());
-        assert_eq!(proto_str, actual_sexp.string().unwrap());
-      } else {
-        // Otherwise, it's a type variable so we can instantiate it
+      if is_var(proto_str) {
+        // It's a type variable so we can instantiate it
         let instantiation = actual_sexp.clone();
         if let Some(existing_instantiation) = instantiations_map.get(proto_str) {
           // Past instantiations must agree
-          assert_eq!(&instantiation, existing_instantiation);
+          &instantiation == existing_instantiation
         } else {
           instantiations_map.insert(proto_str.clone(), instantiation);
+          true
         }
+      } else {
+        // Otherwise, it must match the actual
+        proto == actual
       }
     }
     (Sexp::List(proto_list), actual_sexp) => {
       // The actual must match the proto
-      assert!(actual_sexp.is_list());
+      if !actual_sexp.is_list() {
+        return false;
+      }
       let actual_list = actual_sexp.list().unwrap();
       // Including lengths.
-      assert_eq!(proto_list.len(), actual_list.len());
+      if proto_list.len() != actual_list.len() {
+        return false;
+      }
       proto_list
         .iter()
         .zip(actual_list.iter())
-        .for_each(|(sub_proto, sub_actual)| {
+        .all(|(sub_proto, sub_actual)| {
           find_instantiations_helper(sub_proto, sub_actual, instantiations_map)
-        });
+        })
     }
   }
 }
@@ -254,10 +321,15 @@ fn find_instantiations_helper(proto: &Sexp, actual: &Sexp, instantiations_map: &
 ///     instantiations = {a: (List x), b: Nat}
 ///
 /// actual is assumed to be a valid instantiation of proto.
-pub fn find_instantiations(proto: &Type, actual: &Type) -> SSubst {
+pub fn find_instantiations(proto: &Sexp, actual: &Sexp) -> Option<SSubst> {
   let mut instantiations = HashMap::new();
-  find_instantiations_helper(&proto.repr, &actual.repr, &mut instantiations);
-  instantiations
+  let successful_instantiation = find_instantiations_helper(&proto, &actual, &mut instantiations);
+  if successful_instantiation {
+    Some(instantiations)
+  } else{
+    // The instantiations are bogus/partial if it is not successful
+    None
+  }
 }
 
 /// Resolves a Sexp using instantiations, but does not recursively resolve it.
@@ -298,6 +370,21 @@ pub fn recursively_resolve_variable(var: &str, instantiations: &SSubst) -> Sexp 
 
 pub fn is_constructor(var_name: &str) -> bool {
   var_name.chars().next().unwrap().is_uppercase()
+}
+
+pub fn is_var(var_name: &str) -> bool {
+  var_name.chars().next().unwrap().is_lowercase()
+}
+
+pub fn get_vars(e: &Expr) -> HashSet<Symbol>
+{
+  let mut vars = HashSet::new();
+  for n in e.as_ref() {
+    if n.is_leaf() && is_var(&n.op.to_string()) {
+      vars.insert(n.op);
+    }
+  }
+  vars
 }
 
 // Convert a symbol into a wildcard by prepending a '?' to it
@@ -360,6 +447,103 @@ pub fn mk_context(descr: &[(&str, &str)]) -> Context {
     ctx.insert(Symbol::from(*name), ty.parse().unwrap());
   }
   ctx
+}
+
+#[derive(Clone)]
+pub struct RawEquation {
+  pub lhs: Sexp,
+  pub rhs: Sexp,
+}
+
+impl RawEquation {
+
+  /// Creates a RawEquation, ensuring that it is in the right order
+  pub fn new(lhs: Sexp, rhs: Sexp) -> Self {
+    if lhs.to_string() < rhs.to_string() {
+      Self {
+        lhs, rhs
+      }
+    } else {
+      Self {
+        lhs: rhs,
+        rhs: lhs,
+      }
+    }
+  }
+
+  /// Creates a RawEquation from exprs, ensuring that it is in the right order
+  pub fn from_exprs(lhs: &Expr, rhs: &Expr) -> Self {
+    let lhs_string = lhs.to_string();
+    let rhs_string = rhs.to_string();
+    let lhs = symbolic_expressions::parser::parse_str(&lhs_string).unwrap();
+    let rhs = symbolic_expressions::parser::parse_str(&rhs_string).unwrap();
+    if lhs_string < rhs_string {
+      RawEquation {
+        lhs, rhs
+      }
+    } else {
+      RawEquation {
+        lhs: rhs,
+        rhs: lhs
+      }
+    }
+  }
+
+
+}
+
+impl PartialEq for RawEquation {
+    fn eq(&self, other: &Self) -> bool {
+      self.partial_cmp(other) == Some(std::cmp::Ordering::Equal)
+    }
+}
+
+// Can the vars of this expression be instantiated to the other expression?
+fn cmp_sexp(sexp1: &Sexp, sexp2: &Sexp) -> Option<std::cmp::Ordering> {
+  let sexp1_leq_sexp2 = find_instantiations(sexp1, sexp2).is_some();
+  let sexp2_leq_sexp1 = find_instantiations(sexp2, sexp1).is_some();
+  match (sexp1_leq_sexp2, sexp2_leq_sexp1) {
+    (true, true) => Some(std::cmp::Ordering::Equal),
+    (true, false) => Some(std::cmp::Ordering::Less),
+    (false, true) => Some(std::cmp::Ordering::Greater),
+    (false, false) => None,
+  }
+}
+
+impl PartialOrd for RawEquation {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+      let lhs_cmp = cmp_sexp(&self.lhs, &other.lhs);
+      let rhs_cmp = cmp_sexp(&self.rhs, &other.rhs);
+      // They should be the same result, otherwise, they aren't equal
+      if lhs_cmp == rhs_cmp {
+        lhs_cmp
+      } else {
+        None
+      }
+    }
+}
+
+#[derive(Clone)]
+pub struct RawEqWithParams {
+  pub eq: RawEquation,
+  pub params: Vec<(Symbol, Type)>
+}
+
+impl RawEqWithParams {
+    pub fn new(eq: RawEquation, params: Vec<(Symbol, Type)>) -> Self { Self { eq, params } }
+
+}
+
+impl PartialEq for RawEqWithParams {
+    fn eq(&self, other: &Self) -> bool {
+        self.eq.eq(&other.eq)
+    }
+}
+
+impl PartialOrd for RawEqWithParams {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+      self.eq.partial_cmp(&other.eq)
+    }
 }
 
 // CK: Function is unused and I didn't feel like extending it to account for the change from

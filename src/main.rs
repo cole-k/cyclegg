@@ -1,4 +1,5 @@
 use colored::Colorize;
+use std::collections::HashMap;
 use std::fs::*;
 use std::io::{Result, Write};
 use std::time::{Duration, Instant};
@@ -146,7 +147,7 @@ fn main() -> Result<()> {
 fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
   CONFIG.set_cyclic(cyclic);
   let start_time = Instant::now();
-  let (result, mut proof_state) = goal::prove(goal.copy());
+  let (result, mut proof_state) = goal::prove(goal.copy(), 0, LemmasState::default());
   let duration = start_time.elapsed();
   if CONFIG.emit_proofs {
     if let Outcome::Valid = result {
@@ -164,6 +165,14 @@ fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
       );
       let mut file = File::create(CONFIG.proofs_directory.join(format!("{}.hs", filename)))?;
       file.write_all(explanation.as_bytes())?;
+    }
+  }
+  if result == Outcome::Timeout || result == Outcome::Unknown {
+    for (i, chain) in proof_state.lemmas_state.possible_lemmas.chains.iter().enumerate() {
+      println!("Chain {}", i);
+      for elem in chain.chain.iter() {
+        println!("Possible lemma: {} === {}", elem.eq.lhs, elem.eq.rhs);
+      }
     }
   }
   Ok((result, duration))

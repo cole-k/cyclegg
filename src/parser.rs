@@ -28,11 +28,6 @@ fn make_rewrite_for_defn<A>(name: &str, args: &Sexp, value: &Sexp) -> Rewrite<Sy
   Rewrite::new(lhs, searcher, applier).unwrap()
 }
 
-pub struct RawEquation {
-  pub lhs: Sexp,
-  pub rhs: Sexp,
-}
-
 pub struct RawGoal {
   pub name: String,
   pub equation: RawEquation,
@@ -344,7 +339,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
           let lhs: Sexp = mangle_sexp(&decl.list()?[index]);
           let rhs: Sexp = mangle_sexp(&decl.list()?[index + 1]);
           index += 2;
-          Some(RawEquation { lhs, rhs })
+          Some(RawEquation::new(lhs, rhs))
         } else {
           None
         };
@@ -352,7 +347,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         let lhs: Sexp = mangle_sexp(&decl.list()?[index]);
         let rhs: Sexp = mangle_sexp(&decl.list()?[index + 1]);
         index += 2;
-        let equation = RawEquation { lhs, rhs };
+        let equation = RawEquation::new(lhs, rhs);
 
         let mut local_rules = vec![];
         // If there's more to parse, these must be lemmas.
