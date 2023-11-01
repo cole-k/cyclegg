@@ -274,7 +274,8 @@ pub fn contains_function(sexp: &Sexp) -> bool {
   }
 }
 
-fn find_instantiations_helper(proto: &Sexp, actual: &Sexp, instantiations_map: &mut SSubst) -> bool {
+fn find_instantiations_helper<F>(proto: &Sexp, actual: &Sexp, is_var: F, instantiations_map: &mut SSubst) -> bool
+where F: FnOnce(&str) -> bool + Copy {
   match (proto, actual) {
     (Sexp::Empty, _) | (_, Sexp::Empty) => unreachable!(),
     (Sexp::String(proto_str), actual_sexp) => {
@@ -307,7 +308,7 @@ fn find_instantiations_helper(proto: &Sexp, actual: &Sexp, instantiations_map: &
         .iter()
         .zip(actual_list.iter())
         .all(|(sub_proto, sub_actual)| {
-          find_instantiations_helper(sub_proto, sub_actual, instantiations_map)
+          find_instantiations_helper(sub_proto, sub_actual, is_var, instantiations_map)
         })
     }
   }
@@ -321,9 +322,10 @@ fn find_instantiations_helper(proto: &Sexp, actual: &Sexp, instantiations_map: &
 ///     instantiations = {a: (List x), b: Nat}
 ///
 /// actual is assumed to be a valid instantiation of proto.
-pub fn find_instantiations(proto: &Sexp, actual: &Sexp) -> Option<SSubst> {
+pub fn find_instantiations<F>(proto: &Sexp, actual: &Sexp, is_var: F) -> Option<SSubst>
+where F: FnOnce(&str) -> bool + Copy {
   let mut instantiations = HashMap::new();
-  let successful_instantiation = find_instantiations_helper(&proto, &actual, &mut instantiations);
+  let successful_instantiation = find_instantiations_helper(&proto, &actual, is_var, &mut instantiations);
   if successful_instantiation {
     Some(instantiations)
   } else{
@@ -449,7 +451,7 @@ pub fn mk_context(descr: &[(&str, &str)]) -> Context {
   ctx
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RawEquation {
   pub lhs: Sexp,
   pub rhs: Sexp,
@@ -492,16 +494,11 @@ impl RawEquation {
 
 }
 
-impl PartialEq for RawEquation {
-    fn eq(&self, other: &Self) -> bool {
-      self.partial_cmp(other) == Some(std::cmp::Ordering::Equal)
-    }
-}
-
 // Can the vars of this expression be instantiated to the other expression?
-fn cmp_sexp(sexp1: &Sexp, sexp2: &Sexp) -> Option<std::cmp::Ordering> {
-  let sexp1_leq_sexp2 = find_instantiations(sexp1, sexp2).is_some();
-  let sexp2_leq_sexp1 = find_instantiations(sexp2, sexp1).is_some();
+fn cmp_sexp<F>(sexp1: &Sexp, sexp2: &Sexp, is_var: F) -> Option<std::cmp::Ordering>
+where F: FnOnce(&str) -> bool + Copy {
+  let sexp1_leq_sexp2 = find_instantiations(sexp1, sexp2, is_var).is_some();
+  let sexp2_leq_sexp1 = find_instantiations(sexp2, sexp1, is_var).is_some();
   match (sexp1_leq_sexp2, sexp2_leq_sexp1) {
     (true, true) => Some(std::cmp::Ordering::Equal),
     (true, false) => Some(std::cmp::Ordering::Less),
@@ -510,20 +507,7 @@ fn cmp_sexp(sexp1: &Sexp, sexp2: &Sexp) -> Option<std::cmp::Ordering> {
   }
 }
 
-impl PartialOrd for RawEquation {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-      let lhs_cmp = cmp_sexp(&self.lhs, &other.lhs);
-      let rhs_cmp = cmp_sexp(&self.rhs, &other.rhs);
-      // They should be the same result, otherwise, they aren't equal
-      if lhs_cmp == rhs_cmp {
-        lhs_cmp
-      } else {
-        None
-      }
-    }
-}
-
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct RawEqWithParams {
   pub eq: RawEquation,
   pub params: Vec<(Symbol, Type)>
@@ -536,14 +520,34 @@ impl RawEqWithParams {
 
 impl PartialEq for RawEqWithParams {
     fn eq(&self, other: &Self) -> bool {
-        self.eq.eq(&other.eq)
+      self.partial_cmp(other) == Some(std::cmp::Ordering::Equal)
     }
 }
 
 impl PartialOrd for RawEqWithParams {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-      self.eq.partial_cmp(&other.eq)
+      // let vars: HashSet<String> = self.params.iter().chain(other.params.iter()).map(|(var, _)| var.to_string()).collect();
+      let is_var = |s: &str| {
+        // vars.contains(s)
+        self.params.iter().chain(other.params.iter()).any(|(var, _)| s == &var.to_string())
+      };
+      let lhs_cmp = cmp_sexp(&self.eq.lhs, &other.eq.lhs, is_var);
+      let rhs_cmp = cmp_sexp(&self.eq.rhs, &other.eq.rhs, is_var);
+      // They should be the same result, otherwise, they aren't equal
+      if lhs_cmp == rhs_cmp {
+        lhs_cmp
+      } else {
+        None
+      }
     }
+}
+
+pub fn sexp_size(sexp: &Sexp) -> usize {
+  match sexp {
+    Sexp::Empty => 0,
+    Sexp::String(_) => 1,
+    Sexp::List(xs) => xs.iter().map(sexp_size).sum::<usize>() + 1,
+  }
 }
 
 // CK: Function is unused and I didn't feel like extending it to account for the change from

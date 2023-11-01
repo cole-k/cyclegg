@@ -53,7 +53,7 @@ pub fn print_expressions_in_eclass<L: egg::Language + std::fmt::Display, N: egg:
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ChainSet<T>
 where T: PartialOrd + PartialEq + Clone {
   pub chains: Vec<Chain<T>>
@@ -132,7 +132,7 @@ where T: PartialOrd + PartialEq + Clone {
 }
 
 /// Chains are nonempty sets in sorted order
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Chain<T>
 where T: PartialOrd + PartialEq {
   pub chain: VecDeque<T>

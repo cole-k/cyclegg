@@ -508,6 +508,11 @@ impl<'a> Goal<'a> {
     is_valid
   }
 
+  // FIXME: Somehow explanations are broken in check_validity
+  pub fn is_solved(&self) -> bool {
+    self.egraph.find(self.eq.lhs.id) == self.egraph.find(self.eq.rhs.id)
+  }
+
   /// Check whether an expression is reducible using this goal's reductions
   pub fn is_reducible(&self, expr: &Expr) -> bool {
     let mut local_graph: Eg = Default::default();
@@ -520,6 +525,7 @@ impl<'a> Goal<'a> {
     }
     false
   }
+
 
   fn make_rewrites_from(&self, lhs_id: Id, rhs_id: Id, premises: Vec<Equation>, exprs: HashMap<Id, Vec<Expr>>, state: &ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<String>) {
     let is_var = |v| self.local_context.contains_key(v);
@@ -877,7 +883,10 @@ impl<'a> Goal<'a> {
     // add the condition that was split on to our proof term. This is necessary
     // because for ITE splits we introduce a new variable that we bind an
     // expression to.
-    if var_str.starts_with(GUARD_PREFIX) {
+    //
+    // HACK: We might try to prove a generalization/cc lemma that contains a guard
+    // variable, in which case we will skip this part.
+    if var_str.starts_with(GUARD_PREFIX) && self.guard_exprs.contains_key(&var_str) {
       // There should only be two cases.
       assert_eq!(instantiated_cons_and_goals.len(), 2);
       state.proof.insert(
@@ -1092,7 +1101,7 @@ impl<'a> Goal<'a> {
   /// return the concrete types of constructor arguments.
   fn instantiate_constructor(con_ty: &Type, actual: &Type) -> Vec<Type> {
     let (args, ret) = con_ty.args_ret();
-    let instantiations = find_instantiations(&ret.repr, &actual.repr).unwrap();
+    let instantiations = find_instantiations(&ret.repr, &actual.repr, is_var).unwrap();
     let ret = args
       .iter()
       .map(|arg| Type::new(resolve_sexp(&arg.repr, &instantiations)))
@@ -1222,7 +1231,7 @@ impl<'a> Goal<'a> {
           // let (_, e1) = extractor.find_best(class_1_id);
           // let (_, e2) = extractor.find_best(class_2_id);
 
-          // let new_egraph = self.egraph.clone();
+          let new_egraph = self.egraph.clone();
           // // let exprs = get_all_expressions(&self.egraph, vec![class_1_id, class_2_id]);
           let mut exprs: HashMap<Id, Vec<Expr>> = vec![(class_1_id, vec![]), (class_2_id, vec![])]
           .into_iter()
@@ -1230,17 +1239,17 @@ impl<'a> Goal<'a> {
           exprs.insert(class_1_id, vec!(e1.clone()));
           exprs.insert(class_2_id, vec!(e2.clone()));
           let (new_rewrites, new_rewrite_names) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false);
-          // let rewrites = self.reductions.iter().chain(new_rewrites.values());
-          // let mut runner = Runner::default()
-          //   .with_explanations_enabled()
-          //   .with_egraph(new_egraph)
-          //   .run(rewrites);
-          // let (explanation, valid) = Goal::get_explanation_and_validity(&self.eq, &mut runner.egraph);
-          // if valid && explanation.is_none() {
-          //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
-          // }
-          if new_rewrite_names.len() > 0 {
-          // if let Some(_) = explanation {
+          let rewrites = self.reductions.iter().chain(new_rewrites.values());
+          let mut runner = Runner::default()
+            .with_explanations_enabled()
+            .with_egraph(new_egraph)
+            .run(rewrites);
+          let (explanation, valid) = Goal::get_explanation_and_validity(&self.eq, &mut runner.egraph);
+          if valid && explanation.is_none() {
+            println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
+          }
+          // if new_rewrite_names.len() > 0 {
+          if let Some(_) = explanation {
             // Another method would be to try finding all possible lemmas from these two e-classes
             // and then try to prove each, but this would be cumbersome and I figure that since
             // they're all equivalent the lemmas are probably equivalent too.
@@ -1286,11 +1295,11 @@ impl<'a> Goal<'a> {
             lemmas.push((RawEqWithParams::new(cc_lemma_eq, cc_lemma_params), new_goal));
 
             // println!("CC lemma: {} = {}", e1, e2);
-            // let (outcome, _) = prove(new_goal, state.depth + 1, state.cc_lemmas.clone());
+            // let (outcome, _) = prove(new_goal, state.depth + 1, state.lemmas_state.clone());
             // if let Outcome::Valid = outcome {
             //   println!("Proved");
             //   // Add the new lemmas
-            //   found_lemmas.extend(new_rewrite_names.iter().map(|rw_name| (rw_name.clone(), new_rewrites.get(rw_name).unwrap().clone())));
+            //   // found_lemmas.extend(new_rewrite_names.iter().map(|rw_name| (rw_name.clone(), new_rewrites.get(rw_name).unwrap().clone())));
             // }
           } else {
             // println!("CC lemma not useful: {} = {}", e1, e2);
@@ -1655,7 +1664,7 @@ pub enum ProofTerm {
 
 #[derive(Default, Clone)]
 pub struct LemmasState {
-  pub proven_lemmas: ChainSet<RawEquation>,
+  pub proven_lemmas: ChainSet<RawEqWithParams>,
   pub possible_lemmas: ChainSet<RawEqWithParams>,
   pub lemma_rewrites: HashMap<String, Rw>,
 }
@@ -1663,7 +1672,17 @@ pub struct LemmasState {
 impl LemmasState {
   pub fn add_possible_lemmas<I: IntoIterator<Item = RawEqWithParams>>(&mut self, iter: I) {
     // Ignore the lemma if we already have a lemma that subsumes it
-    self.possible_lemmas.extend(iter.into_iter().filter(|lemma| !self.proven_lemmas.contains_leq(&lemma.eq)));
+    self.possible_lemmas.extend(iter.into_iter().filter(|lemma| {
+      let is_proven = self.proven_lemmas.contains_leq(&lemma);
+      let is_too_big = CONFIG.max_lemma_size > 0
+        && sexp_size(&lemma.eq.lhs) + sexp_size(&lemma.eq.rhs) > CONFIG.max_lemma_size;
+      // if is_proven {
+      //   println!("skipping lemma {}={}", lemma.eq.lhs, lemma.eq.rhs);
+      // } else {
+      //   println!("adding lemma {}={}", lemma.eq.lhs, lemma.eq.rhs);
+      // }
+      !is_proven && !is_too_big
+    }));
   }
 }
 
@@ -1690,11 +1709,11 @@ impl<'a> ProofState<'a> {
   pub fn try_prove_lemmas(&mut self, goal: &Goal) {
     for chain in self.lemmas_state.possible_lemmas.chains.iter() {
       for raw_eq_with_params in chain.chain.iter() {
-        let goal_name = format!("lemma-{}={}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
-        println!("trying to prove {}", goal_name);
-        if self.lemmas_state.proven_lemmas.contains_leq(&raw_eq_with_params.eq) {
+        if self.lemmas_state.proven_lemmas.contains_leq(&raw_eq_with_params) {
           continue;
         }
+        let goal_name = format!("lemma-{}={}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+        println!("trying to prove {}", goal_name);
         let new_goal = Goal::top(&goal_name,
                                  &raw_eq_with_params.eq,
                                  &None,
@@ -1712,10 +1731,13 @@ impl<'a> ProofState<'a> {
         exprs.insert(lhs_id, vec!(new_goal.eq.lhs.expr.clone()));
         exprs.insert(rhs_id, vec!(new_goal.eq.rhs.expr.clone()));
         let (rws, _) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, &self, false);
-        let (outcome, _) = prove(new_goal, self.depth + 1, self.lemmas_state.clone());
+        let mut new_lemmas_state = self.lemmas_state.clone();
+        new_lemmas_state.possible_lemmas = ChainSet::new();
+        let (outcome, _) = prove(new_goal, self.depth + 1, new_lemmas_state);
         if outcome == Outcome::Valid {
+          println!("proved");
           // self.lemmas_state.possible_lemmas.drop_from(i, j);
-          self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.eq.clone());
+          self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
           self.lemmas_state.lemma_rewrites.extend(rws);
           break;
         }
@@ -1781,8 +1803,9 @@ pub fn explain_goal_failure(goal: &Goal) {
 /// Top-level interface to the theorem prover.
 pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Outcome, ProofState) {
   let goal_eq = RawEquation::new(goal.eq.lhs.sexp.clone(), goal.eq.rhs.sexp.clone());
+  let goal_eq_with_params = RawEqWithParams::new(goal_eq, goal.params.iter().cloned().map(|param| (param, goal.local_context.get(&param).unwrap().clone())).collect());
   // We won't attempt to prove the goal again (it isn't actually proven).
-  lemmas_state.proven_lemmas.insert(goal_eq);
+  lemmas_state.proven_lemmas.insert(goal_eq_with_params);
   let mut state = ProofState {
     goals: vec![goal],
     solved_goal_explanation_and_context: HashMap::default(),
@@ -1791,7 +1814,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     depth,
     lemmas_state,
   };
-  if depth == 2 {
+  if depth == 3 {
     return (Outcome::Unknown, state);
   }
   while !state.goals.is_empty() {

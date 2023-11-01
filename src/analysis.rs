@@ -364,10 +364,10 @@ impl Cvec {
           let resolved_id1 = egraph.borrow_mut().find(*id1);
           let resolved_id2 = egraph.borrow_mut().find(*id2);
           if resolved_id1 != resolved_id2 {
-            let borrowed_egraph = &egraph.borrow();
-            let extractor = Extractor::new(borrowed_egraph, AstSize);
-            let expr1 = extractor.find_best(resolved_id1).1;
-            let expr2 = extractor.find_best(resolved_id2).1;
+            // let borrowed_egraph = &egraph.borrow();
+            // let extractor = Extractor::new(borrowed_egraph, AstSize);
+            // let expr1 = extractor.find_best(resolved_id1).1;
+            // let expr2 = extractor.find_best(resolved_id2).1;
             // println!("differing cvecs: {} {}", expr1, expr2);
           }
           resolved_id1 != resolved_id2
