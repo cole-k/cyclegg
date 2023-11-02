@@ -9,7 +9,7 @@ use std::iter::{zip, empty};
 use std::time::{Duration, Instant};
 use symbolic_expressions::{parser, Sexp};
 
-use crate::analysis::{CycleggAnalysis, CanonicalFormAnalysis, CanonicalForm, Cvec, cvecs_equal};
+use crate::analysis::{CycleggAnalysis, CanonicalFormAnalysis, CanonicalForm, Cvec, cvecs_equal, print_cvec};
 use crate::ast::*;
 use crate::config::*;
 use crate::egraph::*;
@@ -395,27 +395,42 @@ impl<'a> Goal<'a> {
     // for efficiency reason but yeah.
     res.egraph.analysis.cvec_analysis.reductions = cvec_reductions.clone();
     // res.egraph.classes().for_each(|c| println!("class {}: {}, timestamp: {}", c.id, c.data.canonical_form_data.get_enode(), c.data.timestamp));
-    res.egraph.analysis.cvec_analysis.timestamp += 1;
     for (name, ty) in params {
-      if !ty.is_arrow() {
-        let var_id = var_classes.get(&name).unwrap();
-        let var_cvec = res.egraph.analysis.cvec_analysis.make_cvec_for_type(&ty, res.env, &res.global_context);
-        let mut analysis = res.egraph[*var_id].data.clone();
-        analysis.timestamp = res.egraph.analysis.cvec_analysis.timestamp;
-        analysis.cvec_data = var_cvec;
-        res.egraph.set_analysis_data(*var_id, analysis);
-        // println!("var {} has id {}", name, var_id);
-      }
       res.add_scrutinee(name, &ty, 0);
       res.local_context.insert(name, ty);
     }
-    res.egraph.rebuild();
+    res.build_cvecs();
     // let lhs_cvec = &res.egraph[res.eq.lhs.id].data.cvec_data;
     // let rhs_cvec = &res.egraph[res.eq.rhs.id].data.cvec_data;
     // println!("{}: lhs_cvecs: {:?}, rhs_cvecs: {:?}", res.name, res.egraph[res.eq.lhs.id].data.cvec_data, res.egraph[res.eq.rhs.id].data.cvec_data);
     // println!("eq? {:?}", cvecs_equal(&res.egraph.analysis.cvec_analysis, lhs_cvec, rhs_cvec));
     // res.eq.find_generalizations();
     res
+  }
+
+  fn build_cvecs(&mut self) {
+    self.egraph.analysis.cvec_analysis.timestamp += 1;
+    for name in self.params.iter() {
+      let ty = &self.local_context[name];
+      if !ty.is_arrow() {
+        let var_id = self.var_classes[name];
+        let var_cvec = self.egraph.analysis.cvec_analysis.make_cvec_for_type(&ty, self.env, &self.global_context);
+        let mut analysis = self.egraph[var_id].data.clone();
+        analysis.timestamp = self.egraph.analysis.cvec_analysis.timestamp;
+        analysis.cvec_data = var_cvec;
+        self.egraph.set_analysis_data(var_id, analysis);
+        // println!("var {} has id {}", name, var_id);
+      }
+    }
+    self.egraph.rebuild();
+  }
+
+  pub fn cvecs_valid(&mut self) -> bool {
+    self.egraph.analysis.cvec_analysis.saturate();
+    let lhs_cvec = &self.egraph[self.eq.lhs.id].data.cvec_data;
+    let rhs_cvec = &self.egraph[self.eq.rhs.id].data.cvec_data;
+    let res = cvecs_equal(&self.egraph.analysis.cvec_analysis, lhs_cvec, rhs_cvec);
+    res == Some(true)
   }
 
   pub fn copy(&self) -> Self {
@@ -1211,7 +1226,7 @@ impl<'a> Goal<'a> {
     self.egraph.analysis.cvec_analysis.cvec_egraph.replace_with(|_| runner.egraph);
   }
 
-  fn search_for_cc_lemmas(&mut self, state: &ProofState) -> Vec<(RawEqWithParams, Goal)> {
+  fn search_for_cc_lemmas(&mut self, state: &ProofState) -> Vec<RawEqWithParams> {
     let mut lemmas = vec!();
     self.egraph.analysis.cvec_analysis.saturate();
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
@@ -1270,13 +1285,15 @@ impl<'a> Goal<'a> {
           // let (_, e2) = extractor.find_best(class_2_id);
 
           // let new_egraph = self.egraph.clone();
-          // // let exprs = get_all_expressions(&self.egraph, vec![class_1_id, class_2_id]);
+
+          // let exprs = get_all_expressions(&self.egraph, vec![class_1_id, class_2_id]);
+
           let mut exprs: HashMap<Id, Vec<Expr>> = vec![(class_1_id, vec![]), (class_2_id, vec![])]
             .into_iter()
             .collect();
           exprs.insert(class_1_id, vec!(e1.clone()));
           exprs.insert(class_2_id, vec!(e2.clone()));
-          let (new_rewrites, new_rewrite_names, _new_rewrite_eqs) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false);
+          let (_new_rewrites, _new_rewrite_names, new_rewrite_eqs) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false);
           // let rewrites = self.reductions.iter().chain(new_rewrites.values());
           // let mut runner = Runner::default()
           //   .with_explanations_enabled()
@@ -1286,70 +1303,67 @@ impl<'a> Goal<'a> {
           // if valid && explanation.is_none() {
           //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
           // }
-          if new_rewrite_names.len() > 0 {
-          // if let Some(_) = explanation {
-            // Another method would be to try finding all possible lemmas from these two e-classes
-            // and then try to prove each, but this would be cumbersome and I figure that since
-            // they're all equivalent the lemmas are probably equivalent too.
-            //
-            // let cc_lemmas: HashSet<Symbol> = exp.make_flat_explanation().iter().flat_map(|flat_term|{
-            //   flat_term.backward_rule.or(flat_term.forward_rule).and_then(|name|{
-            //     if name.to_string().starts_with(CC_LEMMA_PREFIX) {
-            //       Some(name)
-            //     } else {
-            //       None
-            //     }
-            //   })
-            // }).collect();
 
-            // We assume that if we proved something with this CC lemma, then
-            // there must be a new rewrite - and therefore a new name.
-            let rw = new_rewrites.get(&new_rewrite_names[0]).unwrap();
-            let lhs_vars: HashSet<Var> = rw.searcher.vars().iter().cloned().collect();
-            let rhs_vars: HashSet<Var> = rw.applier.vars().iter().cloned().collect();
-            let cc_lemma_params: Vec<(Symbol, Type)> = lhs_vars.union(&rhs_vars).map(|var|{
-              let var_str = var.to_string();
-              let mut var_name = var_str.chars();
-              // Remove leading ? from var name
-              var_name.next();
-              let var_symb = Symbol::from(var_name.collect::<String>());
-              let var_ty = self.local_context.get(&var_symb).unwrap();
-              (var_symb, var_ty.clone())
-            }).collect();
+          lemmas.extend(new_rewrite_eqs);
+          // if new_rewrite_names.len() > 0 {
+          // // if let Some(_) = explanation {
+          //   // Another method would be to try finding all possible lemmas from these two e-classes
+          //   // and then try to prove each, but this would be cumbersome and I figure that since
+          //   // they're all equivalent the lemmas are probably equivalent too.
+          //   //
+          //   // let cc_lemmas: HashSet<Symbol> = exp.make_flat_explanation().iter().flat_map(|flat_term|{
+          //   //   flat_term.backward_rule.or(flat_term.forward_rule).and_then(|name|{
+          //   //     if name.to_string().starts_with(CC_LEMMA_PREFIX) {
+          //   //       Some(name)
+          //   //     } else {
+          //   //       None
+          //   //     }
+          //   //   })
+          //   // }).collect();
+          //   // We assume that if we proved something with this CC lemma, then
+          //   // there must be a new rewrite - and therefore a new name.
+          //   let rw = new_rewrites.get(&new_rewrite_names[0]).unwrap();
+          //   let lhs_vars: HashSet<Var> = rw.searcher.vars().iter().cloned().collect();
+          //   let rhs_vars: HashSet<Var> = rw.applier.vars().iter().cloned().collect();
+          //   let cc_lemma_params: Vec<(Symbol, Type)> = lhs_vars.union(&rhs_vars).map(|var|{
+          //     let var_str = var.to_string();
+          //     let mut var_name = var_str.chars();
+          //     // Remove leading ? from var name
+          //     var_name.next();
+          //     let var_symb = Symbol::from(var_name.collect::<String>());
+          //     let var_ty = self.local_context.get(&var_symb).unwrap();
+          //     (var_symb, var_ty.clone())
+          //   }).collect();
+          //   let cc_lemma_eq = RawEquation::from_exprs(&e1, &e2);
+          //   let mut new_goal = Goal::top(
+          //     &rw.name.to_string(),
+          //     &cc_lemma_eq,
+          //     &None,
+          //     cc_lemma_params.clone(),
+          //     self.env,
+          //     self.global_context,
+          //     self.reductions,
+          //     self.cvec_reductions,
+          //     self.defns,
+          //   );
+          //   new_goal.egraph.analysis.cvec_analysis.saturate();
+          //   let new_goal_lhs_cvec = &new_goal.egraph[new_goal.eq.lhs.id].data.cvec_data;
+          //   let new_goal_rhs_cvec = &new_goal.egraph[new_goal.eq.rhs.id].data.cvec_data;
+          //   if let Some(true) = cvecs_equal(&new_goal.egraph.analysis.cvec_analysis, &new_goal_lhs_cvec, &new_goal_rhs_cvec) {
+          //     lemmas.push(RawEqWithParams::new(cc_lemma_eq.clone(), cc_lemma_params));
+          //   }
+          //   // println!("CC lemma: {} = {}", e1, e2);
+          //   // let (outcome, _) = prove(new_goal, state.depth + 1, state.lemmas_state.clone());
+          //   // if let Outcome::Valid = outcome {
+          //   //   println!("Proved");
+          //   //   // Add the new lemmas
+          //   //   // found_lemmas.extend(new_rewrite_names.iter().map(|rw_name| (rw_name.clone(), new_rewrites.get(rw_name).unwrap().clone())));
+          //   // }
+          // } else {
+          //   // println!("CC lemma not useful: {} = {}", e1, e2);
+          // }
 
-            let cc_lemma_eq = RawEquation::from_exprs(&e1, &e2);
-            let mut new_goal = Goal::top(
-              &rw.name.to_string(),
-              &cc_lemma_eq,
-              &None,
-              cc_lemma_params.clone(),
-              self.env,
-              self.global_context,
-              self.reductions,
-              self.cvec_reductions,
-              self.defns,
-            );
-
-            new_goal.egraph.analysis.cvec_analysis.saturate();
-            let new_goal_lhs_cvec = &new_goal.egraph[new_goal.eq.lhs.id].data.cvec_data;
-            let new_goal_rhs_cvec = &new_goal.egraph[new_goal.eq.rhs.id].data.cvec_data;
-
-            if let Some(true) = cvecs_equal(&new_goal.egraph.analysis.cvec_analysis, &new_goal_lhs_cvec, &new_goal_rhs_cvec) {
-              lemmas.push((RawEqWithParams::new(cc_lemma_eq.clone(), cc_lemma_params), new_goal));
-            }
-
-            // println!("CC lemma: {} = {}", e1, e2);
-            // let (outcome, _) = prove(new_goal, state.depth + 1, state.lemmas_state.clone());
-            // if let Outcome::Valid = outcome {
-            //   println!("Proved");
-            //   // Add the new lemmas
-            //   // found_lemmas.extend(new_rewrite_names.iter().map(|rw_name| (rw_name.clone(), new_rewrites.get(rw_name).unwrap().clone())));
-            // }
-          } else {
-            // println!("CC lemma not useful: {} = {}", e1, e2);
-          }
           // if runner.egraph.find(self.eq.lhs.id) == runner.egraph.find(self.eq.rhs.id) {
-
           //   // let new_goal = Goal::top(
           //   //   &raw_goal.name,
           //   //   &raw_goal.equation,
@@ -1597,9 +1611,6 @@ impl<'a> Goal<'a> {
                              self.reductions,
                              self.cvec_reductions,
                              self.defns);
-    new_goal.egraph.analysis.cvec_analysis.saturate();
-    let new_goal_lhs_cvec = &new_goal.egraph[new_goal.eq.lhs.id].data.cvec_data;
-    let new_goal_rhs_cvec = &new_goal.egraph[new_goal.eq.rhs.id].data.cvec_data;
     // // Add the node as a scrutinee and note its type.
     // new_goal.local_context.insert(fresh_symb, class_ty.clone());
     // new_goal.scrutinees.push_front(fresh_symb);
@@ -1622,7 +1633,7 @@ impl<'a> Goal<'a> {
     // let gen_exp = orig_extractor.find_best(class).1;
     // let lhs_exp = extractor.find_best(new_goal.eq.lhs.id).1;
     // let rhs_exp = extractor.find_best(new_goal.eq.rhs.id).1;
-    if let Some(true) = cvecs_equal(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec, new_goal_rhs_cvec) {
+    if new_goal.cvecs_valid() {
       // println!("generalizing {} === {}", lhs_expr, rhs_expr);
       Some((RawEqWithParams::new(eq, params), new_goal))
     } else {
@@ -1709,7 +1720,8 @@ pub enum ProofTerm {
 
 #[derive(Default, Clone)]
 pub struct LemmasState {
-  pub proven_lemmas: ChainSet<RawEqWithParams>,
+  pub proven_lemmas: MinElements<RawEqWithParams>,
+  pub invalid_lemmas: MaxElements<RawEqWithParams>,
   pub possible_lemmas: ChainSet<RawEqWithParams>,
   pub lemma_rewrites: HashMap<String, Rw>,
   pub cyclic_lemmas: ChainSet<RawEqWithParams>,
@@ -1722,6 +1734,7 @@ impl LemmasState {
     self.possible_lemmas.extend(iter.into_iter().filter(|lemma| {
       let is_proven = self.proven_lemmas.contains_leq(&lemma);
       let is_cyclic = self.cyclic_lemmas.contains_leq(&lemma);
+      let is_invalid = self.invalid_lemmas.contains_geq(&lemma);
       let is_too_big = CONFIG.max_lemma_size > 0
         && sexp_size(&lemma.eq.lhs) + sexp_size(&lemma.eq.rhs) > CONFIG.max_lemma_size;
       // if is_proven {
@@ -1729,7 +1742,7 @@ impl LemmasState {
       // } else {
       //   println!("adding lemma {}={}", lemma.eq.lhs, lemma.eq.rhs);
       // }
-      !is_proven && !is_too_big && !is_cyclic
+      !is_proven && !is_invalid && !is_too_big && !is_cyclic
     }));
   }
 }
@@ -1756,13 +1769,19 @@ impl<'a> ProofState<'a> {
 
   /// Try to prove all of the lemmas we've collected so far.
   pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> bool {
+    // println!("Try prove lemmas for goal {}", goal.name);
     for chain in self.lemmas_state.possible_lemmas.chains.iter() {
-      for raw_eq_with_params in chain.chain.iter() {
+      // println!("chain lemmas: {}", chain.chain.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
+      for (i, raw_eq_with_params) in chain.chain.iter().enumerate() {
+        // Is the lemma already proven or subsumed by a cyclic lemma?
         if self.lemmas_state.proven_lemmas.contains_leq(&raw_eq_with_params) || self.lemmas_state.cyclic_lemmas.contains_leq(&raw_eq_with_params) {
           continue;
         }
+        // Is the lemma invalid?
+        // if self.lemmas_state.invalid_lemmas.contains_geq(&raw_eq_with_params) {
+        //   continue;
+        // }
         let goal_name = format!("lemma-{}={}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
-        println!("trying to prove {}", goal_name);
         let mut new_goal = Goal::top(&goal_name,
                                  &raw_eq_with_params.eq,
                                  &None,
@@ -1772,18 +1791,29 @@ impl<'a> ProofState<'a> {
                                  goal.reductions,
                                  goal.cvec_reductions,
                                  goal.defns);
-
-        new_goal.egraph.analysis.cvec_analysis.saturate();
-        let new_goal_lhs_cvec = &new_goal.egraph[new_goal.eq.lhs.id].data.cvec_data;
-        let new_goal_rhs_cvec = &new_goal.egraph[new_goal.eq.rhs.id].data.cvec_data;
-        match cvecs_equal(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec, new_goal_rhs_cvec) {
-          Some(false) | None => {
-            // TODO: Should record that all lemmas that subsume this lemma are invalid, like with
-            // the case when we prove a lemma invalid below.
-            warn!("Invalidated lemma {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
-            continue;
-          }
-          _ => {}
+        let try1 = new_goal.cvecs_valid();
+        let mut new_goal_2 = Goal::top(&goal_name,
+                                 &raw_eq_with_params.eq,
+                                 &None,
+                                 raw_eq_with_params.params.clone(),
+                                 goal.env,
+                                 goal.global_context,
+                                 goal.reductions,
+                                 goal.cvec_reductions,
+                                 goal.defns);
+        let try2 = new_goal_2.cvecs_valid();
+        if try1 && !try2 {
+          // println!("Second try helped");
+          // println!("Invalidated lemma {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+        }
+        if !try1 || !try2 {
+          warn!("Invalidated lemma {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+          self.lemmas_state.invalid_lemmas.insert(raw_eq_with_params.clone());
+          continue;
+        } else {
+          println!("Trying to prove lemma: {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+          // println!("proven lemmas so far: {}", self.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
+          // print_cvec(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec)
         }
         let lhs_id = new_goal.eq.lhs.id;
         let rhs_id = new_goal.eq.rhs.id;
@@ -1794,6 +1824,37 @@ impl<'a> ProofState<'a> {
         exprs.insert(rhs_id, vec!(new_goal.eq.rhs.expr.clone()));
         let (rws, _, _) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, &self, false);
         let mut new_lemmas_state = self.lemmas_state.clone();
+
+        // HACK: Optimization to proving lemmas
+        // We will always try to prove the most general lemma we've theorized so far, but thereafter
+        // we require that the lemma be actually useful to us if we are going to try and prove it.
+        //
+        // This eliminates us spending time trying to prove a junk lemma like
+        // (mult (S n) Z) = (plus (mult (S n) Z) Z)
+        // when we already failed to prove the more general lemma
+        // (mult n Z) = (plus (mult n Z) Z)
+        //
+        // Really we should have more sophisticated lemma filtering - the junk
+        // lemma in this case is really no easier to prove than the first lemma
+        // (since we will try to prove it eventually when we case split the first),
+        // so we shouldn't consider it in the first place.
+        //
+        // Hence why I consider this optimization a hack, even though it
+        // probably avoids some lemmas which are junky in a more complicated
+        // way. I imagine it might rarely pass on interesting and useful lemmas.
+        // This is because sometimes you need more than one lemma to prove a goal.
+        if i > 0 {
+          let goal_egraph_copy = goal.egraph.clone();
+          let rewrites = goal.reductions.iter().chain(goal.lemmas.values()).chain(rws.values()).chain(self.lemmas_state.lemma_rewrites.values());
+          let runner = Runner::default()
+            // .with_explanations_enabled()
+            .with_egraph(goal_egraph_copy)
+            .run(rewrites);
+          if runner.egraph.find(goal.eq.lhs.id) != runner.egraph.find(goal.eq.rhs.id) {
+            break;
+          }
+        }
+
         // Zero out the possible lemmas and cyclic lemmas, we only want
         // to carry forward what we've proven already.
         new_lemmas_state.possible_lemmas = ChainSet::new();
@@ -1801,11 +1862,13 @@ impl<'a> ProofState<'a> {
         new_lemmas_state.cyclic_lemma_rewrites = HashMap::new();
         let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state);
         // Steal the lemmas we got from the recursive proving.
-        self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
+        self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
+        self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
         self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
         if outcome == Outcome::Valid {
           println!("proved");
-          // self.lemmas_state.possible_lemmas.drop_from(i, j);
+          // TODO: This comes for free in the proven lemmas we get, so we
+          // probably don't need to insert it.
           self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
           self.lemmas_state.lemma_rewrites.extend(rws);
           // Add any cyclic lemmas we proved too
@@ -1820,7 +1883,11 @@ impl<'a> ProofState<'a> {
         // TODO: We want to record that all of the previous lemmas including
         // this are invalid, but for now we won't record anything.
         if outcome == Outcome::Invalid {
-          // self.lemmas_state.possible_lemmas.take_up_to(i, j);
+          self.lemmas_state.invalid_lemmas.insert(raw_eq_with_params.clone());
+        } else {
+          // NOTE: We don't try to prove a lemma twice, but actually we might
+          // be able to if we have another lemma.
+          // self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
         }
       }
     }
@@ -1892,6 +1959,7 @@ pub fn explain_goal_failure(goal: &Goal) {
 
 /// Top-level interface to the theorem prover.
 pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Outcome, ProofState) {
+  let goal_name = goal.name.clone();
   let goal_eq = RawEquation::new(goal.eq.lhs.sexp.clone(), goal.eq.rhs.sexp.clone());
   let goal_eq_with_params = RawEqWithParams::new(goal_eq, goal.params.iter().cloned().map(|param| (param, goal.local_context.get(&param).unwrap().clone())).collect());
   // We won't attempt to prove the goal again (it isn't actually proven).
@@ -1910,6 +1978,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     return (Outcome::Unknown, state);
   }
   while !state.goals.is_empty() {
+    // println!("Taking next step for goal {}", goal_name);
+    // println!("proven lemmas: {}", state.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
     if state.timeout() {
       return (Outcome::Timeout, state);
     }
@@ -1971,7 +2041,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
       };
 
     state.lemmas_state.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs));
-    state.lemmas_state.add_possible_lemmas(goal.search_for_cc_lemmas(&state).into_iter().map(|(raw_eq_with_params, _)| raw_eq_with_params));
+    state.lemmas_state.add_possible_lemmas(goal.search_for_cc_lemmas(&state));
     // This ends up being really slow so we'll just take the lemma duplication for now
     // It's unclear that it lets us prove that much more anyway.
     // state.add_cyclic_lemmas(&goal);

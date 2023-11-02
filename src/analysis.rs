@@ -2,7 +2,7 @@ use crate::ast::{Context, Env, Type, SSubst, resolve_sexp, Expr, is_constructor,
 use crate::config::CONFIG;
 use crate::egraph::extract_with_node;
 use egg::*;
-use itertools::repeat_n;
+use itertools::{repeat_n, Itertools};
 use rand::{thread_rng, Rng};
 use rand::distributions::uniform::SampleUniform;
 use rand::distributions::weighted::WeightedIndex;
@@ -249,6 +249,22 @@ pub fn cvecs_equal(cvec_analysis: &CvecAnalysis, cvec_1: &Cvec, cvec_2: &Cvec) -
     _ => None,
   }
 
+}
+
+pub fn print_cvec(cvec_analysis: &CvecAnalysis, cvec: &Cvec) {
+  match cvec {
+    Cvec::Cvec(cv1) => {
+      let eg = cvec_analysis.cvec_egraph.borrow();
+      let extractor = Extractor::new(&eg, AstSize);
+      let terms = cv1.iter().map(|cv_id| {
+        extractor.find_best(*cv_id).1.to_string()
+      }).join(",");
+      println!("cvec: {}", terms);
+    }
+    Cvec::Stuck => {
+      println!("Stuck");
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]

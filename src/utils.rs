@@ -53,16 +53,129 @@ pub fn print_expressions_in_eclass<L: egg::Language + std::fmt::Display, N: egg:
   }
 }
 
-#[derive(Clone, Debug)]
-pub struct ChainSet<T>
-where T: PartialOrd + PartialEq + Clone {
-  pub chains: Vec<Chain<T>>
+/// This is the set of mutually incomparable elements that are the smallest seen
+/// so far. We can't just keep one element because partial orders may have
+/// multiple (local) minima.
+#[derive(Debug, Clone)]
+pub struct MinElements<T>
+where T: PartialOrd + PartialEq {
+  pub elems: Vec<T>,
 }
 
-impl<T> Default for ChainSet<T>
-where T: PartialOrd + PartialEq + Clone {
+impl<T> Default for MinElements<T>
+where T: PartialOrd + PartialEq {
     fn default() -> Self {
-        Self { chains: Default::default() }
+        Self { elems: Default::default() }
+    }
+}
+
+impl<T> MinElements<T>
+where T: PartialOrd + PartialEq
+{
+
+  pub fn insert(&mut self, elem: T) -> bool {
+    // Is it less than any element?
+    let mut less_than_some = false;
+    // Is it incomparable with all elements?
+    let mut incomparable = true;
+    self.elems.retain(|e| {
+      match elem.partial_cmp(e) {
+        Some(std::cmp::Ordering::Less) => {
+          // If the new element is less than e, remove it.
+          // We will later add the new element.
+          less_than_some = true;
+          incomparable = false;
+          false
+        }
+        Some(_) => {
+          // The new element is not incomparable
+          incomparable = false;
+          true
+        }
+        _ => true,
+      }
+    });
+    if less_than_some || incomparable {
+      self.elems.push(elem);
+    }
+    less_than_some || incomparable
+  }
+
+  pub fn contains_leq(&self, elem: &T) -> bool {
+    self.elems.iter().any(|e| e <= elem)
+  }
+
+}
+
+impl<T> Extend<T> for MinElements<T>
+where T: PartialOrd + PartialEq {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+      for i in iter {
+        self.insert(i);
+      }
+    }
+}
+
+/// This is the set of mutually incomparable elements that are the largest seen
+/// so far. We can't just keep one element because partial orders may have
+/// multiple (local) maxima.
+#[derive(Debug, Clone)]
+pub struct MaxElements<T>
+where T: PartialOrd + PartialEq {
+  pub elems: Vec<T>,
+}
+
+impl<T> Default for MaxElements<T>
+where T: PartialOrd + PartialEq {
+    fn default() -> Self {
+        Self { elems: Default::default() }
+    }
+}
+
+impl<T> MaxElements<T>
+where T: PartialOrd + PartialEq
+{
+
+  pub fn insert(&mut self, elem: T) -> bool {
+    // Is it greater than any element?
+    let mut greater_than_some = false;
+    // Is it incomparable with all elements?
+    let mut incomparable = true;
+    self.elems.retain(|e| {
+      match elem.partial_cmp(e) {
+        Some(std::cmp::Ordering::Greater) => {
+          // If the new element is greater than e, remove it. We will later add
+          // the new element.
+          greater_than_some = true;
+          incomparable = false;
+          false
+        }
+        Some(_) => {
+          // The new element is not incomparable
+          incomparable = false;
+          true
+        }
+        _ => true,
+      }
+    });
+    if greater_than_some || incomparable {
+      self.elems.push(elem);
+    }
+    greater_than_some || incomparable
+  }
+
+  pub fn contains_geq(&self, elem: &T) -> bool {
+    self.elems.iter().any(|e| e >= elem)
+  }
+
+}
+
+impl<T> Extend<T> for MaxElements<T>
+where T: PartialOrd + PartialEq {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+      for i in iter {
+        self.insert(i);
+      }
     }
 }
 
@@ -72,6 +185,19 @@ where T: PartialOrd + PartialEq + Clone {
 /// Ideally we would have a proper partial order data structure, but for now we
 /// fake this by duplicating an element in the rare case that it is comparable
 /// with multiple chains.
+#[derive(Clone, Debug)]
+pub struct ChainSet<T>
+where T: PartialOrd + PartialEq + Clone {
+  pub chains: Vec<Chain<T>>,
+}
+
+impl<T> Default for ChainSet<T>
+where T: PartialOrd + PartialEq + Clone {
+    fn default() -> Self {
+        Self { chains: Default::default() }
+    }
+}
+
 impl<T> ChainSet<T>
 where T: PartialOrd + PartialEq + Clone {
   pub fn new() -> Self {
@@ -187,12 +313,7 @@ where T: PartialOrd + PartialEq {
   }
 
   pub fn contains_leq(&self, elem: &T) -> bool {
-    match self.first().partial_cmp(elem) {
-      Some(std::cmp::Ordering::Less) | Some(std::cmp::Ordering::Equal) => {
-        true
-      }
-      _ => false,
-    }
+    self.first() <= elem
   }
 
   pub fn first(&self) -> &T {
