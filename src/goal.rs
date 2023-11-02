@@ -1269,25 +1269,25 @@ impl<'a> Goal<'a> {
           // let (_, e1) = extractor.find_best(class_1_id);
           // let (_, e2) = extractor.find_best(class_2_id);
 
-          let new_egraph = self.egraph.clone();
+          // let new_egraph = self.egraph.clone();
           // // let exprs = get_all_expressions(&self.egraph, vec![class_1_id, class_2_id]);
           let mut exprs: HashMap<Id, Vec<Expr>> = vec![(class_1_id, vec![]), (class_2_id, vec![])]
-          .into_iter()
-          .collect();
+            .into_iter()
+            .collect();
           exprs.insert(class_1_id, vec!(e1.clone()));
           exprs.insert(class_2_id, vec!(e2.clone()));
           let (new_rewrites, new_rewrite_names, _new_rewrite_eqs) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false);
-          let rewrites = self.reductions.iter().chain(new_rewrites.values());
-          let mut runner = Runner::default()
-            .with_explanations_enabled()
-            .with_egraph(new_egraph)
-            .run(rewrites);
-          let (explanation, valid) = Goal::get_explanation_and_validity(&self.eq, &mut runner.egraph);
-          if valid && explanation.is_none() {
-            println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
-          }
-          // if new_rewrite_names.len() > 0 {
-          if let Some(_) = explanation {
+          // let rewrites = self.reductions.iter().chain(new_rewrites.values());
+          // let mut runner = Runner::default()
+          //   .with_explanations_enabled()
+          //   .with_egraph(new_egraph)
+          //   .run(rewrites);
+          // let (explanation, valid) = Goal::get_explanation_and_validity(&self.eq, &mut runner.egraph);
+          // if valid && explanation.is_none() {
+          //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
+          // }
+          if new_rewrite_names.len() > 0 {
+          // if let Some(_) = explanation {
             // Another method would be to try finding all possible lemmas from these two e-classes
             // and then try to prove each, but this would be cumbersome and I figure that since
             // they're all equivalent the lemmas are probably equivalent too.
@@ -1318,7 +1318,7 @@ impl<'a> Goal<'a> {
             }).collect();
 
             let cc_lemma_eq = RawEquation::from_exprs(&e1, &e2);
-            let new_goal = Goal::top(
+            let mut new_goal = Goal::top(
               &rw.name.to_string(),
               &cc_lemma_eq,
               &None,
@@ -1330,7 +1330,13 @@ impl<'a> Goal<'a> {
               self.defns,
             );
 
-            lemmas.push((RawEqWithParams::new(cc_lemma_eq, cc_lemma_params), new_goal));
+            new_goal.egraph.analysis.cvec_analysis.saturate();
+            let new_goal_lhs_cvec = &new_goal.egraph[new_goal.eq.lhs.id].data.cvec_data;
+            let new_goal_rhs_cvec = &new_goal.egraph[new_goal.eq.rhs.id].data.cvec_data;
+
+            if let Some(true) = cvecs_equal(&new_goal.egraph.analysis.cvec_analysis, &new_goal_lhs_cvec, &new_goal_rhs_cvec) {
+              lemmas.push((RawEqWithParams::new(cc_lemma_eq.clone(), cc_lemma_params), new_goal));
+            }
 
             // println!("CC lemma: {} = {}", e1, e2);
             // let (outcome, _) = prove(new_goal, state.depth + 1, state.lemmas_state.clone());
@@ -1757,7 +1763,7 @@ impl<'a> ProofState<'a> {
         }
         let goal_name = format!("lemma-{}={}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
         println!("trying to prove {}", goal_name);
-        let new_goal = Goal::top(&goal_name,
+        let mut new_goal = Goal::top(&goal_name,
                                  &raw_eq_with_params.eq,
                                  &None,
                                  raw_eq_with_params.params.clone(),
@@ -1766,6 +1772,19 @@ impl<'a> ProofState<'a> {
                                  goal.reductions,
                                  goal.cvec_reductions,
                                  goal.defns);
+
+        new_goal.egraph.analysis.cvec_analysis.saturate();
+        let new_goal_lhs_cvec = &new_goal.egraph[new_goal.eq.lhs.id].data.cvec_data;
+        let new_goal_rhs_cvec = &new_goal.egraph[new_goal.eq.rhs.id].data.cvec_data;
+        match cvecs_equal(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec, new_goal_rhs_cvec) {
+          Some(false) | None => {
+            // TODO: Should record that all lemmas that subsume this lemma are invalid, like with
+            // the case when we prove a lemma invalid below.
+            warn!("Invalidated lemma {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+            continue;
+          }
+          _ => {}
+        }
         let lhs_id = new_goal.eq.lhs.id;
         let rhs_id = new_goal.eq.rhs.id;
         let mut exprs: HashMap<Id, Vec<Expr>> = vec![(lhs_id, vec![]), (rhs_id, vec![])]
@@ -1970,16 +1989,16 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     //   }
     //   return (Outcome::Unknown, state);
     // }
-    let depth_at_front = goal.scrutinees.front().unwrap().1;
+    // let depth_at_front = goal.scrutinees.front().unwrap().1;
     if let Some((scrutinee, depth)) = goal.next_scrutinee(blocking_vars) {
-      let d = depth.max(depth_at_front);
-      if d > state.case_split_depth {
-        state.case_split_depth = d;
+      // let d = depth.max(depth_at_front);
+      if depth > state.case_split_depth {
+        state.case_split_depth = depth;
         if state.try_prove_lemmas(&mut goal) {
           continue;
         }
       }
-      if state.case_split_depth > CONFIG.max_split_depth {
+      if state.case_split_depth > CONFIG.max_split_depth + state.proof_depth {
         // This goal could be further split, but we have reached the maximum depth,
         // we cannot prove or disprove the conjecture
         return (Outcome::Unknown, state);
@@ -1999,7 +2018,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
           println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
         }
       }
-      if goal.scrutinees.iter().any(|(_, depth)| depth > &CONFIG.max_split_depth) {
+      if goal.scrutinees.iter().any(|(_, depth)| *depth > CONFIG.max_split_depth + state.proof_depth) {
         if state.try_prove_lemmas(&mut goal) {
           continue;
         }
