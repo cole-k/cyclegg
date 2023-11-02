@@ -175,5 +175,12 @@ fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
       }
     }
   }
+  // for (i, chain) in proof_state.lemmas_state.proven_lemmas.chains.iter().enumerate() {
+  //   println!("Chain {}", i);
+  //   for elem in chain.chain.iter() {
+  //     println!("Proven lemma: {} === {}", elem.eq.lhs, elem.eq.rhs);
+  //   }
+  // }
+
   Ok((result, duration))
 }

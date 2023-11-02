@@ -82,6 +82,9 @@ pub struct Args {
   /// size) greater than this.
   #[clap(long = "max-lemma-size", default_value = "25")]
   pub max_lemma_size: usize,
+
+  #[clap(long = "no-grounding")]
+  pub no_grounding: bool,
 }
 
 impl Args {
@@ -123,6 +126,7 @@ pub struct Config {
   pub cvec_term_max_depth: usize,
   pub cvec_num_rolls: usize,
   pub cvec_num_random_terms_per_type: usize,
+  pub add_grounding: bool,
 }
 
 impl Config {
@@ -170,6 +174,7 @@ impl Config {
       cvec_term_max_depth: args.cvec_term_max_depth,
       cvec_num_rolls: args.cvec_num_rolls,
       cvec_num_random_terms_per_type: args.cvec_num_random_terms_per_type,
+      add_grounding: !args.no_grounding,
     }
   }
 

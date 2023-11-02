@@ -317,18 +317,19 @@ impl Cvec {
     }
   }
 
-  fn make(egraph: &EGraph<SymbolLang, CycleggAnalysis>, enode: &SymbolLang) -> Self {
+  fn make(egraph: &EGraph<SymbolLang, CycleggAnalysis>, enode: &SymbolLang) -> (Self, usize) {
     // println!("making cvec for enode: {}", enode);
+    let mut max_child_timestamp = egraph.analysis.cvec_analysis.timestamp;
     if enode.is_leaf() {
       // We can't evaluate vars (we need outside input, i.e. type information to create them)
       // This could be resolved by having a type information analysis.
       if is_var(&enode.op.to_string()) {
-        return Cvec::Stuck;
+        return (Cvec::Stuck, max_child_timestamp);
       } else {
         // This cvec is for a value like Z or Leaf, so make a concrete cvec out of it.
         let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(enode.clone());
         let cvec = repeat_n(id, egraph.analysis.cvec_analysis.cvec_size).collect();
-        return Cvec::Cvec(cvec);
+        return (Cvec::Cvec(cvec), max_child_timestamp);
       }
     }
 
@@ -338,9 +339,15 @@ impl Cvec {
     // The max size of a Cvec should be this
     for i in 0..egraph.analysis.cvec_analysis.cvec_size {
       // Get the ith element of each cvec.
-      match enode.children().iter().map(|child| egraph[*child].data.cvec_data.get_at_index(i).map(|id| *id)).collect() {
+      let opt_children = enode.children().iter().map(|child| {
+        max_child_timestamp = std::cmp::max(max_child_timestamp, egraph[*child].data.timestamp);
+        egraph[*child].data.cvec_data.get_at_index(i).map(|id| *id)
+      }).collect();
+      match opt_children {
         // If it's stuck, then propagate that it's stuck
-        None => return Cvec::Stuck,
+        // NOTE: we don't update the timestamp because we don't use its children from which it would've
+        // gotten a fresher timestamp
+        None => return (Cvec::Stuck, egraph.analysis.cvec_analysis.timestamp),
         Some(cvec_children) => {
           let new_enode = SymbolLang::new(op, cvec_children);
           let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(new_enode);
@@ -348,14 +355,17 @@ impl Cvec {
         }
       }
     }
-    Cvec::Cvec(new_cvec)
+    (Cvec::Cvec(new_cvec), max_child_timestamp)
   }
 
   fn merge(&mut self, a_timestamp: usize, b: Self, b_timestamp: usize, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> DidMerge {
-    // println!("merging cvecs: {:?} and {:?}", self, b);
+    // println!("merging cvecs: {:?} and {:?} ({} is newer) {} < {}", self, b, if a_timestamp < b_timestamp {"second"} else {"first"}, a_timestamp, b_timestamp);
     // Always replace a stuck cvec
+    // *self = b;
+    // return DidMerge(false, false);
     match (&self, &b) {
       (Cvec::Stuck, Cvec::Cvec(_)) => {
+        // println!("taking {:?}", b);
         *self = b;
         DidMerge(true, false)
       }
@@ -373,16 +383,20 @@ impl Cvec {
           resolved_id1 != resolved_id2
         });
         if different && a_timestamp < b_timestamp {
+          // println!("taking {:?}", b);
           *self = b;
           DidMerge(true, false)
         } else {
+          // println!("keeping {:?}", self);
           DidMerge(false, true)
         }
       }
       (Cvec::Cvec(_), Cvec::Stuck) => {
+        // println!("keeping {:?}", self);
         DidMerge(false, true)
       }
       (Cvec::Stuck, Cvec::Stuck) => {
+        // println!("keeping {:?}", self);
         DidMerge(false, false)
       }
     }
@@ -634,21 +648,21 @@ impl Analysis<SymbolLang> for CycleggAnalysis {
     //       }
     //     }
     //   };
-    self.cvec_analysis.saturate();
-    merge_max(&mut a.timestamp, b.timestamp)
-      | a.cvec_data.merge(a.timestamp, b.cvec_data, b.timestamp, &self.cvec_analysis.cvec_egraph)
+    // self.cvec_analysis.saturate();
+    a.cvec_data.merge(a.timestamp, b.cvec_data, b.timestamp, &self.cvec_analysis.cvec_egraph)
+      | merge_max(&mut a.timestamp, b.timestamp)
       | a.canonical_form_data.merge(b.canonical_form_data)
   }
 
   fn make(egraph: &EGraph<SymbolLang, Self>, enode: &SymbolLang) -> Self::Data {
-    let cvec_data = Cvec::make(egraph, enode);
+    let (cvec_data, timestamp) = Cvec::make(egraph, enode);
     let canonical_form_data = CanonicalForm::make(enode);
     CycleggData {
       cvec_data,
       // force_update_cvec: false,
       // age: 0,
       canonical_form_data,
-      timestamp: egraph.analysis.cvec_analysis.timestamp,
+      timestamp,
     }
   }
 
