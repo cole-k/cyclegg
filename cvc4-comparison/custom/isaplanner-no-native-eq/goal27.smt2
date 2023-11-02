@@ -42,11 +42,11 @@
 (assert (forall ((y Nat)) (not (eq zero (succ y)))))
 (assert (forall ((x Nat)) (not (eq (succ x) zero))))
 (assert (forall ((x Nat) (y Nat)) (= (eq (succ x) (succ y)) (eq x y))))
+(assert (forall ((x Lst)) (= (append nil x) x)))
+(assert (forall ((x Nat) (y Lst) (z Lst)) (= (append (cons x y) z) (cons x (append y z)))))
 (assert (forall ((x Nat)) (= (mem x nil) false)))
 (assert (forall ((x Nat) (y Nat) (z Lst)) (= (mem x (cons y z)) (or (eq x y) (mem x z)))))
-(assert (forall ((i Nat)) (= (ins1 i nil) (cons i nil))))
-(assert (forall ((i Nat) (x Nat) (y Lst)) (= (ins1 i (cons x y)) (ite (eq i x) (cons x y) (cons x (ins1 i y))))))
 (assert (not 
-(forall ((x Nat) (l Lst)) (mem x (ins1 x l))) ; G29 
+(forall ((x Nat) (l Lst) (t Lst)) (=> (mem x t) (mem x (append l t)))) ; G27 
 ))
 (check-sat)
