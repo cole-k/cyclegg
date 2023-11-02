@@ -327,7 +327,7 @@ pub struct Goal<'a> {
   pub params: Vec<Symbol>,
   /// Variables we can case-split
   /// (i.e. the subset of local_context that have datatype types)
-  scrutinees: VecDeque<Symbol>,
+  scrutinees: VecDeque<(Symbol, usize)>,
   /// Variables that we have already case split
   pub case_split_vars: HashSet<Symbol>,
   /// Instantiations of the induction hypothesis that are in the egraph
@@ -444,14 +444,13 @@ impl<'a> Goal<'a> {
   }
 
   /// Saturate the goal by applying all available rewrites
-  pub fn saturate(mut self, top_lemmas: &HashMap<String, Rw>) -> Self {
+  pub fn saturate(&mut self, top_lemmas: &HashMap<String, Rw>) {
     let rewrites = self.reductions.iter().chain(self.lemmas.values()).chain(top_lemmas.values());
     let runner = Runner::default()
       .with_explanations_enabled()
-      .with_egraph(self.egraph)
+      .with_egraph(self.egraph.to_owned())
       .run(rewrites);
     self.egraph = runner.egraph;
-    self
   }
 
   fn get_explanation_and_validity(eq: &Equation, egraph: &mut Eg) -> (Option<Explanation<SymbolLang>>, bool) {
@@ -737,12 +736,7 @@ impl<'a> Goal<'a> {
   fn add_scrutinee(&mut self, var: Symbol, ty: &Type, depth: usize) {
     if let Ok((dt, _)) = ty.datatype() {
       if self.env.contains_key(&Symbol::from(dt)) {
-        // Only add new variable to scrutinees if its depth doesn't exceed the bound
-        if depth < CONFIG.max_split_depth {
-          self.scrutinees.push_back(var);
-        } else {
-          self.scrutinees.push_back(Symbol::from(BOUND_EXCEEDED));
-        }
+        self.scrutinees.push_back((var, depth));
       }
     }
   }
@@ -779,7 +773,7 @@ impl<'a> Goal<'a> {
         .insert(fresh_var, BOOL_TYPE.parse().unwrap());
       // We are adding the new scrutinee to the front of the deque,
       // because we want to split conditions first, since they don't introduce new variables
-      self.scrutinees.push_front(fresh_var);
+      self.scrutinees.push_front((fresh_var, 1));
       let new_node = SymbolLang::leaf(fresh_var);
       let new_pattern_ast = vec![ENodeOrVar::ENode(new_node.clone())].into();
       let guard_var_pattern_ast = vec![ENodeOrVar::Var(guard_var)].into();
@@ -795,7 +789,7 @@ impl<'a> Goal<'a> {
   }
 
   /// Consume this goal and add its case splits to the proof state
-  fn case_split(mut self, var: Symbol, state: &mut ProofState<'a>) {
+  fn case_split(self, var: Symbol, depth: usize, state: &mut ProofState<'a>) {
     let new_lemmas = self.add_lemma_rewrites(state);
 
     let var_str = var.to_string();
@@ -831,12 +825,12 @@ impl<'a> Goal<'a> {
 
       for (i, arg_type) in con_args.iter().enumerate() {
         let fresh_var_name = format!("{}_{}{}", var, self.egraph.total_size(), i);
-        let depth = var_depth(&fresh_var_name[..]);
+        // let depth = var_depth(&fresh_var_name[..]);
         let fresh_var = Symbol::from(fresh_var_name.clone());
         fresh_vars.push(fresh_var);
         // Add new variable to context
         new_goal.local_context.insert(fresh_var, arg_type.clone());
-        new_goal.add_scrutinee(fresh_var, arg_type, depth);
+        new_goal.add_scrutinee(fresh_var, arg_type, depth + 1);
         let id = new_goal.egraph.add(SymbolLang::leaf(fresh_var));
         new_goal.var_classes.insert(fresh_var, id);
         // We can only generate a cvec for non-arrow types.
@@ -1040,11 +1034,11 @@ impl<'a> Goal<'a> {
   }
 
   /// Gets the next variable to case split on using the blocking var analysis
-  fn next_scrutinee(&mut self, mut blocking_vars: HashSet<Symbol>) -> Option<Symbol> {
+  fn next_scrutinee(&mut self, mut blocking_vars: HashSet<Symbol>) -> Option<(Symbol, usize)> {
     let blocking = self
       .scrutinees
       .iter()
-      .find_position(|x| blocking_vars.contains(x));
+      .find_position(|(x, _)| blocking_vars.contains(x));
 
     // Add the vars we already have case split on, since those were previously
     // blocking. This is important for our soundness check, since we skip
@@ -1407,7 +1401,7 @@ impl<'a> Goal<'a> {
     self.compute_parents(self.eq.lhs.id, &mut lhs_parents, &mut HashSet::default());
     let mut rhs_parents = HashMap::default();
     self.compute_parents(self.eq.rhs.id, &mut rhs_parents, &mut HashSet::default());
-    let var_classes = self.scrutinees.iter().flat_map(|var| self.egraph.lookup(SymbolLang::leaf(*var)).map(|class| (*var, class)));
+    let var_classes = self.scrutinees.iter().flat_map(|(var, _)| self.egraph.lookup(SymbolLang::leaf(*var)).map(|class| (*var, class)));
     let fresh_name = format!("fresh_{}", self.name.len());
     let mut gs: HashMap<String, RawEquation> = HashMap::default();
     for (_var_name, var_class) in var_classes {
@@ -1741,8 +1735,9 @@ pub struct ProofState<'a> {
   pub solved_goal_explanation_and_context: HashMap<String, (Explanation<SymbolLang>, Context)>,
   pub proof: HashMap<String, ProofTerm>,
   pub start_time: Instant,
-  pub depth: usize,
+  pub proof_depth: usize,
   pub lemmas_state: LemmasState,
+  pub case_split_depth: usize,
   // pub cc_lemmas: HashMap<String, Rw>,
 }
 
@@ -1754,7 +1749,7 @@ impl<'a> ProofState<'a> {
   }
 
   /// Try to prove all of the lemmas we've collected so far.
-  pub fn try_prove_lemmas(&mut self, mut goal: Goal) -> bool {
+  pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> bool {
     for chain in self.lemmas_state.possible_lemmas.chains.iter() {
       for raw_eq_with_params in chain.chain.iter() {
         if self.lemmas_state.proven_lemmas.contains_leq(&raw_eq_with_params) || self.lemmas_state.cyclic_lemmas.contains_leq(&raw_eq_with_params) {
@@ -1785,7 +1780,7 @@ impl<'a> ProofState<'a> {
         new_lemmas_state.possible_lemmas = ChainSet::new();
         new_lemmas_state.cyclic_lemmas = ChainSet::new();
         new_lemmas_state.cyclic_lemma_rewrites = HashMap::new();
-        let (outcome, ps) = prove(new_goal, self.depth + 1, new_lemmas_state);
+        let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state);
         // Steal the lemmas we got from the recursive proving.
         self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
         self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
@@ -1797,7 +1792,7 @@ impl<'a> ProofState<'a> {
           // Add any cyclic lemmas we proved too
           self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
           self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
-          goal = goal.saturate(&self.lemmas_state.lemma_rewrites);
+          goal.saturate(&self.lemmas_state.lemma_rewrites);
           if goal.check_validity() {
             return true;
           }
@@ -1821,6 +1816,15 @@ impl<'a> ProofState<'a> {
     let (rws, rewrite_eqs) = goal.make_cyclic_lemmas(self, false);
     self.lemmas_state.cyclic_lemmas.extend(rewrite_eqs);
     self.lemmas_state.cyclic_lemma_rewrites.extend(rws);
+  }
+
+  pub fn update_depth(&mut self, depth: usize) -> bool {
+    if depth > self.case_split_depth {
+      self.case_split_depth = depth;
+      true
+    } else {
+      false
+    }
   }
 }
 
@@ -1869,7 +1873,6 @@ pub fn explain_goal_failure(goal: &Goal) {
 
 /// Top-level interface to the theorem prover.
 pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Outcome, ProofState) {
-  let goal_name = goal.name.clone();
   let goal_eq = RawEquation::new(goal.eq.lhs.sexp.clone(), goal.eq.rhs.sexp.clone());
   let goal_eq_with_params = RawEqWithParams::new(goal_eq, goal.params.iter().cloned().map(|param| (param, goal.local_context.get(&param).unwrap().clone())).collect());
   // We won't attempt to prove the goal again (it isn't actually proven).
@@ -1879,10 +1882,12 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     solved_goal_explanation_and_context: HashMap::default(),
     proof: HashMap::default(),
     start_time: Instant::now(),
-    depth,
+    proof_depth: depth,
     lemmas_state,
+    case_split_depth: 0,
   };
-  if depth == 3 {
+  // FIXME: put in config
+  if state.proof_depth == 3 {
     return (Outcome::Unknown, state);
   }
   while !state.goals.is_empty() {
@@ -1895,7 +1900,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     // Pop the first subgoal
     goal = state.goals.pop().unwrap();
     // Saturate the goal
-    goal = goal.saturate(&state.lemmas_state.lemma_rewrites);
+    goal.saturate(&state.lemmas_state.lemma_rewrites);
     if CONFIG.save_graphs {
       goal.save_egraph();
     }
@@ -1937,7 +1942,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     let (blocking_vars, blocking_exprs) =
       if !CONFIG.blocking_vars_analysis {
         warn!("Blocking var analysis is disabled");
-        (goal.scrutinees.iter().cloned().collect(), HashSet::default())
+        (goal.scrutinees.iter().map(|(v, _)| v).cloned().collect(), HashSet::default())
       } else {
         let (blocking_vars, blocking_exprs) = goal.find_blocking();
         if CONFIG.verbose {
@@ -1952,21 +1957,33 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     // It's unclear that it lets us prove that much more anyway.
     // state.add_cyclic_lemmas(&goal);
 
-    if goal.scrutinees.front().unwrap() == &Symbol::from(BOUND_EXCEEDED) {
-      // This goal could be further split, but we have reached the maximum depth,
-      // we cannot prove or disprove the conjecture
-      if CONFIG.verbose {
-        for remaining_goal in &state.goals {
-          println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
+    // if state.update_depth(goal.scrutinees.front().unwrap().1) {
+    //   // This goal could be further split, but we have reached the maximum depth,
+    //   // we cannot prove or disprove the conjecture
+    //   if CONFIG.verbose {
+    //     for remaining_goal in &state.goals {
+    //       println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
+    //     }
+    //   }
+    //   if state.handle_depth_exceeded_failure(goal) {
+    //     continue;
+    //   }
+    //   return (Outcome::Unknown, state);
+    // }
+    let depth_at_front = goal.scrutinees.front().unwrap().1;
+    if let Some((scrutinee, depth)) = goal.next_scrutinee(blocking_vars) {
+      let d = depth.max(depth_at_front);
+      if d > state.case_split_depth {
+        state.case_split_depth = d;
+        if state.try_prove_lemmas(&mut goal) {
+          continue;
         }
       }
-      if state.try_prove_lemmas(goal) {
-        continue;
+      if state.case_split_depth > CONFIG.max_split_depth {
+        // This goal could be further split, but we have reached the maximum depth,
+        // we cannot prove or disprove the conjecture
+        return (Outcome::Unknown, state);
       }
-      return (Outcome::Unknown, state);
-    }
-    if let Some(scrutinee) = goal.next_scrutinee(blocking_vars) {
-      println!("next scrutinee is {}", scrutinee);
       if CONFIG.verbose {
         println!(
           "{}: {}",
@@ -1974,7 +1991,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
           scrutinee.to_string().purple()
         );
       }
-      goal.case_split(scrutinee, &mut state);
+      goal.case_split(scrutinee, depth, &mut state);
     } else {
       if CONFIG.verbose {
         println!("{}", "Cannot case split: no blocking variables found".red());
@@ -1982,8 +1999,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
           println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
         }
       }
-      if goal.scrutinees.contains(&Symbol::from(BOUND_EXCEEDED)) {
-        if state.try_prove_lemmas(goal) {
+      if goal.scrutinees.iter().any(|(_, depth)| depth > &CONFIG.max_split_depth) {
+        if state.try_prove_lemmas(&mut goal) {
           continue;
         }
         // println!("Failed to prove case {}, trying CC lemmas", goal.name);
