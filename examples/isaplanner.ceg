@@ -455,8 +455,8 @@
 
 (// Needs ((=> (max ?a ?b) (max ?b ?a))))
 (=== goal_47 (t) ((Tree a))
-(height (mirror t))
-(height t)
+    (height (mirror t))
+    (height t)
 )
 
 (// This is an example that requires explicitly grounding the premise)

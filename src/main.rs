@@ -52,6 +52,7 @@ fn main() -> Result<()> {
       &reductions,
       &parser_state.cvec_rules,
       &defns,
+      &raw_goal.local_searchers,
     );
     num_goals_attempted += 1;
     println!(

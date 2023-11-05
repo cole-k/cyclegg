@@ -526,7 +526,7 @@
 )
 
 
-(=== clam_48 (x) ((List a))
+(=== clam_48 (x) ((List Nat))
   (len (sort x))
   (len x)
   ((=> (len (insort ?x ?y)) (S (len ?y))))

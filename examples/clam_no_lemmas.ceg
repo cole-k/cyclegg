@@ -255,11 +255,11 @@
 
 (:: fac (-> (Nat) Nat))
 (let fac (Z) (S Z))
-(let fac ((S ?n)) (mult (fac ?n) ?n))
+(let fac ((S ?n)) (mult (fac ?n) (S ?n)))
 
 (:: qfac (-> (Nat Nat) Nat))
 (let qfac (Z ?n) ?n)
-(let qfac ((S ?m) ?n) (qfac ?m (mult ?n ?m)))
+(let qfac ((S ?m) ?n) (qfac ?m (mult ?n (S ?m))))
 
 (:: exp (-> (Nat Nat) Nat))
 (// This is maybe necessary, unsure if they had it in the definition)
@@ -401,6 +401,11 @@
 )
 
 
+(//
+  ((=?> (append (append ?x (Cons ?y Nil)) ?z) (append ?x (Cons ?y ?z)))
+   (=?> (append (append ?x ?y) (Cons ?z Nil)) (append ?x (append ?y (Cons ?z Nil))))
+  )
+)
 (=== clam_21 (x y) ((List a) (List a))
   (rotate (len x) (append x y))
   (append y x)
@@ -440,6 +445,7 @@
 )
 
 
+(// ((=?> (append (rev ?x) ?y) (qreva ?x ?y))) )
 (=== clam_27 (x) ((List a))
   (rev x)
   (qreva x Nil)
@@ -476,12 +482,18 @@
 )
 
 
+(//
+  ((=?> (mult (fac ?x) ?y) (qfac ?x ?y)))
+)
 (=== clam_33 (x) (Nat)
   (fac x)
   (qfac x (S Z))
 )
 
 
+(//
+  ((=?> (plus (mult ?x ?y) ?z) (qmult ?x ?y ?z)))
+)
 (=== clam_34 (x y) (Nat Nat)
   (mult x y)
   (qmult x y Z)
@@ -494,7 +506,7 @@
 )
 
 
-(=== clam_48 (x) ((List a))
+(=== clam_48 (x) ((List Nat))
   (len (sort x))
   (len x)
 )
@@ -588,6 +600,13 @@
 (=== clam_86 (x y z) (Nat Nat Nat)
   (mult (exp x y) z)
   (qexp x y z)
+)
+
+(//
+(=== test_clam_27 (x y) ((List a) (List a))
+  (append (rev x) y)
+  (qreva x y)
+)
 )
 
 (//

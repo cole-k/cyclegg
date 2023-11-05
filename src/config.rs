@@ -82,9 +82,11 @@ pub struct Args {
   /// size) greater than this.
   #[clap(long = "max-lemma-size", default_value = "25")]
   pub max_lemma_size: usize,
-
   #[clap(long = "no-grounding")]
   pub no_grounding: bool,
+  /// Apply reductions destructively.
+  #[clap(long = "destructive-rewrites")]
+  pub destructive_rewrites: bool,
 }
 
 impl Args {
@@ -127,6 +129,7 @@ pub struct Config {
   pub cvec_num_rolls: usize,
   pub cvec_num_random_terms_per_type: usize,
   pub add_grounding: bool,
+  pub destructive_rewrites: bool,
 }
 
 impl Config {
@@ -175,6 +178,7 @@ impl Config {
       cvec_num_rolls: args.cvec_num_rolls,
       cvec_num_random_terms_per_type: args.cvec_num_random_terms_per_type,
       add_grounding: !args.no_grounding,
+      destructive_rewrites: args.destructive_rewrites,
     }
   }
 

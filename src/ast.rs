@@ -389,6 +389,27 @@ pub fn get_vars(e: &Expr) -> HashSet<Symbol>
   vars
 }
 
+pub fn sexp_leaves(sexp: &Sexp) -> HashSet<String> {
+  let mut leaves = HashSet::default();
+  sexp_leaves_helper(sexp, &mut leaves);
+  leaves
+}
+
+fn sexp_leaves_helper(sexp: &Sexp, leaves: &mut HashSet<String>) {
+  match sexp {
+    Sexp::String(s) => {
+      leaves.insert(s.clone());
+    },
+    Sexp::List(list) => {
+      let mut list_iter = list.iter();
+      // Skip the head, it's a function
+      list_iter.next();
+      list_iter.for_each(|sexp| sexp_leaves_helper(sexp, leaves));
+    }
+    Sexp::Empty => {}
+  }
+}
+
 // Convert a symbol into a wildcard by prepending a '?' to it
 pub fn to_wildcard(s: &Symbol) -> Var {
   format!("?{}", s).parse().unwrap()

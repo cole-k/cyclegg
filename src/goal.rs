@@ -266,6 +266,42 @@ impl Display for Equation {
   }
 }
 
+// TODO: make it work for RawEqWithParams, need to take in global context
+fn find_generalizations_raw_eq(raw_eq: &RawEqWithParams, global_context: &Context, fresh_name: String) -> Vec<RawEqWithParams> {
+  let lhs_nontrivial_subexprs = nontrivial_sexp_subexpressions_containing_vars(&raw_eq.eq.lhs);
+  let rhs_nontrivial_subexprs = nontrivial_sexp_subexpressions_containing_vars(&raw_eq.eq.rhs);
+  let mut output = vec!();
+  // println!("Trying to generalize {} = {}", raw_eq.eq.lhs, raw_eq.eq.rhs);
+  for (rhs_subexpr_str, subexpr) in &rhs_nontrivial_subexprs {
+    // should be the same subexpr so we don't need to bind it
+    if let Some(_) = lhs_nontrivial_subexprs.get(rhs_subexpr_str) {
+      let op = match subexpr {
+        Sexp::Empty => unreachable!(),
+        // This shouldn't happen unless we generalize a constant
+        Sexp::String(s) => s,
+        Sexp::List(list) => list.first().unwrap().string().unwrap(),
+      };
+      let op_ty = &global_context[&Symbol::new(op)];
+      // Again, we assume that the expression here is fully applied, i.e. it is not a $
+      let (_, ty) = op_ty.args_ret();
+      let var_symb = Symbol::new(&fresh_name);
+      let generalized_var = Sexp::String(fresh_name.clone());
+      let new_lhs = substitute_sexp(&raw_eq.eq.lhs, subexpr, &generalized_var);
+      let new_rhs = substitute_sexp(&raw_eq.eq.rhs, subexpr, &generalized_var);
+      let lhs_vars = sexp_leaves(&new_lhs);
+      let rhs_vars = sexp_leaves(&new_lhs);
+      let mut new_params = raw_eq.params.clone();
+      // Only keep the vars that remain after substituting.
+      new_params.retain(|(var, _ty)| lhs_vars.contains(&var.to_string()) || rhs_vars.contains(&var.to_string()));
+      new_params.push((var_symb, ty));
+      // println!("Genearlization candidate: {} = {}", new_lhs, new_rhs);
+      output.push(RawEqWithParams::new(RawEquation::new(new_lhs, new_rhs), new_params));
+    }
+  }
+  output
+}
+
+
 impl Equation {
   /// Add both sides of a raw equation to the egraph,
   /// producing an equation;
@@ -287,20 +323,6 @@ impl Equation {
       lhs: self.lhs.update_variables(subst, egraph),
       rhs: self.rhs.update_variables(subst, egraph),
     }
-  }
-
-  fn find_generalizations(&self) -> Vec<Self> {
-    let lhs_nontrivial_subexprs = nontrivial_sexp_subexpressions_containing_vars(&self.lhs.sexp);
-    let rhs_nontrivial_subexprs = nontrivial_sexp_subexpressions_containing_vars(&self.rhs.sexp);
-    for (rhs_subexpr_str, subexpr) in &rhs_nontrivial_subexprs {
-      // should be the same subexpr so we don't need to bind it
-      if let Some(_) = lhs_nontrivial_subexprs.get(rhs_subexpr_str) {
-        let generalized = Sexp::String("FRESH".to_string());
-        println!("Candidate: {} === {}", substitute_sexp(&self.lhs.sexp, subexpr, &generalized), substitute_sexp(&self.rhs.sexp, subexpr, &generalized));
-      }
-    }
-
-    return vec!()
   }
 
 }
@@ -347,6 +369,9 @@ pub struct Goal<'a> {
   pub defns: &'a Defns,
   /// Stores the expression each guard variable maps to
   guard_exprs: HashMap<String, Expr>,
+  /// Searchers for whether the LHS and RHS of some rewrite appears in our
+  /// e-graph.
+  pub searchers: &'a Vec<ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>>,
 }
 
 impl<'a> Goal<'a> {
@@ -361,6 +386,7 @@ impl<'a> Goal<'a> {
     reductions: &'a Vec<Rw>,
     cvec_reductions: &'a Vec<CvecRw>,
     defns: &'a Defns,
+    searchers: &'a Vec<ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>>,
   ) -> Self {
     let mut egraph: Eg = EGraph::default().with_explanations_enabled();
     let eq = Equation::new(eq, &mut egraph, false);
@@ -390,6 +416,7 @@ impl<'a> Goal<'a> {
       env,
       global_context,
       defns,
+      searchers,
     };
     // FIXME: this could really also be a reference. Probably not necessary
     // for efficiency reason but yeah.
@@ -455,15 +482,26 @@ impl<'a> Goal<'a> {
       // If we reach this point, I think we won't have an explanation
       explanation: None,
       guard_exprs: self.guard_exprs.clone(),
+      searchers: self.searchers,
     }
   }
 
   /// Saturate the goal by applying all available rewrites
   pub fn saturate(&mut self, top_lemmas: &HashMap<String, Rw>) {
     let rewrites = self.reductions.iter().chain(self.lemmas.values()).chain(top_lemmas.values());
+    let lhs_id = self.eq.lhs.id;
+    let rhs_id = self.eq.rhs.id;
     let runner = Runner::default()
       .with_explanations_enabled()
       .with_egraph(self.egraph.to_owned())
+      .with_hook(move |runner| {
+        // Stop iteration if we have proven lhs == rhs
+        if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
+          Err("Goal proven".to_string())
+        } else {
+          Ok(())
+        }
+      })
       .run(rewrites);
     self.egraph = runner.egraph;
   }
@@ -928,7 +966,7 @@ impl<'a> Goal<'a> {
       }
 
       // Add the subgoal to the proof state
-      state.goals.push(new_goal);
+      state.goals.push_back(new_goal);
     }
     // We split on var into the various instantiated constructors and subgoals.
     //
@@ -1274,25 +1312,25 @@ impl<'a> Goal<'a> {
             }
             _ => {}
           }
-          let extractor = Extractor::new(&self.egraph, AstSize);
-          let e1 = CanonicalFormAnalysis::extract_canonical(&self.egraph, class_1_id).unwrap_or_else(||{
-            extractor.find_best(class_1_id).1
-          });
-          let e2 = CanonicalFormAnalysis::extract_canonical(&self.egraph, class_2_id).unwrap_or_else(||{
-            extractor.find_best(class_2_id).1
-          });
+          // let extractor = Extractor::new(&self.egraph, AstSize);
+          // let e1 = CanonicalFormAnalysis::extract_canonical(&self.egraph, class_1_id).unwrap_or_else(||{
+          //   extractor.find_best(class_1_id).1
+          // });
+          // let e2 = CanonicalFormAnalysis::extract_canonical(&self.egraph, class_2_id).unwrap_or_else(||{
+          //   extractor.find_best(class_2_id).1
+          // });
           // let (_, e1) = extractor.find_best(class_1_id);
           // let (_, e2) = extractor.find_best(class_2_id);
 
           // let new_egraph = self.egraph.clone();
 
-          // let exprs = get_all_expressions(&self.egraph, vec![class_1_id, class_2_id]);
+          let exprs = get_all_expressions(&self.egraph, vec![class_1_id, class_2_id]);
 
-          let mut exprs: HashMap<Id, Vec<Expr>> = vec![(class_1_id, vec![]), (class_2_id, vec![])]
-            .into_iter()
-            .collect();
-          exprs.insert(class_1_id, vec!(e1.clone()));
-          exprs.insert(class_2_id, vec!(e2.clone()));
+          // let mut exprs: HashMap<Id, Vec<Expr>> = vec![(class_1_id, vec![]), (class_2_id, vec![])]
+          //   .into_iter()
+          //   .collect();
+          // exprs.insert(class_1_id, vec!(e1.clone()));
+          // exprs.insert(class_2_id, vec!(e2.clone()));
           let (_new_rewrites, _new_rewrite_names, new_rewrite_eqs) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false);
           // let rewrites = self.reductions.iter().chain(new_rewrites.values());
           // let mut runner = Runner::default()
@@ -1304,6 +1342,10 @@ impl<'a> Goal<'a> {
           //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
           // }
 
+          let fresh_name = format!("fresh_{}", self.egraph.total_size());
+          let generalized_eqs = new_rewrite_eqs.iter().flat_map(|new_rewrite_eq| find_generalizations_raw_eq(&new_rewrite_eq, self.global_context, fresh_name.clone()));
+
+          lemmas.extend(generalized_eqs);
           lemmas.extend(new_rewrite_eqs);
           // if new_rewrite_names.len() > 0 {
           // // if let Some(_) = explanation {
@@ -1571,6 +1613,10 @@ impl<'a> Goal<'a> {
     // println!("parent to child index: {:?}", parent_to_child_index);
     let mut cache = HashMap::default();
     cache.insert(gen_class, Some(vec!(SymbolLang::leaf(gen_fresh_sym)).into()));
+    // FIXME: skip extraction if gen_class can't reach both the LHS and RHS. I
+    // think it's fine to keep it as is for now because the generalized lemma
+    // will just be the LHS = RHS and it will probably be rejected by our lemma
+    // set since we seed it with LHS = RHS.
     self.extract_generalized_expr_helper(gen_class, gen_fresh_sym, extract_class, &parent_to_child_index, &mut cache)
   }
 
@@ -1610,7 +1656,9 @@ impl<'a> Goal<'a> {
                              self.global_context,
                              self.reductions,
                              self.cvec_reductions,
-                             self.defns);
+                             self.defns,
+                             self.searchers,
+    );
     // // Add the node as a scrutinee and note its type.
     // new_goal.local_context.insert(fresh_symb, class_ty.clone());
     // new_goal.scrutinees.push_front(fresh_symb);
@@ -1750,7 +1798,7 @@ impl LemmasState {
 /// A proof state is a list of subgoals,
 /// all of which have to be discharged
 pub struct ProofState<'a> {
-  pub goals: Vec<Goal<'a>>,
+  pub goals: VecDeque<Goal<'a>>,
   pub solved_goal_explanation_and_context: HashMap<String, (Explanation<SymbolLang>, Context)>,
   pub proof: HashMap<String, ProofTerm>,
   pub start_time: Instant,
@@ -1773,6 +1821,9 @@ impl<'a> ProofState<'a> {
     for chain in self.lemmas_state.possible_lemmas.chains.iter() {
       // println!("chain lemmas: {}", chain.chain.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
       for (i, raw_eq_with_params) in chain.chain.iter().enumerate() {
+        if self.timeout() {
+          return false;
+        }
         // Is the lemma already proven or subsumed by a cyclic lemma?
         if self.lemmas_state.proven_lemmas.contains_leq(&raw_eq_with_params) || self.lemmas_state.cyclic_lemmas.contains_leq(&raw_eq_with_params) {
           continue;
@@ -1790,7 +1841,9 @@ impl<'a> ProofState<'a> {
                                  goal.global_context,
                                  goal.reductions,
                                  goal.cvec_reductions,
-                                 goal.defns);
+                                 goal.defns,
+                                 goal.searchers,
+        );
         let try1 = new_goal.cvecs_valid();
         let mut new_goal_2 = Goal::top(&goal_name,
                                  &raw_eq_with_params.eq,
@@ -1800,7 +1853,9 @@ impl<'a> ProofState<'a> {
                                  goal.global_context,
                                  goal.reductions,
                                  goal.cvec_reductions,
-                                 goal.defns);
+                                 goal.defns,
+                                 goal.searchers,
+        );
         let try2 = new_goal_2.cvecs_valid();
         if try1 && !try2 {
           // println!("Second try helped");
@@ -1965,7 +2020,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
   // We won't attempt to prove the goal again (it isn't actually proven).
   lemmas_state.proven_lemmas.insert(goal_eq_with_params);
   let mut state = ProofState {
-    goals: vec![goal],
+    goals: vec![goal].into(),
     solved_goal_explanation_and_context: HashMap::default(),
     proof: HashMap::default(),
     start_time: Instant::now(),
@@ -1987,7 +2042,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     // TODO: This should be info! but I don't know how to suppress all the info output from egg
     warn!("PROOF STATE: {}", pretty_state(&state));
     // Pop the first subgoal
-    goal = state.goals.pop().unwrap();
+    goal = state.goals.pop_front().unwrap();
     // Saturate the goal
     goal.saturate(&state.lemmas_state.lemma_rewrites);
     if CONFIG.save_graphs {
@@ -2046,6 +2101,33 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     // It's unclear that it lets us prove that much more anyway.
     // state.add_cyclic_lemmas(&goal);
 
+    goal.searchers.iter().for_each(|searcher: &ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>| {
+      let results = searcher.search(&goal.egraph);
+      let extractor = Extractor::new(&goal.egraph, AstSize);
+      if results.len() > 0 {
+        println!("Found search result for {} =?> {}", searcher.searcher, searcher.condition);
+        for result in results {
+          println!("Result eclass: {}", result.eclass);
+          result.substs.iter().for_each(|subst|{
+            for var in searcher.searcher.vars().iter() {
+              let exp = extractor.find_best(subst[*var]).1;
+              println!("Var {} = {}", var, exp);
+            }
+          });
+          let result_cvec = &goal.egraph[result.eclass].data.cvec_data;
+          for eclass in goal.egraph.classes() {
+            if eclass.id == result.eclass {
+              continue;
+            }
+            if let Some(true) = cvecs_equal(&goal.egraph.analysis.cvec_analysis, result_cvec, &goal.egraph[eclass.id].data.cvec_data) {
+              let exp = extractor.find_best(eclass.id).1;
+              println!("Matching eclass via cvec analysis: {} (id {})", exp, eclass.id);
+            }
+          }
+        }
+      };
+    });
+
     // if state.update_depth(goal.scrutinees.front().unwrap().1) {
     //   // This goal could be further split, but we have reached the maximum depth,
     //   // we cannot prove or disprove the conjecture
@@ -2071,6 +2153,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
       if state.case_split_depth > CONFIG.max_split_depth + state.proof_depth {
         // This goal could be further split, but we have reached the maximum depth,
         // we cannot prove or disprove the conjecture
+        // state.goals.push_back(goal);
+        // continue;
         return (Outcome::Unknown, state);
       }
       if CONFIG.verbose {
@@ -2103,6 +2187,9 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
         //   continue;
         // }
         // // goal.look_for_generalizations_2();
+
+        // state.goals.push_back(goal);
+        // continue;
         return (Outcome::Unknown, state);
       } else {
         return (Outcome::Invalid, state);

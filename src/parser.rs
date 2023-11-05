@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use symbolic_expressions::*;
 
 use crate::ast::*;
+use crate::config::CONFIG;
+use crate::egraph::{ConditionalSearcher, DestructiveApplier};
 use crate::goal::*;
 
 fn make_rewrite_for_defn<A>(name: &str, args: &Sexp, value: &Sexp) -> Rewrite<SymbolLang, A>
@@ -25,7 +27,12 @@ fn make_rewrite_for_defn<A>(name: &str, args: &Sexp, value: &Sexp) -> Rewrite<Sy
   // println!("rewrite rule: {} => {}", lhs, rhs);
   let searcher: Pattern<SymbolLang> = lhs.parse().unwrap();
   let applier: Pattern<SymbolLang> = rhs.parse().unwrap();
-  Rewrite::new(lhs, searcher, applier).unwrap()
+  if CONFIG.destructive_rewrites {
+    Rewrite::new(lhs, searcher.clone(), DestructiveApplier::new(searcher, applier)).unwrap()
+  } else {
+    Rewrite::new(lhs, searcher, applier).unwrap()
+  }
+
 }
 
 pub struct RawGoal {
@@ -34,6 +41,7 @@ pub struct RawGoal {
   pub premise: Option<RawEquation>,
   pub params: Vec<(Symbol, Type)>,
   pub local_rules: Vec<Rw>,
+  pub local_searchers: Vec<ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>>
 }
 
 #[derive(Default)]
@@ -350,6 +358,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         let equation = RawEquation::new(lhs, rhs);
 
         let mut local_rules = vec![];
+        let mut local_searchers = vec![];
         // If there's more to parse, these must be lemmas.
         if decl.list()?.len() > index {
           // Lemmas we are using to aid this proof
@@ -386,6 +395,13 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
                 .unwrap();
                 local_rules.push(rw);
               }
+              "=?>" => {
+                let s = ConditionalSearcher {
+                  searcher,
+                  condition: applier,
+                };
+                local_searchers.push(s);
+              }
               _ => panic!("unknown rewrite rules: {}", rule_sexp),
             }
           }
@@ -397,6 +413,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
           equation,
           params,
           local_rules,
+          local_searchers,
         };
         state.raw_goals.push(raw_goal);
       }
