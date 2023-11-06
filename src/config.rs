@@ -84,9 +84,33 @@ pub struct Args {
   pub max_lemma_size: usize,
   #[clap(long = "no-grounding")]
   pub no_grounding: bool,
-  /// Apply reductions destructively.
-  #[clap(long = "destructive-rewrites")]
-  pub destructive_rewrites: bool,
+  /// Do not apply reductions destructively.
+  #[clap(long = "no-destructive-rewrites")]
+  pub no_destructive_rewrites: bool,
+  /// Number of times we will try to recursively prove props
+  ///
+  /// Depth 2 means that we will try to prove lemmas of lemmas, but not anything
+  /// more.
+  #[clap(long = "proof-depth", default_value = "2")]
+  pub proof_depth: usize,
+  /// Does not generalize goals based on our blocking expression analysis.
+  ///
+  /// Note that even if this is turned off, we will still generalize lemmmas
+  /// used in the cvec analysis. Pass the flag --no-cc-lemma-generalization for
+  /// to disable this.
+  #[clap(long = "no-generalization")]
+  pub no_generalization: bool,
+  /// Do not propose lemmas based on the cvec analysis. Pass --no-cc-lemmas-generalization
+  /// to just disable generalization for these lemmas.
+  #[clap(long = "no-cc-lemmas")]
+  pub no_cc_lemmas: bool,
+  /// Do not generalize cc lemmas after theorizing them.
+  #[clap(long = "no-cc-lemmas-generalization")]
+  pub no_cc_lemmas_generalization: bool,
+  /// Our termination check will skip variables that are not blocking. Use this
+  /// flag to disable skipping this check.
+  #[clap(long = "no-better-termination")]
+  pub no_better_termination: bool,
 }
 
 impl Args {
@@ -130,6 +154,11 @@ pub struct Config {
   pub cvec_num_random_terms_per_type: usize,
   pub add_grounding: bool,
   pub destructive_rewrites: bool,
+  pub proof_depth: usize,
+  pub generalization: bool,
+  pub cc_lemmas: bool,
+  pub cc_lemmas_generalization: bool,
+  pub better_termination: bool,
 }
 
 impl Config {
@@ -178,7 +207,12 @@ impl Config {
       cvec_num_rolls: args.cvec_num_rolls,
       cvec_num_random_terms_per_type: args.cvec_num_random_terms_per_type,
       add_grounding: !args.no_grounding,
-      destructive_rewrites: args.destructive_rewrites,
+      destructive_rewrites: !args.no_destructive_rewrites,
+      proof_depth: args.proof_depth,
+      generalization: !args.no_generalization,
+      cc_lemmas: !args.no_cc_lemmas,
+      cc_lemmas_generalization: !args.no_cc_lemmas_generalization,
+      better_termination: !args.no_better_termination,
     }
   }
 

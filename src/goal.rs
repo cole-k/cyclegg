@@ -147,7 +147,7 @@ impl SearchCondition<SymbolLang, CycleggAnalysis> for Soundness {
         // because we did the filtering when creating SmallerVars
         let new_id = subst.get(v).unwrap();
         // Exit early with something guaranteed to be LE if this var is not blocking
-        if !egraph.analysis.blocking_vars.contains(x) {
+        if CONFIG.better_termination && !egraph.analysis.blocking_vars.contains(x) {
           // FIXME: we need to give the actual value here
           return Some((*x, vec!().into(), vec!().into()))
         }
@@ -1351,10 +1351,12 @@ impl<'a> Goal<'a> {
           //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
           // }
 
-          let fresh_name = format!("fresh_{}", self.egraph.total_size());
-          let generalized_eqs = new_rewrite_eqs.iter().flat_map(|new_rewrite_eq| find_generalizations_raw_eq(&new_rewrite_eq, self.global_context, fresh_name.clone()));
+          if CONFIG.cc_lemmas_generalization {
+            let fresh_name = format!("fresh_{}", self.egraph.total_size());
+            let generalized_eqs = new_rewrite_eqs.iter().flat_map(|new_rewrite_eq| find_generalizations_raw_eq(&new_rewrite_eq, self.global_context, fresh_name.clone()));
 
-          lemmas.extend(generalized_eqs);
+            lemmas.extend(generalized_eqs);
+          }
           lemmas.extend(new_rewrite_eqs);
           // if new_rewrite_names.len() > 0 {
           // // if let Some(_) = explanation {
@@ -2038,7 +2040,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     case_split_depth: 0,
   };
   // FIXME: put in config
-  if state.proof_depth == 3 {
+  if state.proof_depth > CONFIG.proof_depth {
     return (Outcome::Unknown, state);
   }
   while !state.goals.is_empty() {
@@ -2104,8 +2106,12 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
         (blocking_vars, blocking_exprs)
       };
 
-    state.lemmas_state.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs));
-    state.lemmas_state.add_possible_lemmas(goal.search_for_cc_lemmas(&state));
+    if CONFIG.generalization {
+      state.lemmas_state.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs));
+    }
+    if CONFIG.cc_lemmas {
+      state.lemmas_state.add_possible_lemmas(goal.search_for_cc_lemmas(&state));
+    }
     // This ends up being really slow so we'll just take the lemma duplication for now
     // It's unclear that it lets us prove that much more anyway.
     // state.add_cyclic_lemmas(&goal);
