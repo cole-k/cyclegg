@@ -515,7 +515,8 @@ impl<'a> Goal<'a> {
       ),
       true)
     } else {
-      let mut explanation = None;
+      // let mut explanation = None;
+
       // Check if this case in unreachable (i.e. if there are any inconsistent
       // e-classes in the e-graph)
       //
@@ -525,16 +526,22 @@ impl<'a> Goal<'a> {
       // why those nodes are equal, then we need to provide the concrete values
       // that cause them to be unequal. This will probably require us to update
       // the Cvec analysis to track enodes, which is a little unfortunate.
-      let res = egraph.classes().find_map(|eclass| {
+      //
+      // FIXME: this should be a find_map, but we crash if the expression we're
+      // extracting has been removed because of a destructive rewrite.
+      let res = egraph.classes().any(|eclass| {
         if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data.canonical_form_data {
-          // This is here only for the purpose of proof generation:
-          let extractor = Extractor::new(&egraph, AstSize);
-          let expr1 = extract_with_node(n1, &extractor);
-          let expr2 = extract_with_node(n2, &extractor);
-          if CONFIG.verbose {
-            println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
-          }
-          Some(((expr1, expr2), true))
+          // FIXME: these nodes might have been removed, we'll need to be
+          // careful about how we generate this proof.
+          // // This is here only for the purpose of proof generation:
+          // let extractor = Extractor::new(&egraph, AstSize);
+          // let expr1 = extract_with_node(n1, &extractor);
+          // let expr2 = extract_with_node(n2, &extractor);
+          // if CONFIG.verbose {
+          //   println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
+          // }
+          // Some(((expr1, expr2), true))
+          true
         // } else if let Cvec::Contradiction(id1, id2) = &eclass.data.cvec_data {
         //   let cvec_egraph = egraph.analysis.cvec_analysis.cvec_egraph.borrow();
         //   let cvec_extractor = Extractor::new(&cvec_egraph, AstSize);
@@ -545,14 +552,16 @@ impl<'a> Goal<'a> {
         //   }
         //   Some(((expr1, expr2), false))
         } else {
-          None
+          false
         }
       });
-      let is_valid = res.is_some();
-      if let Some(((expr1, expr2), true)) = &res {
-        explanation = Some(egraph.explain_equivalence(&expr1, &expr2));
-      }
-      (explanation, is_valid)
+      return (None, res);
+      // FIXME: add this back
+      // let is_valid = res.is_some();
+      // if let Some(((expr1, expr2), true)) = &res {
+      //   explanation = Some(egraph.explain_equivalence(&expr1, &expr2));
+      // }
+      // (explanation, is_valid)
     }
 
   }
@@ -1921,7 +1930,7 @@ impl<'a> ProofState<'a> {
         self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
         self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
         if outcome == Outcome::Valid {
-          println!("proved");
+          println!("proved {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
           // TODO: This comes for free in the proven lemmas we get, so we
           // probably don't need to insert it.
           self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
