@@ -2160,17 +2160,19 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     if let Some((scrutinee, depth)) = goal.next_scrutinee(blocking_vars) {
       // let d = depth.max(depth_at_front);
       if depth > state.case_split_depth {
+        // println!("depth {} is greater than current depth, increasing.", depth);
         state.case_split_depth = depth;
-        if state.try_prove_lemmas(&mut goal) {
-          continue;
-        }
       }
-      if state.case_split_depth > CONFIG.max_split_depth + state.proof_depth {
+      if state.case_split_depth > CONFIG.max_split_depth {
+        // println!("Bailing because depth is too high");
         // This goal could be further split, but we have reached the maximum depth,
         // we cannot prove or disprove the conjecture
         // state.goals.push_back(goal);
         // continue;
         return (Outcome::Unknown, state);
+      }
+      if state.try_prove_lemmas(&mut goal) {
+        continue;
       }
       if CONFIG.verbose {
         println!(
