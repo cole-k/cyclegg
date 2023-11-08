@@ -151,8 +151,8 @@ pub fn explain_top(
   // In the beginning add only the top-level inductive hypothesis.
   // TODO: still need to handle the inverted IH? (RHS => LHS)
   let mut lemma_map = HashMap::new();
-  let pat_lhs: Pattern<SymbolLang> = to_pattern(&eq.lhs.expr, |v| top_level_vars.contains_key(v));
-  let pat_rhs: Pattern<SymbolLang> = to_pattern(&eq.rhs.expr, |v| top_level_vars.contains_key(v));
+  let pat_lhs: Pattern<SymbolLang> = to_pattern(&eq.lhs.expr, |v| top_level_vars.contains_key(&v.op));
+  let pat_rhs: Pattern<SymbolLang> = to_pattern(&eq.rhs.expr, |v| top_level_vars.contains_key(&v.op));
   let lemma_info = LemmaInfo {
     name: goal.to_string(),
     params: params

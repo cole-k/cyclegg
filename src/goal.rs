@@ -2,6 +2,9 @@ use colored::Colorize;
 use egg::*;
 use itertools::Itertools;
 use log::warn;
+use petgraph::matrix_graph::MatrixGraph;
+use petgraph::algo::tarjan_scc;
+use petgraph::Directed;
 use std::collections::HashSet;
 use std::collections::{hash_map::Entry, HashMap, VecDeque};
 use std::fmt::Display;
@@ -593,7 +596,7 @@ impl<'a> Goal<'a> {
 
 
   fn make_rewrites_from(&self, lhs_id: Id, rhs_id: Id, premises: Vec<Equation>, exprs: HashMap<Id, Vec<Expr>>, state: &ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<String>, Vec<RawEqWithParams>) {
-    let is_var = |v| self.local_context.contains_key(v);
+    let is_var = |v: &SymbolLang| self.local_context.contains_key(&v.op);
     let mut rewrites = self.lemmas.clone();
     let mut added_rewrite_names = vec!();
     let mut rewrite_eqs = vec!();
@@ -693,12 +696,15 @@ impl<'a> Goal<'a> {
   /// here lhs and rhs are patterns, created by replacing all scrutinees with wildcards;
   /// soundness requires that the pattern only apply to variable tuples smaller than the current scrutinee tuple.
   fn add_lemma_rewrites(&self, state: &ProofState) -> HashMap<String, Rw> {
+    // println!("Adding lemma rewrites for goal {}, egraph has size {}", self.name, self.egraph.total_size());
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
     if CONFIG.is_cyclic() {
       // If we are doing cyclic proofs: make lemmas out of all LHS and RHS variants
-      self.make_cyclic_lemmas(state, true).0
+      let res = self.make_cyclic_lemmas(state, true).0;
+      // println!("Added lemma rewrites");
+      res
     } else {
       // In the non-cyclic case, only use the original LHS and RHS
       // and only if no other lemmas have been added yet
@@ -735,6 +741,10 @@ impl<'a> Goal<'a> {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
+    // FIXME: remove this hack if we're sure that e-graph size isn't the issue.
+    // if self.egraph.total_size() > 7000 {
+    //   return Default::default();
+    // }
     let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
 
     // Before creating a cyclic lemma with premises,
@@ -1049,7 +1059,7 @@ impl<'a> Goal<'a> {
 
         let matches = mod_searcher.search(&self.egraph);
 
-        let extractor = Extractor::new(&self.egraph, AstSize);
+        // let extractor = Extractor::new(&self.egraph, AstSize);
 
         // look at the e-class analysis for each matched e-class, if any of them has a variable, use it
         for m in matches {
@@ -1061,6 +1071,7 @@ impl<'a> Goal<'a> {
                     blocking_vars.insert(n.op);
                   }
                   CanonicalForm::Stuck(_) => {
+                    // blocking_exprs.insert(ecid);
                     if lhs_descendents.contains(&ecid) && rhs_descendents.contains(&ecid) {
                       blocking_exprs.insert(ecid);
                       // let expr = extractor.find_best(ecid).1;
@@ -1350,8 +1361,12 @@ impl<'a> Goal<'a> {
           // if valid && explanation.is_none() {
           //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
           // }
+          if new_rewrite_eqs.is_empty() {
+            continue;
+          }
 
           if CONFIG.cc_lemmas_generalization {
+            // println!("Generalizing {} = {}", new_rewrite_eqs[0].eq.lhs, new_rewrite_eqs[0].eq.rhs);
             let fresh_name = format!("fresh_{}", self.egraph.total_size());
             let generalized_eqs = new_rewrite_eqs.iter().flat_map(|new_rewrite_eq| find_generalizations_raw_eq(&new_rewrite_eq, self.global_context, fresh_name.clone()));
 
@@ -1828,135 +1843,161 @@ impl<'a> ProofState<'a> {
 
   /// Try to prove all of the lemmas we've collected so far.
   pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> bool {
-    // println!("Try prove lemmas for goal {}", goal.name);
-    for chain in self.lemmas_state.possible_lemmas.chains.iter() {
-      // println!("chain lemmas: {}", chain.chain.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
-      for (i, raw_eq_with_params) in chain.chain.iter().enumerate() {
-        if self.timeout() {
-          return false;
-        }
-        // Is the lemma already proven or subsumed by a cyclic lemma?
-        if self.lemmas_state.proven_lemmas.contains_leq(&raw_eq_with_params) || self.lemmas_state.cyclic_lemmas.contains_leq(&raw_eq_with_params) {
-          continue;
-        }
-        // Is the lemma invalid?
-        // if self.lemmas_state.invalid_lemmas.contains_geq(&raw_eq_with_params) {
-        //   continue;
-        // }
-        let goal_name = format!("lemma-{}={}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
-        let mut new_goal = Goal::top(&goal_name,
-                                 &raw_eq_with_params.eq,
-                                 &None,
-                                 raw_eq_with_params.params.clone(),
-                                 goal.env,
-                                 goal.global_context,
-                                 goal.reductions,
-                                 goal.cvec_reductions,
-                                 goal.defns,
-                                 goal.searchers,
-        );
-        let try1 = new_goal.cvecs_valid();
-        let mut new_goal_2 = Goal::top(&goal_name,
-                                 &raw_eq_with_params.eq,
-                                 &None,
-                                 raw_eq_with_params.params.clone(),
-                                 goal.env,
-                                 goal.global_context,
-                                 goal.reductions,
-                                 goal.cvec_reductions,
-                                 goal.defns,
-                                 goal.searchers,
-        );
-        let try2 = new_goal_2.cvecs_valid();
-        if try1 && !try2 {
-          // println!("Second try helped");
-          // println!("Invalidated lemma {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
-        }
-        if !try1 || !try2 {
-          warn!("Invalidated lemma {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
-          self.lemmas_state.invalid_lemmas.insert(raw_eq_with_params.clone());
-          continue;
-        } else {
-          println!("Trying to prove lemma: {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
-          // println!("proven lemmas so far: {}", self.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
-          // print_cvec(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec)
-        }
-        let lhs_id = new_goal.eq.lhs.id;
-        let rhs_id = new_goal.eq.rhs.id;
-        let mut exprs: HashMap<Id, Vec<Expr>> = vec![(lhs_id, vec![]), (rhs_id, vec![])]
-          .into_iter()
-          .collect();
-        exprs.insert(lhs_id, vec!(new_goal.eq.lhs.expr.clone()));
-        exprs.insert(rhs_id, vec!(new_goal.eq.rhs.expr.clone()));
-        let (rws, _, _) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, &self, false);
-        let mut new_lemmas_state = self.lemmas_state.clone();
+    let lemmas = self.lemmas_state.possible_lemmas.chains.iter().flat_map(|chain| chain.chain.iter().cloned()).collect();
+    let g = self.make_lemmas_digraph(&lemmas, &goal);
+    let mut past_sccs = vec!();
+    let mut proven_lemmas = vec!();
+    let mut invalid_lemmas = vec!();
+    for scc in tarjan_scc(&g).iter().rev() {
+      if self.timeout() {
+        return false;
+      }
+      let i = scc.first().unwrap();
+      let raw_eq_with_params = &lemmas[i.index()];
+      if proven_lemmas.iter().any(|lem| g.has_edge(*lem, *i)) {
+        continue;
+      }
 
-        // HACK: Optimization to proving lemmas
-        // We will always try to prove the most general lemma we've theorized so far, but thereafter
-        // we require that the lemma be actually useful to us if we are going to try and prove it.
-        //
-        // This eliminates us spending time trying to prove a junk lemma like
-        // (mult (S n) Z) = (plus (mult (S n) Z) Z)
-        // when we already failed to prove the more general lemma
-        // (mult n Z) = (plus (mult n Z) Z)
-        //
-        // Really we should have more sophisticated lemma filtering - the junk
-        // lemma in this case is really no easier to prove than the first lemma
-        // (since we will try to prove it eventually when we case split the first),
-        // so we shouldn't consider it in the first place.
-        //
-        // Hence why I consider this optimization a hack, even though it
-        // probably avoids some lemmas which are junky in a more complicated
-        // way. I imagine it might rarely pass on interesting and useful lemmas.
-        // This is because sometimes you need more than one lemma to prove a goal.
-        if i > 0 {
-          let goal_egraph_copy = goal.egraph.clone();
-          let rewrites = goal.reductions.iter().chain(goal.lemmas.values()).chain(rws.values()).chain(self.lemmas_state.lemma_rewrites.values());
-          let runner = Runner::default()
-            // .with_explanations_enabled()
-            .with_egraph(goal_egraph_copy)
-            .run(rewrites);
-          if runner.egraph.find(goal.eq.lhs.id) != runner.egraph.find(goal.eq.rhs.id) {
-            break;
-          }
-        }
+      past_sccs.push(*i);
 
-        // Zero out the possible lemmas and cyclic lemmas, we only want
-        // to carry forward what we've proven already.
-        new_lemmas_state.possible_lemmas = ChainSet::new();
-        new_lemmas_state.cyclic_lemmas = ChainSet::new();
-        new_lemmas_state.cyclic_lemma_rewrites = HashMap::new();
-        let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state);
-        // Steal the lemmas we got from the recursive proving.
-        self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
-        self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
-        self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
-        if outcome == Outcome::Valid {
-          println!("proved {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
-          // TODO: This comes for free in the proven lemmas we get, so we
-          // probably don't need to insert it.
-          self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
-          self.lemmas_state.lemma_rewrites.extend(rws);
-          // Add any cyclic lemmas we proved too
-          self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
-          self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
-          goal.saturate(&self.lemmas_state.lemma_rewrites);
-          if goal.check_validity() {
-            return true;
-          }
-          break;
-        }
-        // TODO: We want to record that all of the previous lemmas including
-        // this are invalid, but for now we won't record anything.
-        if outcome == Outcome::Invalid {
-          self.lemmas_state.invalid_lemmas.insert(raw_eq_with_params.clone());
-        } else {
-          // NOTE: We don't try to prove a lemma twice, but actually we might
-          // be able to if we have another lemma.
-          // self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
+      // Ignore these because we are using a graph-based approach now
+      // // Is the lemma already proven or subsumed by a cyclic lemma?
+      // if self.lemmas_state.proven_lemmas.contains_leq(&raw_eq_with_params) || self.lemmas_state.cyclic_lemmas.contains_leq(&raw_eq_with_params) {
+      //   continue;
+      // }
+      // Is the lemma invalid?
+      // if self.lemmas_state.invalid_lemmas.contains_geq(&raw_eq_with_params) {
+      //   continue;
+      // }
+      let goal_name = format!("lemma-{}={}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+      let mut new_goal = Goal::top(&goal_name,
+                                &raw_eq_with_params.eq,
+                                &None,
+                                raw_eq_with_params.params.clone(),
+                                goal.env,
+                                goal.global_context,
+                                goal.reductions,
+                                goal.cvec_reductions,
+                                goal.defns,
+                                goal.searchers,
+      );
+      let try1 = new_goal.cvecs_valid();
+      let mut new_goal_2 = Goal::top(&goal_name,
+                                &raw_eq_with_params.eq,
+                                &None,
+                                raw_eq_with_params.params.clone(),
+                                goal.env,
+                                goal.global_context,
+                                goal.reductions,
+                                goal.cvec_reductions,
+                                goal.defns,
+                                goal.searchers,
+      );
+      let try2 = new_goal_2.cvecs_valid();
+      if try1 && !try2 {
+        // println!("Second try helped");
+        // println!("Invalidated lemma {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+      }
+      if !try1 || !try2 {
+        warn!("Invalidated lemma {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+        self.lemmas_state.invalid_lemmas.insert(raw_eq_with_params.clone());
+        invalid_lemmas.push(*i);
+        continue;
+      } else {
+        println!("Trying to prove lemma: {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+        // println!("proven lemmas so far: {}", self.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
+        // print_cvec(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec)
+      }
+      let lhs_id = new_goal.eq.lhs.id;
+      let rhs_id = new_goal.eq.rhs.id;
+      let mut exprs: HashMap<Id, Vec<Expr>> = vec![(lhs_id, vec![]), (rhs_id, vec![])]
+        .into_iter()
+        .collect();
+      exprs.insert(lhs_id, vec!(new_goal.eq.lhs.expr.clone()));
+      exprs.insert(rhs_id, vec!(new_goal.eq.rhs.expr.clone()));
+      let (rws, _, _) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, &self, false);
+      let mut new_lemmas_state = self.lemmas_state.clone();
+
+      // HACK: Optimization to proving lemmas
+      // We will always try to prove the most general lemma we've theorized so far, but thereafter
+      // we require that the lemma be actually useful to us if we are going to try and prove it.
+      // So if there is a past lemma that implies the current one, we will check that the
+      // current lemma is actually useful first.
+      //
+      // This eliminates us spending time trying to prove a junk lemma like
+      // (mult (S n) Z) = (plus (mult (S n) Z) Z)
+      // when we already failed to prove the more general lemma
+      // (mult n Z) = (plus (mult n Z) Z)
+      //
+      // Really we should have more sophisticated lemma filtering - the junk
+      // lemma in this case is really no easier to prove than the first lemma
+      // (since we will try to prove it eventually when we case split the first),
+      // so we shouldn't consider it in the first place.
+      //
+      // Hence why I consider this optimization a hack, even though it
+      // probably avoids some lemmas which are junky in a more complicated
+      // way. I imagine it might rarely pass on interesting and useful lemmas.
+      // This is because sometimes you need more than one lemma to prove a goal.
+      if past_sccs.iter().any(|lem| g.has_edge(*lem, *i)) {
+        let goal_egraph_copy = goal.egraph.clone();
+        let rewrites = goal.reductions.iter().chain(goal.lemmas.values()).chain(rws.values()).chain(self.lemmas_state.lemma_rewrites.values());
+        let runner = Runner::default()
+          // .with_explanations_enabled()
+          .with_egraph(goal_egraph_copy)
+          .run(rewrites);
+        if runner.egraph.find(goal.eq.lhs.id) != runner.egraph.find(goal.eq.rhs.id) {
+          continue;
         }
       }
+
+      // Zero out the possible lemmas and cyclic lemmas, we only want
+      // to carry forward what we've proven already.
+      new_lemmas_state.possible_lemmas = ChainSet::new();
+      new_lemmas_state.cyclic_lemmas = ChainSet::new();
+      new_lemmas_state.cyclic_lemma_rewrites = HashMap::new();
+      let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state);
+      // Steal the lemmas we got from the recursive proving.
+      self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
+      self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
+      self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
+      if outcome == Outcome::Valid {
+        println!("proved {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+        // TODO: This comes for free in the proven lemmas we get, so we
+        // probably don't need to insert it.
+        self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
+        self.lemmas_state.lemma_rewrites.extend(rws);
+        // Add any cyclic lemmas we proved too
+        self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
+        self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
+                goal.saturate(&self.lemmas_state.lemma_rewrites);
+          if goal.check_validity() {
+            break;
+          }
+          proven_lemmas.push(*i);
+      }
+      // TODO: We want to record that all of the previous lemmas including
+      // this are invalid, but for now we won't record anything.
+      if outcome == Outcome::Invalid {
+        self.lemmas_state.invalid_lemmas.insert(raw_eq_with_params.clone());
+        invalid_lemmas.push(*i);
+      } else {
+        // NOTE: We don't try to prove a lemma twice, but actually we might
+        // be able to if we have another lemma.
+        // self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
+      }
     }
+
+    // // HACK: retain with index
+    // let mut current_lemma = 0;
+    // self.lemmas_state.possible_lemmas.retain(|_| {
+    //   // Does a proven lemma imply it?
+    //   // Does it imply an invalid lemma?
+    //   let res = proven_lemmas.iter().any(|lem| g.has_edge(*lem, current_lemma.into()))
+    //     || invalid_lemmas.iter().any(|lem| g.has_edge(current_lemma.into(), *lem));
+    //   current_lemma += 1;
+    //   res
+    // });
+
     false
   }
 
@@ -1977,6 +2018,70 @@ impl<'a> ProofState<'a> {
     } else {
       false
     }
+  }
+
+  pub fn make_lemmas_digraph(&self, lemmas: &Vec<RawEqWithParams>, goal: &Goal) -> MatrixGraph<(), (), Directed, Option<()>, usize> {
+    let mut egraph: Eg = EGraph::default();
+    let lemmas_and_egraph_ids: Vec<(RawEqWithParams, Id, Id, HashMap<String, Rw>)> = lemmas.iter().cloned().map(|lemma|{
+      let lhs = lemma.eq.lhs.to_string().parse().unwrap();
+      let rhs = lemma.eq.rhs.to_string().parse().unwrap();
+      let lhs_id = egraph.add_expr(&lhs);
+      let rhs_id = egraph.add_expr(&rhs);
+      let is_var = |n: &SymbolLang| lemma.params.iter().find(|(param, _)| &n.op == param).is_some();
+      let lhs_pat: Pattern<SymbolLang> = to_pattern(&lhs, is_var);
+      let rhs_pat: Pattern<SymbolLang> = to_pattern(&rhs, is_var);
+      let lhs_vars = var_set(&lhs_pat);
+      let rhs_vars = var_set(&rhs_pat);
+      let mut rws: HashMap<String, Rw> = HashMap::default();
+      if lhs_vars.is_superset(&rhs_vars) {
+        let name = format!("test-lemma-{}={}", lemma.eq.lhs, lemma.eq.rhs);
+        let rw = Rewrite::new(&name, lhs_pat.clone(), rhs_pat.clone()).unwrap();
+        rws.insert(name.clone(), rw);
+      }
+      if rhs_vars.is_superset(&lhs_vars) {
+        let name = format!("test-lemma-{}={}", lemma.eq.rhs, lemma.eq.lhs);
+        let rw = Rewrite::new(&name, rhs_pat.clone(), lhs_pat.clone()).unwrap();
+        rws.insert(name.clone(), rw);
+      }
+      (lemma, lhs_id, rhs_id, rws)
+    }).collect();
+    let edges = lemmas_and_egraph_ids.iter().enumerate().flat_map(|(i, (_, _lhs_id, _rhs_id, rws))| {
+      let egraph_clone = egraph.clone();
+      let rewrites = goal.reductions.iter().chain(self.lemmas_state.lemma_rewrites.values()).chain(rws.values());
+      let runner = Runner::default()
+        .with_egraph(egraph_clone)
+        .run(rewrites);
+      lemmas_and_egraph_ids.iter().enumerate().filter_map(move |(j, (_, other_lhs_id, other_rhs_id, _))|{
+        if runner.egraph.find(*other_lhs_id) == runner.egraph.find(*other_rhs_id) {
+          // println!("Edge from {} to {}", i, j );
+          Some((i, j))
+        } else {
+          None
+        }
+      })
+    });
+    let g = MatrixGraph::<(), (), Directed, Option<()>, usize>::from_edges(edges);
+
+    // let mut count = 0;
+    // let mut past_sccs = vec!();
+    // for scc in tarjan_scc(&g).iter().rev() {
+    //   match scc.first() {
+    //     Some(i) => {
+    //       count += 1;
+    //       if past_sccs.iter().any(|lem| g.has_edge(*lem, *i)) {
+    //         continue;
+    //       }
+    //       past_sccs.push(*i);
+    //       let (lemma, _, _, _) = &lemmas_and_egraph_ids[i.index()];
+    //       println!("lemma to consider: {} = {}", lemma.eq.lhs, lemma.eq.rhs);
+    //     }
+    //     None => {}
+    //   }
+    // }
+    // println!();
+    // println!("{} lemmas to consider, ({} sccs, {} total)", past_sccs.len(), count, lemmas_and_egraph_ids.len());
+    // println!();
+    g
   }
 }
 
@@ -2026,6 +2131,7 @@ pub fn explain_goal_failure(goal: &Goal) {
 /// Top-level interface to the theorem prover.
 pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Outcome, ProofState) {
   let goal_name = goal.name.clone();
+  // println!("Trying to prove goal {}", goal_name);
   let goal_eq = RawEquation::new(goal.eq.lhs.sexp.clone(), goal.eq.rhs.sexp.clone());
   let goal_eq_with_params = RawEqWithParams::new(goal_eq, goal.params.iter().cloned().map(|param| (param, goal.local_context.get(&param).unwrap().clone())).collect());
   // We won't attempt to prove the goal again (it isn't actually proven).
@@ -2044,7 +2150,6 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     return (Outcome::Unknown, state);
   }
   while !state.goals.is_empty() {
-    // println!("Taking next step for goal {}", goal_name);
     // println!("proven lemmas: {}", state.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
     if state.timeout() {
       return (Outcome::Timeout, state);
@@ -2054,6 +2159,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
     warn!("PROOF STATE: {}", pretty_state(&state));
     // Pop the first subgoal
     goal = state.goals.pop_front().unwrap();
+    // println!("Taking next step for goal {}", goal.name);
     // Saturate the goal
     goal.saturate(&state.lemmas_state.lemma_rewrites);
     if CONFIG.save_graphs {
@@ -2162,7 +2268,18 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
       if depth > state.case_split_depth {
         // println!("depth {} is greater than current depth, increasing.", depth);
         state.case_split_depth = depth;
+        if state.try_prove_lemmas(&mut goal) {
+          continue;
+        }
       }
+      // if state.case_split_depth > CONFIG.max_split_depth {
+      //   // println!("Bailing because depth is too high");
+      //   // This goal could be further split, but we have reached the maximum depth,
+      //   // we cannot prove or disprove the conjecture
+      //   // state.goals.push_back(goal);
+      //   // continue;
+      //   return (Outcome::Unknown, state);
+      // }
       if state.case_split_depth > CONFIG.max_split_depth {
         // println!("Bailing because depth is too high");
         // This goal could be further split, but we have reached the maximum depth,
@@ -2170,9 +2287,6 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
         // state.goals.push_back(goal);
         // continue;
         return (Outcome::Unknown, state);
-      }
-      if state.try_prove_lemmas(&mut goal) {
-        continue;
       }
       if CONFIG.verbose {
         println!(

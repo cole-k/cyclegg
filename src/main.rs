@@ -168,14 +168,14 @@ fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
       file.write_all(explanation.as_bytes())?;
     }
   }
-  if result == Outcome::Timeout || result == Outcome::Unknown {
-    for (i, chain) in proof_state.lemmas_state.possible_lemmas.chains.iter().enumerate() {
-      println!("Chain {}", i);
-      for elem in chain.chain.iter() {
-        println!("Possible lemma: {} === {}", elem.eq.lhs, elem.eq.rhs);
-      }
-    }
-  }
+  // if result == Outcome::Timeout || result == Outcome::Unknown {
+  //   for (i, chain) in proof_state.lemmas_state.possible_lemmas.chains.iter().enumerate() {
+  //     println!("Chain {}", i);
+  //     for elem in chain.chain.iter() {
+  //       println!("Possible lemma: {} === {}", elem.eq.lhs, elem.eq.rhs);
+  //     }
+  //   }
+  // }
   // for (i, chain) in proof_state.lemmas_state.proven_lemmas.chains.iter().enumerate() {
   //   println!("Chain {}", i);
   //   for elem in chain.chain.iter() {

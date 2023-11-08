@@ -427,11 +427,11 @@ pub fn has_guard_wildcards(p: &Pat) -> bool {
 // Convert e into a pattern by replacing all symbols where is_var holds with wildcards
 pub fn to_pattern<'a, P>(e: &'a Expr, is_var: P) -> Pat
 where
-  P: Fn(&'a Symbol) -> bool,
+  P: Fn(&'a SymbolLang) -> bool,
 {
   let mut pattern_ast = PatternAst::default();
   for n in e.as_ref() {
-    if is_var(&n.op) {
+    if is_var(&n) {
       pattern_ast.add(ENodeOrVar::Var(to_wildcard(&n.op)));
     } else {
       pattern_ast.add(ENodeOrVar::ENode(n.clone()));
