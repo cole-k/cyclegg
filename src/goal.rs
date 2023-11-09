@@ -1049,7 +1049,7 @@ impl<'a> Goal<'a> {
 
         let matches = mod_searcher.search(&self.egraph);
 
-        let extractor = Extractor::new(&self.egraph, AstSize);
+        // let extractor = Extractor::new(&self.egraph, AstSize);
 
         // look at the e-class analysis for each matched e-class, if any of them has a variable, use it
         for m in matches {
@@ -1350,6 +1350,9 @@ impl<'a> Goal<'a> {
           // if valid && explanation.is_none() {
           //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
           // }
+          if new_rewrite_eqs.is_empty() {
+            continue;
+          }
 
           if CONFIG.cc_lemmas_generalization {
             let fresh_name = format!("fresh_{}", self.egraph.total_size());
@@ -2162,6 +2165,9 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
       if depth > state.case_split_depth {
         // println!("depth {} is greater than current depth, increasing.", depth);
         state.case_split_depth = depth;
+        if state.try_prove_lemmas(&mut goal) {
+          continue;
+        }
       }
       if state.case_split_depth > CONFIG.max_split_depth {
         // println!("Bailing because depth is too high");
@@ -2170,9 +2176,6 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
         // state.goals.push_back(goal);
         // continue;
         return (Outcome::Unknown, state);
-      }
-      if state.try_prove_lemmas(&mut goal) {
-        continue;
       }
       if CONFIG.verbose {
         println!(
