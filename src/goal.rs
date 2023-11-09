@@ -595,9 +595,11 @@ impl<'a> Goal<'a> {
   }
 
 
-  fn make_rewrites_from(&self, lhs_id: Id, rhs_id: Id, premises: Vec<Equation>, exprs: HashMap<Id, Vec<Expr>>, state: &ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<String>, Vec<RawEqWithParams>) {
+  fn make_rewrites_from(&self, mut rewrites: HashMap<String, Rw>, lhs_id: Id, rhs_id: Id, premises: Vec<Equation>, exprs: HashMap<Id, Vec<Expr>>, state: &ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, HashMap<String, Rewrite<SymbolLang, ()>>, Vec<String>, Vec<RawEqWithParams>) {
     let is_var = |v: &SymbolLang| self.local_context.contains_key(&v.op);
-    let mut rewrites = self.lemmas.clone();
+    // This is only done so that we can vet lemmas based on our reductions + proven lemmas.
+    // Thus, we only add to it when we are making unconditional rewrites.
+    let mut rewrites_no_analysis = HashMap::default();
     let mut added_rewrite_names = vec!();
     let mut rewrite_eqs = vec!();
     for lhs_expr in exprs.get(&lhs_id).unwrap() {
@@ -607,7 +609,7 @@ impl<'a> Goal<'a> {
       }
       for rhs_expr in exprs.get(&rhs_id).unwrap() {
         if state.timeout() {
-          return (rewrites, added_rewrite_names, rewrite_eqs);
+          return (rewrites, rewrites_no_analysis, added_rewrite_names, rewrite_eqs);
         }
 
         let rhs: Pattern<SymbolLang> = to_pattern(rhs_expr, is_var);
@@ -652,7 +654,7 @@ impl<'a> Goal<'a> {
           if add_termination_check {
             Goal::add_lemma(lhs.clone(), rhs.clone(), condition.clone(), &mut rewrites, &mut added_rewrite_names);
           } else {
-            Goal::add_unchecked_lemma(lhs.clone(), rhs.clone(), &mut rewrites, &mut added_rewrite_names);
+            Goal::add_unchecked_lemma(lhs.clone(), rhs.clone(), &mut rewrites, &mut rewrites_no_analysis, &mut added_rewrite_names);
           }
           let rewrite_eq = RawEquation::from_exprs(lhs_expr, rhs_expr);
 
@@ -672,7 +674,7 @@ impl<'a> Goal<'a> {
           if add_termination_check {
             Goal::add_lemma(rhs.clone(), lhs.clone(), condition.clone(), &mut rewrites, &mut added_rewrite_names);
           } else {
-            Goal::add_unchecked_lemma(rhs.clone(), lhs.clone(), &mut rewrites, &mut added_rewrite_names);
+            Goal::add_unchecked_lemma(rhs.clone(), lhs.clone(), &mut rewrites, &mut rewrites_no_analysis, &mut added_rewrite_names);
           }
           let rewrite_eq = RawEquation::from_exprs(lhs_expr, rhs_expr);
           rewrite_eqs.push(RawEqWithParams {
@@ -689,7 +691,7 @@ impl<'a> Goal<'a> {
         }
       }
     }
-    (rewrites, added_rewrite_names, rewrite_eqs)
+    (rewrites, rewrites_no_analysis, added_rewrite_names, rewrite_eqs)
   }
 
   /// Create a rewrite `lhs => rhs` which will serve as the lemma ("induction hypothesis") for a cycle in the proof;
@@ -702,7 +704,7 @@ impl<'a> Goal<'a> {
 
     if CONFIG.is_cyclic() {
       // If we are doing cyclic proofs: make lemmas out of all LHS and RHS variants
-      let res = self.make_cyclic_lemmas(state, true).0;
+      let res = self.make_cyclic_lemmas(self.lemmas.clone(), state, true).0;
       // println!("Added lemma rewrites");
       res
     } else {
@@ -731,13 +733,13 @@ impl<'a> Goal<'a> {
         .map(|eq| eq.update_variables(&self.var_classes, &self.egraph))
         .collect();
 
-      let (rewrites, _new_rewrite_names, _) = self.make_rewrites_from(lhs_id, rhs_id, premises, exprs, state, true);
+      let (rewrites, _, _new_rewrite_names, _) = self.make_rewrites_from(self.lemmas.clone(), lhs_id, rhs_id, premises, exprs, state, true);
       rewrites
     }
 
   }
 
-  fn make_cyclic_lemmas(&self, state: &ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<RawEqWithParams>) {
+  fn make_cyclic_lemmas(&self, rewrites: HashMap<String, Rw>, state: &ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<RawEqWithParams>) {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
@@ -757,7 +759,7 @@ impl<'a> Goal<'a> {
       .collect();
 
 
-    let (rewrites, _new_rewrite_names, rewrite_eqs) = self.make_rewrites_from(lhs_id, rhs_id, premises, exprs, state, add_termination_check);
+    let (rewrites, _, _new_rewrite_names, rewrite_eqs) = self.make_rewrites_from(rewrites, lhs_id, rhs_id, premises, exprs, state, add_termination_check);
     (rewrites, rewrite_eqs)
   }
 
@@ -784,7 +786,7 @@ impl<'a> Goal<'a> {
     }
   }
 
-  fn add_unchecked_lemma(lhs: Pat, rhs: Pat, rewrites: &mut HashMap<String, Rw>, added_rewrite_names: &mut Vec<String>) {
+  fn add_unchecked_lemma(lhs: Pat, rhs: Pat, rewrites: &mut HashMap<String, Rw>, rewrites_no_analysis: &mut HashMap<String, Rewrite<SymbolLang, ()>>, added_rewrite_names: &mut Vec<String>) {
     let name = format!("{}{}={}", CC_LEMMA_PREFIX, lhs, rhs);
     // Insert the lemma into the rewrites map if it's not already there
     match rewrites.entry(name.clone()) {
@@ -793,12 +795,20 @@ impl<'a> Goal<'a> {
         warn!("making cc lemma: {} => {}", lhs, rhs);
         added_rewrite_names.push(name.clone());
         let rw = Rewrite::new(
-          name,
+          name.clone(),
+          lhs.clone(),
+          rhs.clone(),
+        )
+        .unwrap();
+        entry.insert(rw);
+        let rw = Rewrite::new(
+          name.clone(),
           lhs,
           rhs,
         )
         .unwrap();
-        entry.insert(rw);
+        // These rewrites should match the regular rewrites.
+        rewrites_no_analysis.insert(name, rw);
       }
     }
   }
@@ -1351,7 +1361,7 @@ impl<'a> Goal<'a> {
           //   .collect();
           // exprs.insert(class_1_id, vec!(e1.clone()));
           // exprs.insert(class_2_id, vec!(e2.clone()));
-          let (_new_rewrites, _new_rewrite_names, new_rewrite_eqs) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false);
+          let (_new_rewrites, _, _new_rewrite_names, new_rewrite_eqs) = self.make_rewrites_from(HashMap::default(), class_1_id, class_2_id, vec!(), exprs, state, false);
           // let rewrites = self.reductions.iter().chain(new_rewrites.values());
           // let mut runner = Runner::default()
           //   .with_explanations_enabled()
@@ -1798,6 +1808,7 @@ pub struct LemmasState {
   pub invalid_lemmas: MaxElements<RawEqWithParams>,
   pub possible_lemmas: ChainSet<RawEqWithParams>,
   pub lemma_rewrites: HashMap<String, Rw>,
+  pub lemma_rewrites_no_analysis: HashMap<String, Rewrite<SymbolLang, ()>>,
   pub cyclic_lemmas: ChainSet<RawEqWithParams>,
   pub cyclic_lemma_rewrites: HashMap<String, Rw>,
 }
@@ -1915,7 +1926,7 @@ impl<'a> ProofState<'a> {
         .collect();
       exprs.insert(lhs_id, vec!(new_goal.eq.lhs.expr.clone()));
       exprs.insert(rhs_id, vec!(new_goal.eq.rhs.expr.clone()));
-      let (rws, _, _) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, &self, false);
+      let (rws, rws_no_analysis, _, _) = new_goal.make_rewrites_from(HashMap::default(), lhs_id, rhs_id, new_goal.premises.clone(), exprs, &self, false);
       let mut new_lemmas_state = self.lemmas_state.clone();
 
       // HACK: Optimization to proving lemmas
@@ -1960,16 +1971,18 @@ impl<'a> ProofState<'a> {
       self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
       self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
       self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
+      self.lemmas_state.lemma_rewrites_no_analysis.extend(ps.lemmas_state.lemma_rewrites_no_analysis);
       if outcome == Outcome::Valid {
         println!("proved {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
         // TODO: This comes for free in the proven lemmas we get, so we
         // probably don't need to insert it.
         self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
         self.lemmas_state.lemma_rewrites.extend(rws);
+        self.lemmas_state.lemma_rewrites_no_analysis.extend(rws_no_analysis);
         // Add any cyclic lemmas we proved too
         self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
         self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
-                goal.saturate(&self.lemmas_state.lemma_rewrites);
+        goal.saturate(&self.lemmas_state.lemma_rewrites);
           if goal.check_validity() {
             break;
           }
@@ -2006,7 +2019,7 @@ impl<'a> ProofState<'a> {
     if !goal.premises.is_empty() {
       return;
     }
-    let (rws, rewrite_eqs) = goal.make_cyclic_lemmas(self, false);
+    let (rws, rewrite_eqs) = goal.make_cyclic_lemmas(HashMap::default(), self, false);
     self.lemmas_state.cyclic_lemmas.extend(rewrite_eqs);
     self.lemmas_state.cyclic_lemma_rewrites.extend(rws);
   }
@@ -2021,8 +2034,8 @@ impl<'a> ProofState<'a> {
   }
 
   pub fn make_lemmas_digraph(&self, lemmas: &Vec<RawEqWithParams>, goal: &Goal) -> MatrixGraph<(), (), Directed, Option<()>, usize> {
-    let mut egraph: Eg = EGraph::default();
-    let lemmas_and_egraph_ids: Vec<(RawEqWithParams, Id, Id, HashMap<String, Rw>)> = lemmas.iter().cloned().map(|lemma|{
+    let mut egraph: EGraph<SymbolLang, ()> = EGraph::default();
+    let lemmas_and_egraph_ids: Vec<(RawEqWithParams, Id, Id, Vec<Rewrite<SymbolLang, ()>>)> = lemmas.iter().cloned().map(|lemma|{
       let lhs = lemma.eq.lhs.to_string().parse().unwrap();
       let rhs = lemma.eq.rhs.to_string().parse().unwrap();
       let lhs_id = egraph.add_expr(&lhs);
@@ -2032,22 +2045,22 @@ impl<'a> ProofState<'a> {
       let rhs_pat: Pattern<SymbolLang> = to_pattern(&rhs, is_var);
       let lhs_vars = var_set(&lhs_pat);
       let rhs_vars = var_set(&rhs_pat);
-      let mut rws: HashMap<String, Rw> = HashMap::default();
+      let mut rws: Vec<Rewrite<SymbolLang, ()>> = vec!();
       if lhs_vars.is_superset(&rhs_vars) {
         let name = format!("test-lemma-{}={}", lemma.eq.lhs, lemma.eq.rhs);
         let rw = Rewrite::new(&name, lhs_pat.clone(), rhs_pat.clone()).unwrap();
-        rws.insert(name.clone(), rw);
+        rws.push(rw);
       }
       if rhs_vars.is_superset(&lhs_vars) {
         let name = format!("test-lemma-{}={}", lemma.eq.rhs, lemma.eq.lhs);
         let rw = Rewrite::new(&name, rhs_pat.clone(), lhs_pat.clone()).unwrap();
-        rws.insert(name.clone(), rw);
+        rws.push(rw);
       }
       (lemma, lhs_id, rhs_id, rws)
     }).collect();
     let edges = lemmas_and_egraph_ids.iter().enumerate().flat_map(|(i, (_, _lhs_id, _rhs_id, rws))| {
       let egraph_clone = egraph.clone();
-      let rewrites = goal.reductions.iter().chain(self.lemmas_state.lemma_rewrites.values()).chain(rws.values());
+      let rewrites = goal.cvec_reductions.iter().chain(self.lemmas_state.lemma_rewrites_no_analysis.values()).chain(rws.iter());
       let runner = Runner::default()
         .with_egraph(egraph_clone)
         .run(rewrites);
