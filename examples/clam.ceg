@@ -224,7 +224,7 @@
 (let half ((S Z)) Z)
 (let half ((S (S ?n))) (S (half ?n)))
 
-(:: even (-> (Nat) Nat))
+(:: even (-> (Nat) Bool))
 (let even (Z) True)
 (let even ((S ?n)) (not (even ?n)))
 
@@ -335,11 +335,12 @@
 )
 
 
+
 (=== clam_11  (x y) ((List a) (List a))
   (rev (append (rev x) (rev y)))
   (append y x)
   ((=> (rev (append ?x (append ?y (Cons ?z Nil)))) (Cons ?z (rev (append ?x ?y))))
-   (=> (rev (append (append ?x (Cons ?y Nil)) Nil)) (Cons ?y (rev (append ?x Nil))))
+  (=> (rev (append (append ?x (Cons ?y Nil)) Nil)) (Cons ?y (rev (append ?x Nil))))
   )
 )
 
@@ -410,12 +411,19 @@
   ((=> (len (append ?x (Cons ?y ?z))) (S (len (append ?x ?z)))))
 )
 
-
+(//
+This also suffices
+  (
+   (=> (append (append ?x ?y) (Cons ?z Nil)) (append ?x (append ?y (Cons ?z Nil))))
+   (=> (append (append ?x ?y) ?z) (append (append ?x ?y) ?z))
+  )
+)
 (=== clam_21 (x y) ((List a) (List a))
   (rotate (len x) (append x y))
   (append y x)
-  ((=> (append (append ?x (Cons ?y Nil)) ?z) (append ?x (Cons ?y ?z)))
-   (=> (append (append ?x ?y) (Cons ?z Nil)) (append ?x (append ?y (Cons ?z Nil))))
+  (
+    (=> (append (append ?x (Cons ?y Nil)) ?z) (append ?x (Cons ?y ?z)))
+    (=> (append (append ?x ?y) (Cons ?z Nil)) (append ?x (append ?y (Cons ?z Nil))))
   )
 )
 

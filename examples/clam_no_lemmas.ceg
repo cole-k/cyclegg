@@ -38,7 +38,7 @@
 (:: ite (-> (Bool a a) a))
 (let ite (True ?x ?y ) ?x)
 (let ite (False ?x ?y) ?y)
-(let ite (?b    ?x ?x) ?x)
+(// (let ite (?b    ?x ?x) ?x))
 
 (:: not (-> (Bool) Bool))
 (let not True False)
@@ -224,7 +224,7 @@
 (let half ((S Z)) Z)
 (let half ((S (S ?n))) (S (half ?n)))
 
-(:: even (-> (Nat) Nat))
+(:: even (-> (Nat) Bool))
 (let even (Z) True)
 (let even ((S ?n)) (not (even ?n)))
 
@@ -404,6 +404,7 @@
 (//
   ((=?> (append (append ?x (Cons ?y Nil)) ?z) (append ?x (Cons ?y ?z)))
    (=?> (append (append ?x ?y) (Cons ?z Nil)) (append ?x (append ?y (Cons ?z Nil))))
+   (=?> (append (append ?x ?y) ?z) (append (append ?x ?y) ?z))
   )
 )
 (=== clam_21 (x y) ((List a) (List a))
@@ -579,6 +580,11 @@
 )
 
 
+(//
+  ((=?> (append (append ?x (Cons ?y Nil)) ?z) (append ?x (Cons ?y ?z)))
+   (=?> (append (append ?x ?y) ?z) (append ?x (append ?y ?z)))
+  )
+)
 (=== clam_83 (x y) ((List a) (List a))
   (rotate (len x) (append x y))
   (append y x)

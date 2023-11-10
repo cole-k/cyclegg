@@ -38,7 +38,7 @@
 (:: ite (-> (Bool a a) a))
 (let ite (True ?x ?y ) ?x)
 (let ite (False ?x ?y) ?y)
-(let ite (?b    ?x ?x) ?x)
+(// (let ite (?b    ?x ?x) ?x))
 
 (:: not (-> (Bool) Bool))
 (let not (True) False)

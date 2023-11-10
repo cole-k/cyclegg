@@ -22,8 +22,8 @@ pub type CvecRw = Rewrite<SymbolLang, ()>;
 
 /// A special scrutinee name used to signal that case split bound has been exceeded
 const BOUND_EXCEEDED: &str = "__";
-pub const LEMMA_PREFIX: &str = "lemma-";
-pub const CC_LEMMA_PREFIX: &str = "cc-lemma-";
+pub const LEMMA_PREFIX: &str = "lemma";
+pub const CC_LEMMA_PREFIX: &str = "cc-lemma";
 pub const IH_EQUALITY_PREFIX: &str = "ih-equality-"; // TODO: remove
 
 /// Condition that checks whether it is sound to apply a lemma
@@ -964,7 +964,7 @@ impl<'a> Goal<'a> {
         &var_pattern_ast,
         &rec_expr_to_pattern_ast(con_app.clone()),
         &Subst::default(),
-        new_goal.name.clone(),
+        format!("case-split:{}", new_goal.name),
       );
       // Remove old variable from the egraph and context
       remove_node(&mut new_goal.egraph, &var_node);
@@ -1934,6 +1934,10 @@ impl<'a> ProofState<'a> {
         let new_lemma_name = format!("lemma_{}", self.lemma_number);
         self.lemma_number += 1;
         let (rws, rw_infos) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, self, false, Some(new_lemma_name.clone()));
+        if rw_infos.len() == 0 {
+          assert!(rws.is_empty(), "rw_infos is empty but rws isn't");
+          continue;
+        }
         // There should only be one rewrite
         assert_eq!(rw_infos.len(), 1);
         let new_lemma_eq = &rw_infos[0].lemma_eq;

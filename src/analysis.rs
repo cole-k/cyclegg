@@ -1,4 +1,4 @@
-use crate::ast::{Context, Env, Type, SSubst, resolve_sexp, Expr, is_constructor, is_var};
+use crate::ast::{Context, Env, Type, SSubst, resolve_sexp, Expr, is_constructor, is_var, mangle_name};
 use crate::config::CONFIG;
 use crate::egraph::extract_with_node;
 use egg::*;
@@ -54,7 +54,7 @@ where
   let (vars, cons) = env.get(&Symbol::from_str(dt_name).unwrap()).or_else(|| {
     // this should be a type variable we can't look up
     assert!(dt_name.starts_with(char::is_lowercase));
-    env.get(&Symbol::from_str("Bool").unwrap())
+    env.get(&Symbol::from_str(&mangle_name("Bool")).unwrap())
   }).unwrap();
   let type_var_map: SSubst = zip(vars.iter().cloned(), arg_types.iter().map(|arg_type| arg_type.repr.clone())).collect();
 

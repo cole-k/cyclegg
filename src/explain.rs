@@ -40,13 +40,14 @@ const JOINING_ARROW: &str = " -> ";
 
 /// Custom constants
 const UNREACHABLE: &str = "unreachable ()";
-const UNREACHABLE_DEF: &str = "{-@ unreachable :: {v:a | false} -> b @-}\nunreachable :: a -> b\nunreachable x = unreachable x";
+const UNREACHABLE_DEF: &str = "{-@ unreachable :: {v: a | false} -> b @-}\nunreachable :: a -> b\nunreachable x = error \"unreachable\"";
 
 /// Constants from cyclegg
 const APPLY: &str = "$";
 const ARROW: &str = "->";
 const FORWARD_ARROW: &str = "=>";
 const BACKWARD_ARROW: &str = "<=";
+const LEMMA_SEPARATOR: &str ="-";
 
 /// A rewrite can be forward or backward, this specifies which direction it
 /// goes.
@@ -128,6 +129,7 @@ fn add_header_and_defns(
 
   // Add custom unreachable definition.
   str_explanation.push_str(UNREACHABLE_DEF);
+  str_explanation.push('\n');
   str_explanation.push('\n');
 
   // Haskell definitions
@@ -441,6 +443,7 @@ fn explain_proof(
         str_explanation.push_str(UNREACHABLE);
         str_explanation.push('\n');
         str_explanation.push('\n');
+        return str_explanation;
       }
     }
   }
@@ -532,17 +535,22 @@ fn explain_goal(
           if rule_name.starts_with(IH_EQUALITY_PREFIX) {
             let args = extract_ih_arguments(&rule_name);
             Some(add_lemma_invocation(top_goal_name, args.iter()))
-          } else if rule_name.starts_with(LEMMA_PREFIX) {
+          } else if rule_name.contains(LEMMA_SEPARATOR) {
             // println!("extracting lemma from {} {} {}", rule_name, flat_term, next_term);
-            Some(extract_lemma_invocation(
-              &rule_name,
-              &rw_dir,
-              flat_term,
-              next_term,
-              top_goal_name,
-              lemma_map,
-              local_context,
-            ))
+            rule_name.split_once(LEMMA_SEPARATOR).and_then(|(lemma_name, lemma_rest)|{
+              if lemma_map.contains_key(lemma_name) {
+                Some(extract_lemma_invocation(
+                  lemma_name,
+                  lemma_rest,
+                  &rw_dir,
+                  flat_term,
+                  next_term,
+                  lemma_map,
+                ))
+              } else {
+                None
+              }
+            })
           } else {
             None
           }
@@ -651,13 +659,14 @@ where
 }
 
 fn extract_lemma_invocation(
-  rule_str: &str,
+  // The name of the lemma
+  lemma_name: &str,
+  // The part after the LEMMA_SEPARATOR, this is two sexps split by =
+  lemma_rest: &str,
   rw_dir: &RwDirection,
   curr_term: &FlatTerm<SymbolLang>,
   next_term: &FlatTerm<SymbolLang>,
-  top_goal_name: &str,
   lemma_map: &mut HashMap<String, LemmaInfo>,
-  local_context: &Context,
 ) -> String {
   let mut rewrite_pos: Vec<i32> = vec![];
   let trace = find_rewritten_term(&mut rewrite_pos, next_term).unwrap();
@@ -671,27 +680,34 @@ fn extract_lemma_invocation(
       get_flat_term_from_trace(&trace, next_term),
     ),
   };
-  println!("lemma is {}", rule_str);
-  panic!();
-  let lemma: Vec<&str> = rule_str.split(LEMMA_PREFIX).collect::<Vec<&str>>()[1]
+  println!("lemma rest: {}", lemma_rest);
+  let lemma: Vec<&str> = lemma_rest
     .split(EQUALS)
     .collect();
+  println!("lhs: {}, rhs: {}", lemma[0], lemma[1]);
+  println!("lhs_term: {}, rhs_term: {}", &flat_term_to_sexp(&rewritten_from).to_string(), &flat_term_to_sexp(&rewritten_to).to_string());
 
   let mut lhsmap = map_variables(lemma[0], &flat_term_to_sexp(&rewritten_from).to_string());
   let rhsmap = map_variables(lemma[1], &flat_term_to_sexp(&rewritten_to).to_string());
 
   // println!("lhs: {}, rhs: {}", lemma[0], lemma[1]);
   // println!("lhs_term: {}, rhs_term: {}", &flat_term_to_sexp(&rewritten_from).to_string(), &flat_term_to_sexp(&rewritten_to).to_string());
-  // println!("lhs_map: {:?}, rhs_map: {:?}", lhsmap, rhsmap);
+  println!("lhs_map: {:?}, rhs_map: {:?}", lhsmap, rhsmap);
 
-  assert!(rhsmap
+  let rhsmap_valid = rhsmap
     .iter()
-    .all(|(key, value)| lhsmap.get(key) == Some(value)));
+    .all(|(key, value)| lhsmap.get(key) == Some(value));
+  let lhsmap_valid = lhsmap
+    .iter()
+    .all(|(key, value)| rhsmap.get(key) == Some(value));
+  assert!(rhsmap_valid || lhsmap_valid);
 
   // take the union of both maps
   lhsmap.extend(rhsmap);
 
-  let lemma_info = lemma_map.get(rule_str).unwrap();
+  let lemma_info = lemma_map.get(lemma_name).unwrap();
+  println!("lemma {}", lemma_name);
+  println!("params {:?}", lemma_info.params);
   // Map lhsmap over the lemma's params.
   // We need to do this because the lemma could be the top level IH,
   // whose parameters are not in the same order as they are stored in lhsmap.
@@ -864,11 +880,17 @@ fn get_flat_term_from_trace(
 /// returns a map from the variables in s1 to the corresponding substrings in s2.
 fn map_variables(s1: &str, s2: &str) -> IndexMap<String, String> {
   let mut result_map = IndexMap::new();
+  println!("s1 is {}", s1);
+  println!("s2 is {}", s2);
   // let mut stack = Vec::new();
   let mut s1_iter = s1.chars().peekable();
   let mut s2_iter = s2.chars().peekable();
 
   while let Some(&c1) = s1_iter.peek() {
+    // if s2_iter.peek().is_none() {
+    //   // println!("c1 = {}, s1 = {}",c1, s1_iter.collect::<String>());
+    //   panic!();
+    // }
     let c2 = s2_iter.peek().unwrap();
     match c1 {
       '?' => {
@@ -892,31 +914,47 @@ fn map_variables(s1: &str, s2: &str) -> IndexMap<String, String> {
           }
           s2_iter.next();
         }
+        // println!("variable matches {}", temp_str);
 
         if !temp_str.is_empty() {
           let mut extracted_str = String::new();
           s1_iter.next();
           while let Some(&next_char) = s1_iter.peek() {
-            if next_char.is_whitespace() || next_char == ')' {
+            if next_char.is_whitespace() {
+              break;
+            } else if next_char == ')' {
+              s1_iter.next();
               break;
             }
             extracted_str.push(next_char);
             s1_iter.next();
           }
-
           s1_iter.next();
+          // println!("{:?}", s1_iter.peek());
+          // println!("{:?}", s2_iter.peek());
+          s2_iter.next();
+          while let Some(&next_char) = s2_iter.peek() {
+            if next_char.is_whitespace() {
+              s2_iter.next();
+            } else {
+              break;
+            }
+          }
+          // println!("next {:?}", s2_iter.peek());
 
           result_map.insert(extracted_str, temp_str);
         }
       }
       _ if c1 == *c2 => {
         s1_iter.next();
+        s2_iter.next();
       }
       _ => {
-        break;
+        println!("mismatch {}!={}", c1, c2);
+        println!("rest of s1: {}, s2: {}", s1_iter.collect::<String>(), s2_iter.collect::<String>());
+        panic!("map_variables couldn't match variables");
       }
     }
-    s2_iter.next();
   }
 
   result_map
