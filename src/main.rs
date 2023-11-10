@@ -148,7 +148,7 @@ fn main() -> Result<()> {
 fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
   CONFIG.set_cyclic(cyclic);
   let start_time = Instant::now();
-  let (result, mut proof_state) = goal::prove(goal.copy(), 0, LemmasState::default());
+  let (result, mut proof_state) = goal::prove(goal.copy(), 0, LemmasState::default(), goal.name.clone(), 0);
   let duration = start_time.elapsed();
   if CONFIG.emit_proofs {
     if let Outcome::Valid = result {

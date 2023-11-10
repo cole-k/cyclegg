@@ -7,7 +7,7 @@ use symbolic_expressions::Sexp;
 
 use crate::ast::{map_sexp, to_pattern, Context, Defns, Env, Type};
 use crate::config::CONFIG;
-use crate::goal::{Equation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, LEMMA_PREFIX};
+use crate::goal::{Equation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, LEMMA_PREFIX, ProofInfo};
 
 /// Constants from (Liquid)Haskell
 const EQUALS: &str = "=";
@@ -38,6 +38,10 @@ const COMMENT: &str = "--";
 const JOINING_HAS_TYPE: &str = " :: ";
 const JOINING_ARROW: &str = " -> ";
 
+/// Custom constants
+const UNREACHABLE: &str = "unreachable ()";
+const UNREACHABLE_DEF: &str = "{-@ unreachable :: {v:a | false} -> b @-}\nunreachable :: a -> b\nunreachable x = unreachable x";
+
 /// Constants from cyclegg
 const APPLY: &str = "$";
 const ARROW: &str = "->";
@@ -56,8 +60,8 @@ struct LemmaInfo {
   name: String,
   // (param_name, param_type)
   params: Vec<(String, String)>,
-  lhs: Sexp,
-  rhs: Sexp,
+  // lhs: Sexp,
+  // rhs: Sexp,
 }
 
 /// Capitalizes each part of the goal name and removes underscores.
@@ -79,13 +83,10 @@ pub fn goal_name_to_filename(goal_name: &str) -> String {
     .collect()
 }
 
-pub fn explain_top(
+fn add_header_and_defns(
   filename: &str,
   goal: &str,
-  state: &mut ProofState,
   eq: &Equation,
-  params: &[Symbol],
-  top_level_vars: &HashMap<Symbol, Type>,
   defns: &Defns,
   env: &Env,
   global_context: &Context,
@@ -125,36 +126,84 @@ pub fn explain_top(
   // Haskell data declarations
   str_explanation.push_str(&add_data_definitions(env, global_context));
 
+  // Add custom unreachable definition.
+  str_explanation.push_str(UNREACHABLE_DEF);
+  str_explanation.push('\n');
+
   // Haskell definitions
   str_explanation.push_str(&add_definitions(defns, global_context));
 
+  str_explanation
+
+}
+
+fn explain_body(
+  goal: &str,
+  proof_info: &mut ProofInfo,
+  lhs: &Sexp,
+  rhs: &Sexp,
+  params: &[(Symbol, Type)],
+  lemma_map: &mut HashMap<String, LemmaInfo>,
+) -> String {
+  let mut str_explanation = String::new();
   // (arg name, arg type), to be used in creating the type.
   let args: Vec<(String, String)> = params
     .iter()
-    .map(|param| (param.to_string(), convert_ty(&top_level_vars[param].repr)))
+    .map(|(var, ty)| (var.to_string(), convert_ty(&ty.repr)))
     .collect();
   // println!("{:?}", args);
 
   // Add the types and function definition stub
   str_explanation.push_str(&add_proof_types_and_stub(
     goal,
-    &eq.lhs.sexp,
-    &eq.rhs.sexp,
+    &lhs,
+    &rhs,
     &args,
   ));
   str_explanation.push('\n');
 
   // Finally, we can do the proof explanation
 
+  let proof_exp = explain_proof(1, goal, proof_info, goal, lemma_map);
+  str_explanation.push_str(&proof_exp);
+  str_explanation.push('\n');
+
+  str_explanation
+}
+
+pub fn explain_top(
+  filename: &str,
+  goal: &str,
+  state: &mut ProofState,
+  eq: &Equation,
+  params: &[Symbol],
+  top_level_vars: &HashMap<Symbol, Type>,
+  defns: &Defns,
+  env: &Env,
+  global_context: &Context,
+) -> String {
+  let mut str_explanation = String::new();
+
+  // Add the boilerplate and definitions
+  str_explanation.push_str(&add_header_and_defns(filename, goal, eq, defns, env, global_context));
+
+  // (arg name, arg type), to be used in creating the type.
+  let args: Vec<(Symbol, Type)> = params
+    .iter()
+    .map(|param| (param.clone(), top_level_vars[param].clone()))
+    .collect();
+
+  // Finally, we can do the proof explanation
+
   // Maps the rewrite rule string corresponding to a lemma to
-  // (fresh_lemma_name, lemma_vars, lemma LHS, lemma RHS).
+  // (fresh_lemma_name, lemma_vars).
   // In the beginning add only the top-level inductive hypothesis.
   // TODO: still need to handle the inverted IH? (RHS => LHS)
   let mut lemma_map = HashMap::new();
-  let pat_lhs: Pattern<SymbolLang> = to_pattern(&eq.lhs.expr, |v| top_level_vars.contains_key(v));
-  let pat_rhs: Pattern<SymbolLang> = to_pattern(&eq.rhs.expr, |v| top_level_vars.contains_key(v));
+  // let pat_lhs: Pattern<SymbolLang> = to_pattern(&eq.lhs.expr, |v| top_level_vars.contains_key(v));
+  // let pat_rhs: Pattern<SymbolLang> = to_pattern(&eq.rhs.expr, |v| top_level_vars.contains_key(v));
   let lemma_info = LemmaInfo {
-    name: goal.to_string(),
+    name: state.ih_lemma_name.clone(),
     params: params
       .iter()
       .map(|param| {
@@ -162,31 +211,32 @@ pub fn explain_top(
         (param.to_string(), param_type.to_string())
       })
       .collect(),
-    lhs: symbolic_expressions::parser::parse_str(&pat_lhs.to_string()).unwrap(),
-    rhs: symbolic_expressions::parser::parse_str(&pat_rhs.to_string()).unwrap(),
+    // lhs: symbolic_expressions::parser::parse_str(&pat_lhs.to_string()).unwrap(),
+    // rhs: symbolic_expressions::parser::parse_str(&pat_rhs.to_string()).unwrap(),
   };
-  let ih_name = format!("lemma-{}={}", pat_lhs, pat_rhs);
-  lemma_map.insert(ih_name, lemma_info);
+  lemma_map.insert(state.ih_lemma_name.clone(), lemma_info);
 
-  let proof_exp = explain_proof(1, goal, state, goal, &mut lemma_map);
-  str_explanation.push_str(&proof_exp);
+  for (lemma_name, lemma_eq, _) in state.lemma_proofs.iter() {
+    let lemma_info = LemmaInfo {
+      name: lemma_name.clone(),
+      params: lemma_eq.params.iter().map(|(param, ty)| {
+        (param.to_string(), convert_ty(&ty.repr))
+      }).collect(),
+    };
+    lemma_map.insert(lemma_name.clone(), lemma_info);
+  }
+
+  let body_exp = explain_body(goal, &mut state.proof_info, &eq.lhs.sexp, &eq.rhs.sexp, &args, &mut lemma_map);
+  str_explanation.push_str(&body_exp);
   str_explanation.push('\n');
 
-  for (_rule_name, lemma_info) in lemma_map.iter() {
-    if lemma_info.name == goal {
+  for (lemma_name, lemma_eq, lemma_proof_info) in state.lemma_proofs.iter_mut() {
+    if lemma_name == &state.ih_lemma_name {
       // This is the top-level IH, we don't need to add it.
       continue;
     }
-    str_explanation.push_str(&add_proof_types_and_stub(
-      &lemma_info.name,
-      &lemma_info.lhs,
-      &lemma_info.rhs,
-      &lemma_info.params,
-    ));
-    str_explanation.push(' ');
-    // TODO: add proofs
-    str_explanation.push_str(UNDEFINED);
-    str_explanation.push('\n');
+    let lemma_exp = explain_body(&lemma_name, lemma_proof_info, &lemma_eq.eq.lhs, &lemma_eq.eq.rhs, &lemma_eq.params, &mut lemma_map);
+    str_explanation.push_str(&lemma_exp);
     str_explanation.push('\n');
   }
 
@@ -368,27 +418,35 @@ fn add_definitions(defns: &Defns, global_context: &Context) -> String {
 fn explain_proof(
   depth: usize,
   goal: &str,
-  state: &mut ProofState,
+  proof_info: &mut ProofInfo,
   top_goal_name: &str,
   lemma_map: &mut HashMap<String, LemmaInfo>,
 ) -> String {
   // If it's not in the proof tree, it must be a leaf.
-  if !state.proof.contains_key(goal) {
-    // The explanation should be in solved_goal_explanations. If it isn't,
-    // we must be trying to explain an incomplete proof which is an error.
-    return explain_goal(
-      depth,
-      state
-        .solved_goal_explanation_and_context
-        .get_mut(goal)
-        .unwrap(),
-      top_goal_name,
-      lemma_map,
-    );
+  if !proof_info.proof.contains_key(goal) {
+    match proof_info.solved_goal_explanation_and_context.get_mut(goal) {
+      Some(expl) => {
+        // We have a proper explanation
+        return explain_goal(
+          depth,
+          expl,
+          top_goal_name,
+          lemma_map,
+        );
+      }
+      // We'll assume it is otherwise proven by contradiction
+      None => {
+        let mut str_explanation = String::new();
+        add_indentation(&mut str_explanation, depth);
+        str_explanation.push_str(UNREACHABLE);
+        str_explanation.push('\n');
+        str_explanation.push('\n');
+      }
+    }
   }
   // Need to clone to avoid borrowing... unfortunately this is all because we need
   // a mutable reference to the explanations for some annoying reason
-  let proof_term = state.proof.get(goal).unwrap().clone();
+  let proof_term = proof_info.proof.get(goal).unwrap().clone();
   let mut str_explanation = String::new();
   let mut proof_depth = depth;
   let mut case_depth = depth + 1;
@@ -412,7 +470,7 @@ fn explain_proof(
         str_explanation.push_str(&explain_proof(
           case_depth + 1,
           case_goal,
-          state,
+          proof_info,
           top_goal_name,
           lemma_map,
         ));
@@ -613,6 +671,8 @@ fn extract_lemma_invocation(
       get_flat_term_from_trace(&trace, next_term),
     ),
   };
+  println!("lemma is {}", rule_str);
+  panic!();
   let lemma: Vec<&str> = rule_str.split(LEMMA_PREFIX).collect::<Vec<&str>>()[1]
     .split(EQUALS)
     .collect();
@@ -631,43 +691,17 @@ fn extract_lemma_invocation(
   // take the union of both maps
   lhsmap.extend(rhsmap);
 
-  match lemma_map.get(rule_str) {
-    Some(lemma_info) => {
-      // Map lhsmap over the lemma's params.
-      // We need to do this because the lemma could be the top level IH,
-      // whose parameters are not in the same order as they are stored in lhsmap.
-      add_lemma_invocation(
-        &lemma_info.name,
-        lemma_info
-          .params
-          .iter()
-          .map(|(param, _)| lhsmap.get(param).unwrap()),
-      )
-    }
-    None => {
-      let lemma_name = format!("{}_lemma_{}", top_goal_name, lemma_map.len());
-      let lemma_info = LemmaInfo {
-        name: lemma_name.clone(),
-        params: lhsmap
-          .keys()
-          .map(|param| {
-            // println!("{:?} - {}", local_context, param);
-            let param_type = local_context
-              .get(&Symbol::from_str(param).unwrap())
-              .unwrap();
-            (param.clone(), param_type.to_string())
-          })
-          .collect(),
-        // Convert to an Sexp so we can fix up its variables and any other stuff
-        // we need to convert
-        lhs: symbolic_expressions::parser::parse_str(lemma[0]).unwrap(),
-        rhs: symbolic_expressions::parser::parse_str(lemma[1]).unwrap(),
-      };
-      lemma_map.insert(rule_str.to_string(), lemma_info);
-      // Create the lemma invocation
-      add_lemma_invocation(&lemma_name, lhsmap.values())
-    }
-  }
+  let lemma_info = lemma_map.get(rule_str).unwrap();
+  // Map lhsmap over the lemma's params.
+  // We need to do this because the lemma could be the top level IH,
+  // whose parameters are not in the same order as they are stored in lhsmap.
+  add_lemma_invocation(
+    &lemma_info.name,
+    lemma_info
+      .params
+      .iter()
+      .map(|(param, _)| lhsmap.get(param).unwrap()),
+  )
 }
 
 fn add_indentation(s: &mut String, depth: usize) {

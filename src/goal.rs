@@ -327,6 +327,21 @@ impl Equation {
 
 }
 
+pub struct RewriteInfo {
+  pub lhs_to_rhs_rewrite_name: Option<String>,
+  pub rhs_to_lhs_rewrite_name: Option<String>,
+  pub lemma_name: String,
+  pub lemma_eq: RawEqWithParams,
+}
+
+impl RewriteInfo {
+    pub fn new(lhs_to_rhs_rewrite_name: Option<String>, rhs_to_lhs_rewrite_name: Option<String>, lemma_name: String, lemma_eq: RawEqWithParams) -> Self { Self { lhs_to_rhs_rewrite_name, rhs_to_lhs_rewrite_name, lemma_name, lemma_eq } }
+
+  pub fn rewrite_names(&self) -> Vec<String> {
+    self.lhs_to_rhs_rewrite_name.iter().chain(self.rhs_to_lhs_rewrite_name.iter()).cloned().collect()
+  }
+}
+
 /// Proof goal
 pub struct Goal<'a> {
   /// Goal name
@@ -531,6 +546,7 @@ impl<'a> Goal<'a> {
       // extracting has been removed because of a destructive rewrite.
       let res = egraph.classes().any(|eclass| {
         if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data.canonical_form_data {
+          // println!("Proof by contradiction {} != {}", n1, n2);
           // FIXME: these nodes might have been removed, we'll need to be
           // careful about how we generate this proof.
           // // This is here only for the purpose of proof generation:
@@ -592,11 +608,10 @@ impl<'a> Goal<'a> {
   }
 
 
-  fn make_rewrites_from(&self, lhs_id: Id, rhs_id: Id, premises: Vec<Equation>, exprs: HashMap<Id, Vec<Expr>>, state: &ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<String>, Vec<RawEqWithParams>) {
+  fn make_rewrites_from(&self, lhs_id: Id, rhs_id: Id, premises: Vec<Equation>, exprs: HashMap<Id, Vec<Expr>>, state: &mut ProofState, add_termination_check: bool, given_lemma_name: Option<String>) -> (HashMap<String, Rw>, Vec<RewriteInfo>) {
     let is_var = |v| self.local_context.contains_key(v);
     let mut rewrites = self.lemmas.clone();
-    let mut added_rewrite_names = vec!();
-    let mut rewrite_eqs = vec!();
+    let mut rewrite_infos = vec!();
     for lhs_expr in exprs.get(&lhs_id).unwrap() {
       let lhs: Pattern<SymbolLang> = to_pattern(lhs_expr, is_var);
       if (CONFIG.irreducible_only && self.is_reducible(lhs_expr)) || has_guard_wildcards(&lhs) {
@@ -604,7 +619,7 @@ impl<'a> Goal<'a> {
       }
       for rhs_expr in exprs.get(&rhs_id).unwrap() {
         if state.timeout() {
-          return (rewrites, added_rewrite_names, rewrite_eqs);
+          return (rewrites, rewrite_infos);
         }
 
         let rhs: Pattern<SymbolLang> = to_pattern(rhs_expr, is_var);
@@ -628,6 +643,16 @@ impl<'a> Goal<'a> {
           continue;
         }
 
+        // This allows us to force the lemma name for the IH
+        let lemma_name = match &given_lemma_name {
+          Some(name) => name.clone(),
+          None => {
+            let name = format!("lemma_{}", state.lemma_number);
+            state.lemma_number += 1;
+            name
+          }
+        };
+
         // Pick out those variables that occur in the lemma
         let lemma_var_classes: IdSubst = self
           .var_classes
@@ -643,56 +668,55 @@ impl<'a> Goal<'a> {
           free_vars: lemma_var_classes,
           premises: premises.clone(),
         };
-        let mut added_lemma = false;
-        if rhs_vars.is_subset(&lhs_vars) {
-          // if rhs has no extra wildcards, create a lemma lhs => rhs
-          if add_termination_check {
-            Goal::add_lemma(lhs.clone(), rhs.clone(), condition.clone(), &mut rewrites, &mut added_rewrite_names);
-          } else {
-            Goal::add_unchecked_lemma(lhs.clone(), rhs.clone(), &mut rewrites, &mut added_rewrite_names);
-          }
-          let rewrite_eq = RawEquation::from_exprs(lhs_expr, rhs_expr);
-
-          rewrite_eqs.push(RawEqWithParams {
+        let rewrite_eq = RawEquation::from_exprs(lhs_expr, rhs_expr);
+        let mut rw_info = RewriteInfo {
+          lhs_to_rhs_rewrite_name: None,
+          rhs_to_lhs_rewrite_name: None,
+          lemma_name: lemma_name.clone(),
+          lemma_eq: RawEqWithParams {
             eq: rewrite_eq,
             params: params.clone(),
-          });
-          added_lemma = true;
+          }
+        };
+        if rhs_vars.is_subset(&lhs_vars) {
+          // if rhs has no extra wildcards, create a lemma lhs => rhs
+          let lhs_to_rhs_rewrite_name = if add_termination_check {
+            Goal::add_lemma(lhs.clone(), rhs.clone(), condition.clone(), &mut rewrites, lemma_name.clone())
+          } else {
+            Goal::add_unchecked_lemma(lhs.clone(), rhs.clone(), &mut rewrites, lemma_name.clone())
+          };
+          rw_info.lhs_to_rhs_rewrite_name = Some(lhs_to_rhs_rewrite_name);
+
           if CONFIG.single_rhs {
             continue;
           };
         }
         if lhs_vars.is_subset(&rhs_vars) {
           // if lhs has no extra wildcards, create a lemma rhs => lhs;
+          // NOTE (CK): This below comment is no longer true when our termination check is more complicated.
           // in non-cyclic mode, a single direction of IH is always sufficient
           // (because grounding adds all instantiations we could possibly care about).
-          if add_termination_check {
-            Goal::add_lemma(rhs.clone(), lhs.clone(), condition.clone(), &mut rewrites, &mut added_rewrite_names);
+          let rhs_to_lhs_rewrite_name = if add_termination_check {
+            Goal::add_lemma(rhs.clone(), lhs.clone(), condition.clone(), &mut rewrites, lemma_name.clone())
           } else {
-            Goal::add_unchecked_lemma(rhs.clone(), lhs.clone(), &mut rewrites, &mut added_rewrite_names);
-          }
-          let rewrite_eq = RawEquation::from_exprs(lhs_expr, rhs_expr);
-          rewrite_eqs.push(RawEqWithParams {
-            eq: rewrite_eq,
-            params,
-          });
-          added_lemma = true;
-          if CONFIG.single_rhs {
-            continue;
+            Goal::add_unchecked_lemma(rhs.clone(), lhs.clone(), &mut rewrites, lemma_name.clone())
           };
+          rw_info.rhs_to_lhs_rewrite_name = Some(rhs_to_lhs_rewrite_name);
         }
+        let added_lemma = rw_info.lhs_to_rhs_rewrite_name.is_some() || rw_info.rhs_to_lhs_rewrite_name.is_some();
         if !added_lemma {
           warn!("cannot create a lemma from {} and {}", lhs, rhs);
         }
+        rewrite_infos.push(rw_info);
       }
     }
-    (rewrites, added_rewrite_names, rewrite_eqs)
+    (rewrites, rewrite_infos)
   }
 
   /// Create a rewrite `lhs => rhs` which will serve as the lemma ("induction hypothesis") for a cycle in the proof;
   /// here lhs and rhs are patterns, created by replacing all scrutinees with wildcards;
   /// soundness requires that the pattern only apply to variable tuples smaller than the current scrutinee tuple.
-  fn add_lemma_rewrites(&self, state: &ProofState) -> HashMap<String, Rw> {
+  fn add_lemma_rewrites(&self, state: &mut ProofState) -> HashMap<String, Rw> {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
@@ -725,13 +749,15 @@ impl<'a> Goal<'a> {
         .map(|eq| eq.update_variables(&self.var_classes, &self.egraph))
         .collect();
 
-      let (rewrites, _new_rewrite_names, _) = self.make_rewrites_from(lhs_id, rhs_id, premises, exprs, state, true);
+      let (rewrites, rw_infos) = self.make_rewrites_from(lhs_id, rhs_id, premises, exprs, state, true, Some(state.ih_lemma_name.clone()));
+      // In this case, we are adding the special IH lemma, so we will record
+      // that in the state for proof emission.
       rewrites
     }
 
   }
 
-  fn make_cyclic_lemmas(&self, state: &ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<RawEqWithParams>) {
+  fn make_cyclic_lemmas(&self, state: &mut ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<RawEqWithParams>) {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
@@ -747,21 +773,20 @@ impl<'a> Goal<'a> {
       .collect();
 
 
-    let (rewrites, _new_rewrite_names, rewrite_eqs) = self.make_rewrites_from(lhs_id, rhs_id, premises, exprs, state, add_termination_check);
-    (rewrites, rewrite_eqs)
+    let (rewrites, rewrite_infos) = self.make_rewrites_from(lhs_id, rhs_id, premises, exprs, state, add_termination_check, None);
+    (rewrites, rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_eq).collect())
   }
 
   /// Add a rewrite `lhs => rhs` to `rewrites` if not already present
-  fn add_lemma(lhs: Pat, rhs: Pat, cond: Soundness, rewrites: &mut HashMap<String, Rw>, added_rewrite_names: &mut Vec<String>) {
-    let name = format!("{}{}={}", LEMMA_PREFIX, lhs, rhs);
+  fn add_lemma(lhs: Pat, rhs: Pat, cond: Soundness, rewrites: &mut HashMap<String, Rw>, lemma_name: String) -> String {
+    let name = format!("{}-{}={}", lemma_name, lhs, rhs);
     // Insert the lemma into the rewrites map if it's not already there
     match rewrites.entry(name.clone()) {
       Entry::Occupied(_) => (),
       Entry::Vacant(entry) => {
         warn!("creating lemma: {} => {}", lhs, rhs);
-        added_rewrite_names.push(name.clone());
         let rw = Rewrite::new(
-          name,
+          name.clone(),
           ConditionalSearcher {
             condition: cond,
             searcher: lhs,
@@ -771,26 +796,27 @@ impl<'a> Goal<'a> {
         .unwrap();
         entry.insert(rw);
       }
-    }
+    };
+    name
   }
 
-  fn add_unchecked_lemma(lhs: Pat, rhs: Pat, rewrites: &mut HashMap<String, Rw>, added_rewrite_names: &mut Vec<String>) {
-    let name = format!("{}{}={}", CC_LEMMA_PREFIX, lhs, rhs);
+  fn add_unchecked_lemma(lhs: Pat, rhs: Pat, rewrites: &mut HashMap<String, Rw>, lemma_name: String) -> String {
+    let name = format!("{}-{}={}", lemma_name, lhs, rhs);
     // Insert the lemma into the rewrites map if it's not already there
     match rewrites.entry(name.clone()) {
       Entry::Occupied(_) => (),
       Entry::Vacant(entry) => {
         warn!("making cc lemma: {} => {}", lhs, rhs);
-        added_rewrite_names.push(name.clone());
         let rw = Rewrite::new(
-          name,
+          name.clone(),
           lhs,
           rhs,
         )
         .unwrap();
         entry.insert(rw);
       }
-    }
+    };
+    name
   }
 
   /// Add var as a scrutinee if its type `ty` is a datatype;
@@ -989,7 +1015,7 @@ impl<'a> Goal<'a> {
     if var_str.starts_with(GUARD_PREFIX) && self.guard_exprs.contains_key(&var_str) {
       // There should only be two cases.
       assert_eq!(instantiated_cons_and_goals.len(), 2);
-      state.proof.insert(
+      state.proof_info.proof.insert(
         self.name,
         ProofTerm::ITESplit(
           var_str.clone(),
@@ -999,7 +1025,7 @@ impl<'a> Goal<'a> {
       );
     // Otherwise, we are doing a case split on a variable.
     } else {
-      state.proof.insert(
+      state.proof_info.proof.insert(
         self.name,
         ProofTerm::CaseSplit(var_str, instantiated_cons_and_goals),
       );
@@ -1273,7 +1299,7 @@ impl<'a> Goal<'a> {
     self.egraph.analysis.cvec_analysis.cvec_egraph.replace_with(|_| runner.egraph);
   }
 
-  fn search_for_cc_lemmas(&mut self, state: &ProofState) -> Vec<RawEqWithParams> {
+  fn search_for_cc_lemmas(&mut self, state: &mut ProofState) -> Vec<RawEqWithParams> {
     let mut lemmas = vec!();
     self.egraph.analysis.cvec_analysis.saturate();
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
@@ -1340,13 +1366,17 @@ impl<'a> Goal<'a> {
           //   .collect();
           // exprs.insert(class_1_id, vec!(e1.clone()));
           // exprs.insert(class_2_id, vec!(e2.clone()));
-          let (_new_rewrites, _new_rewrite_names, new_rewrite_eqs) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false);
+          let (_rewrites, rewrite_infos) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false, None);
+          let new_rewrite_eqs: Vec<RawEqWithParams> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_eq).collect();
           // let rewrites = self.reductions.iter().chain(new_rewrites.values());
           // let mut runner = Runner::default()
           //   .with_explanations_enabled()
           //   .with_egraph(new_egraph)
           //   .run(rewrites);
           // let (explanation, valid) = Goal::get_explanation_and_validity(&self.eq, &mut runner.egraph);
+          // if explanation.is_none() {
+          //   continue;
+          // }
           // if valid && explanation.is_none() {
           //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
           // }
@@ -1809,16 +1839,23 @@ impl LemmasState {
   }
 }
 
+pub struct ProofInfo {
+  pub solved_goal_explanation_and_context: HashMap<String, (Explanation<SymbolLang>, Context)>,
+  pub proof: HashMap<String, ProofTerm>,
+}
+
 /// A proof state is a list of subgoals,
 /// all of which have to be discharged
 pub struct ProofState<'a> {
   pub goals: VecDeque<Goal<'a>>,
-  pub solved_goal_explanation_and_context: HashMap<String, (Explanation<SymbolLang>, Context)>,
-  pub proof: HashMap<String, ProofTerm>,
+  pub proof_info: ProofInfo,
   pub start_time: Instant,
   pub proof_depth: usize,
   pub lemmas_state: LemmasState,
   pub case_split_depth: usize,
+  pub lemma_proofs: Vec<(String, RawEqWithParams, ProofInfo)>,
+  pub ih_lemma_name: String,
+  pub lemma_number: usize,
   // pub cc_lemmas: HashMap<String, Rw>,
 }
 
@@ -1832,7 +1869,10 @@ impl<'a> ProofState<'a> {
   /// Try to prove all of the lemmas we've collected so far.
   pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> bool {
     // println!("Try prove lemmas for goal {}", goal.name);
-    for chain in self.lemmas_state.possible_lemmas.chains.iter() {
+
+    // Need to copy so we can mutably borrow self later
+    let lemma_chains = self.lemmas_state.possible_lemmas.chains.clone();
+    for chain in lemma_chains.iter() {
       // println!("chain lemmas: {}", chain.chain.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
       for (i, raw_eq_with_params) in chain.chain.iter().enumerate() {
         if self.timeout() {
@@ -1880,7 +1920,7 @@ impl<'a> ProofState<'a> {
           self.lemmas_state.invalid_lemmas.insert(raw_eq_with_params.clone());
           continue;
         } else {
-          println!("Trying to prove lemma: {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+          println!("Possible lemma to prove: {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
           // println!("proven lemmas so far: {}", self.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
           // print_cvec(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec)
         }
@@ -1891,7 +1931,16 @@ impl<'a> ProofState<'a> {
           .collect();
         exprs.insert(lhs_id, vec!(new_goal.eq.lhs.expr.clone()));
         exprs.insert(rhs_id, vec!(new_goal.eq.rhs.expr.clone()));
-        let (rws, _, _) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, &self, false);
+        let new_lemma_name = format!("lemma_{}", self.lemma_number);
+        self.lemma_number += 1;
+        let (rws, rw_infos) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, self, false, Some(new_lemma_name.clone()));
+        // There should only be one rewrite
+        assert_eq!(rw_infos.len(), 1);
+        let new_lemma_eq = &rw_infos[0].lemma_eq;
+        // Give the new goal the new lemma's name so that we can match its proof.
+        // Actually this isn't necessary for anything other than prettying the output,
+        // but having the name be ugly is better for debugging.
+        new_goal.name = new_lemma_name.clone();
         let mut new_lemmas_state = self.lemmas_state.clone();
 
         // HACK: Optimization to proving lemmas
@@ -1923,13 +1972,16 @@ impl<'a> ProofState<'a> {
             break;
           }
         }
+        println!("Trying to prove lemma: forall {}. {} = {}", raw_eq_with_params.params.iter().map(|(v, t)| format!("{}: {}", v, t)).join(" "), raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
 
         // Zero out the possible lemmas and cyclic lemmas, we only want
         // to carry forward what we've proven already.
         new_lemmas_state.possible_lemmas = ChainSet::new();
         new_lemmas_state.cyclic_lemmas = ChainSet::new();
         new_lemmas_state.cyclic_lemma_rewrites = HashMap::new();
-        let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state);
+        let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state, new_lemma_name.clone(), self.lemma_number);
+        // Update the lemma number so we don't have a lemma name clash.
+        self.lemma_number = ps.lemma_number;
         // Steal the lemmas we got from the recursive proving.
         self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
         self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
@@ -1943,6 +1995,8 @@ impl<'a> ProofState<'a> {
           // Add any cyclic lemmas we proved too
           self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
           self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
+          // Add its proof
+          self.lemma_proofs.push((new_lemma_name, new_lemma_eq.clone(), ps.proof_info));
           goal.saturate(&self.lemmas_state.lemma_rewrites);
           if goal.check_validity() {
             return true;
@@ -1979,6 +2033,25 @@ impl<'a> ProofState<'a> {
       true
     } else {
       false
+    }
+  }
+
+  pub fn process_goal_explanation(&mut self, goal: Goal, is_valid: bool) {
+    if let Some(mut explanation) = goal.explanation {
+      // This goal has been discharged, proceed to the next goal
+      if CONFIG.verbose {
+        println!("{} {}", "Proved case".bright_blue(), goal.name);
+        println!("{}", explanation.get_flat_string());
+      }
+     self
+        .proof_info
+        .solved_goal_explanation_and_context
+        .insert(goal.name, (explanation, goal.local_context));
+    } else if is_valid {
+      if CONFIG.verbose {
+        println!("{} {}", "Proved case by contradiction".bright_blue(), goal.name);
+        println!("(no explanation for now)");
+      }
     }
   }
 }
@@ -2027,20 +2100,26 @@ pub fn explain_goal_failure(goal: &Goal) {
 }
 
 /// Top-level interface to the theorem prover.
-pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Outcome, ProofState) {
-  let goal_name = goal.name.clone();
+pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_name: String, lemma_number: usize) -> (Outcome, ProofState) {
+  // let goal_name = goal.name.clone();
   let goal_eq = RawEquation::new(goal.eq.lhs.sexp.clone(), goal.eq.rhs.sexp.clone());
   let goal_eq_with_params = RawEqWithParams::new(goal_eq, goal.params.iter().cloned().map(|param| (param, goal.local_context.get(&param).unwrap().clone())).collect());
   // We won't attempt to prove the goal again (it isn't actually proven).
   lemmas_state.proven_lemmas.insert(goal_eq_with_params);
   let mut state = ProofState {
     goals: vec![goal].into(),
-    solved_goal_explanation_and_context: HashMap::default(),
-    proof: HashMap::default(),
+    proof_info: ProofInfo {
+      solved_goal_explanation_and_context: HashMap::default(),
+      proof: HashMap::default(),
+    },
     start_time: Instant::now(),
     proof_depth: depth,
     lemmas_state,
     case_split_depth: 0,
+    lemma_proofs: vec!(),
+    // FIXME: should use an option
+    ih_lemma_name: ih_name,
+    lemma_number,
   };
   // FIXME: put in config
   if state.proof_depth > CONFIG.proof_depth {
@@ -2063,22 +2142,9 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
       goal.save_egraph();
     }
     let is_valid = goal.check_validity();
-    if let Some(mut explanation) = goal.explanation {
-      // This goal has been discharged, proceed to the next goal
-      if CONFIG.verbose {
-        println!("{} {}", "Proved case".bright_blue(), goal.name);
-        println!("{}", explanation.get_flat_string());
-      }
-      state
-        .solved_goal_explanation_and_context
-        .insert(goal.name, (explanation, goal.local_context));
-      continue;
-    }
-    if is_valid {
-      if CONFIG.verbose {
-        println!("{} {}", "Proved case by contradiction".bright_blue(), goal.name);
-        println!("(no explanation for now)");
-      }
+    if is_valid || goal.explanation.is_some() {
+      // println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
+      state.process_goal_explanation(goal, is_valid);
       continue;
     }
     if CONFIG.verbose {
@@ -2113,7 +2179,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
       state.lemmas_state.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs));
     }
     if CONFIG.cc_lemmas {
-      state.lemmas_state.add_possible_lemmas(goal.search_for_cc_lemmas(&state));
+      let possible_lemmas = goal.search_for_cc_lemmas(&mut state);
+      state.lemmas_state.add_possible_lemmas(possible_lemmas);
     }
     // This ends up being really slow so we'll just take the lemma duplication for now
     // It's unclear that it lets us prove that much more anyway.
@@ -2165,7 +2232,9 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
       if depth > state.case_split_depth {
         // println!("depth {} is greater than current depth, increasing.", depth);
         state.case_split_depth = depth;
-        if state.try_prove_lemmas(&mut goal) {
+        let is_valid = state.try_prove_lemmas(&mut goal);
+        if is_valid || goal.explanation.is_some() {
+          state.process_goal_explanation(goal, is_valid);
           continue;
         }
       }
@@ -2193,7 +2262,9 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState) -> (Ou
         }
       }
       if goal.scrutinees.iter().any(|(_, depth)| *depth > CONFIG.max_split_depth + state.proof_depth) {
-        if state.try_prove_lemmas(&mut goal) {
+        let is_valid = state.try_prove_lemmas(&mut goal);
+        if is_valid || goal.explanation.is_some() {
+          state.process_goal_explanation(goal, is_valid);
           continue;
         }
         // println!("Failed to prove case {}, trying CC lemmas", goal.name);
