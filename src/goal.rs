@@ -2000,6 +2000,7 @@ impl<'a> ProofState<'a> {
         self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
         self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
         self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
+        self.lemma_proofs.extend(ps.lemma_proofs);
         if outcome == Outcome::Valid {
           println!("proved {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
           // TODO: This comes for free in the proven lemmas we get, so we

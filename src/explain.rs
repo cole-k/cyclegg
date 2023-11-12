@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use symbolic_expressions::Sexp;
 
-use crate::ast::{map_sexp, to_pattern, Context, Defns, Env, Type};
+use crate::ast::{map_sexp, to_pattern, Context, Defns, Env, Type, find_instantiations};
 use crate::config::CONFIG;
 use crate::goal::{Equation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, LEMMA_PREFIX, ProofInfo, ProofType};
 
@@ -39,7 +39,7 @@ const JOINING_HAS_TYPE: &str = " :: ";
 const JOINING_ARROW: &str = " -> ";
 
 /// Custom constants
-const UNREACHABLE: &str = "unreachable ()";
+const UNREACHABLE: &str = "unreachable";
 const UNREACHABLE_DEF: &str = "{-@ unreachable :: {v: a | false} -> b @-}\nunreachable :: a -> b\nunreachable x = error \"unreachable\"";
 
 /// Constants from cyclegg
@@ -555,7 +555,7 @@ fn explain_goal(
         extract_rule_name(next_term).and_then(|(rule_name, rw_dir)| {
           if rule_name.starts_with(IH_EQUALITY_PREFIX) {
             let args = extract_ih_arguments(&rule_name);
-            Some(add_lemma_invocation(top_goal_name, args.iter()))
+            Some(add_lemma_invocation(top_goal_name, args.iter().cloned()))
           } else if rule_name.contains(LEMMA_SEPARATOR) {
             // println!("extracting lemma from {} {} {}", rule_name, flat_term, next_term);
             rule_name.split_once(LEMMA_SEPARATOR).and_then(|(lemma_name, lemma_rest)|{
@@ -665,15 +665,15 @@ fn add_comment(str_explanation: &mut String, comment: Option<&String>, depth: us
   }
 }
 
-fn add_lemma_invocation<'a, L>(lemma_name: &str, lemma_arguments: L) -> String
+fn add_lemma_invocation<L>(lemma_name: &str, lemma_arguments: L) -> String
 where
-  L: Iterator<Item = &'a String>,
+  L: Iterator<Item = String>,
 {
   let mut lemma_str = String::new();
   lemma_str.push_str(lemma_name);
   for arg in lemma_arguments {
     lemma_str.push_str(" (");
-    lemma_str.push_str(arg);
+    lemma_str.push_str(&arg);
     lemma_str.push(')');
   }
   lemma_str
@@ -701,19 +701,30 @@ fn extract_lemma_invocation(
       get_flat_term_from_trace(&trace, next_term),
     ),
   };
-  println!("lemma rest: {}", lemma_rest);
+  // println!("lemma rest: {}", lemma_rest);
+  let lemma_info = lemma_map.get(lemma_name).unwrap();
   let lemma: Vec<&str> = lemma_rest
     .split(EQUALS)
     .collect();
-  println!("lhs: {}, rhs: {}", lemma[0], lemma[1]);
-  println!("lhs_term: {}, rhs_term: {}", &flat_term_to_sexp(&rewritten_from).to_string(), &flat_term_to_sexp(&rewritten_to).to_string());
+  // println!("lhs: {}, rhs: {}", lemma[0], lemma[1]);
+  // println!("lhs_term: {}, rhs_term: {}", &flat_term_to_sexp(&rewritten_from).to_string(), &flat_term_to_sexp(&rewritten_to).to_string());
 
-  let mut lhsmap = map_variables(lemma[0], &flat_term_to_sexp(&rewritten_from).to_string());
-  let rhsmap = map_variables(lemma[1], &flat_term_to_sexp(&rewritten_to).to_string());
+  let lhs_sexp = symbolic_expressions::parser::parse_str(lemma[0]).unwrap();
+  let rhs_sexp = symbolic_expressions::parser::parse_str(lemma[1]).unwrap();
+  // HACK: It's a variable if it is a lemma parameter without the ?
+  //
+  // We actually know the LHS and RHS of the lemma, but we don't know what order
+  // they were applied in. We should record which direction the rewrite was in
+  // so we don't have to do some hacky unification on the rewrite string itself.
+  let is_var = |s: &str| lemma_info.params.iter().any(|(param, _param_ty)| param == s.trim_start_matches("?"));
+  let mut lhsmap = find_instantiations(&lhs_sexp, &flat_term_to_sexp(&rewritten_from), is_var).unwrap();
+  let rhsmap = find_instantiations(&rhs_sexp, &flat_term_to_sexp(&rewritten_to), is_var).unwrap();
+  // let mut lhsmap = map_variables(lemma[0], &flat_term_to_sexp(&rewritten_from).to_string());
+  // let rhsmap = map_variables(lemma[1], &flat_term_to_sexp(&rewritten_to).to_string());
 
   // println!("lhs: {}, rhs: {}", lemma[0], lemma[1]);
   // println!("lhs_term: {}, rhs_term: {}", &flat_term_to_sexp(&rewritten_from).to_string(), &flat_term_to_sexp(&rewritten_to).to_string());
-  println!("lhs_map: {:?}, rhs_map: {:?}", lhsmap, rhsmap);
+  // println!("lhs_map: {:?}, rhs_map: {:?}", lhsmap, rhsmap);
 
   let rhsmap_valid = rhsmap
     .iter()
@@ -726,9 +737,8 @@ fn extract_lemma_invocation(
   // take the union of both maps
   lhsmap.extend(rhsmap);
 
-  let lemma_info = lemma_map.get(lemma_name).unwrap();
-  println!("lemma {}", lemma_name);
-  println!("params {:?}", lemma_info.params);
+  // println!("lemma {}", lemma_name);
+  // println!("params {:?}", lemma_info.params);
   // Map lhsmap over the lemma's params.
   // We need to do this because the lemma could be the top level IH,
   // whose parameters are not in the same order as they are stored in lhsmap.
@@ -737,7 +747,10 @@ fn extract_lemma_invocation(
     lemma_info
       .params
       .iter()
-      .map(|(param, _)| lhsmap.get(param).unwrap()),
+      .map(|(param, _)|{
+        // HACK: putting ? in front to extract the right pattern
+        lhsmap.get(&format!("?{}", param)).unwrap().to_string()
+      }),
   )
 }
 
@@ -901,8 +914,8 @@ fn get_flat_term_from_trace(
 /// returns a map from the variables in s1 to the corresponding substrings in s2.
 fn map_variables(s1: &str, s2: &str) -> IndexMap<String, String> {
   let mut result_map = IndexMap::new();
-  println!("s1 is {}", s1);
-  println!("s2 is {}", s2);
+  // println!("s1 is {}", s1);
+  // println!("s2 is {}", s2);
   // let mut stack = Vec::new();
   let mut s1_iter = s1.chars().peekable();
   let mut s2_iter = s2.chars().peekable();
