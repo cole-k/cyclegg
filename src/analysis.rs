@@ -534,19 +534,23 @@ impl CanonicalForm {
           }
         }
       }
-      // 2) Check if we created a cycle made up of only constructors,
-      // and if so, report inconsistency (infinite term)
-      if CanonicalFormAnalysis::is_canonical_cycle(egraph, &n1, id) {
-        // The extraction is only here for logging purposes
-        let extractor = Extractor::new(egraph, AstSize);
-        let n2 = extractor.find_best_node(id);
-        let expr1 = extract_with_node(&n1, &extractor);
-        let expr2 = extract_with_node(n2, &extractor);
-        if CONFIG.verbose {
-          println!("INFINITE TERM {} = {}", expr1, expr2);
-        }
-        egraph[id].data.canonical_form_data = CanonicalForm::Inconsistent(n1, n2.clone());
-      }
+      // NOTE CK: This isn't actually helping us prove props and is
+      // causing issues when combined with destructive rewrites, so it's getting
+      // commented out for now.
+      //
+      // // 2) Check if we created a cycle made up of only constructors,
+      // // and if so, report inconsistency (infinite term)
+      // if CanonicalFormAnalysis::is_canonical_cycle(egraph, &n1, id) {
+      //   // The extraction is only here for logging purposes
+      //   let extractor = Extractor::new(egraph, AstSize);
+      //   let n2 = extractor.find_best_node(id);
+      //   let expr1 = extract_with_node(&n1, &extractor);
+      //   let expr2 = extract_with_node(n2, &extractor);
+      //   if CONFIG.verbose {
+      //     println!("INFINITE TERM {} = {}", expr1, expr2);
+      //   }
+      //   egraph[id].data.canonical_form_data = CanonicalForm::Inconsistent(n1, n2.clone());
+      // }
     }
   }
 

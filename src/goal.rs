@@ -550,12 +550,12 @@ impl<'a> Goal<'a> {
           // FIXME: these nodes might have been removed, we'll need to be
           // careful about how we generate this proof.
           // // This is here only for the purpose of proof generation:
-          // let extractor = Extractor::new(&egraph, AstSize);
-          // let expr1 = extract_with_node(n1, &extractor);
-          // let expr2 = extract_with_node(n2, &extractor);
-          // if CONFIG.verbose {
-          //   println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
-          // }
+          let extractor = Extractor::new(&egraph, AstSize);
+          let expr1 = extract_with_node(n1, &extractor);
+          let expr2 = extract_with_node(n2, &extractor);
+          if CONFIG.verbose {
+            println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
+          }
           // Some(((expr1, expr2), true))
           true
         // } else if let Cvec::Contradiction(id1, id2) = &eclass.data.cvec_data {
@@ -1868,12 +1868,15 @@ impl<'a> ProofState<'a> {
 
   /// Try to prove all of the lemmas we've collected so far.
   pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> bool {
+    if self.proof_depth == CONFIG.proof_depth {
+      return false;
+    }
     // println!("Try prove lemmas for goal {}", goal.name);
+    // self.lemmas_state.possible_lemmas.chains.iter().for_each(|chain| chain.chain.iter().for_each(|lem| println!("lemma: {} = {}", lem.eq.lhs, lem.eq.rhs)));
 
     // Need to copy so we can mutably borrow self later
     let lemma_chains = self.lemmas_state.possible_lemmas.chains.clone();
     for chain in lemma_chains.iter() {
-      // println!("chain lemmas: {}", chain.chain.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
       for (i, raw_eq_with_params) in chain.chain.iter().enumerate() {
         if self.timeout() {
           return false;
@@ -1938,15 +1941,6 @@ impl<'a> ProofState<'a> {
           assert!(rws.is_empty(), "rw_infos is empty but rws isn't");
           continue;
         }
-        // There should only be one rewrite
-        assert_eq!(rw_infos.len(), 1);
-        let new_lemma_eq = &rw_infos[0].lemma_eq;
-        // Give the new goal the new lemma's name so that we can match its proof.
-        // Actually this isn't necessary for anything other than prettying the output,
-        // but having the name be ugly is better for debugging.
-        new_goal.name = new_lemma_name.clone();
-        let mut new_lemmas_state = self.lemmas_state.clone();
-
         // HACK: Optimization to proving lemmas
         // We will always try to prove the most general lemma we've theorized so far, but thereafter
         // we require that the lemma be actually useful to us if we are going to try and prove it.
@@ -1978,6 +1972,14 @@ impl<'a> ProofState<'a> {
         }
         println!("Trying to prove lemma: forall {}. {} = {}", raw_eq_with_params.params.iter().map(|(v, t)| format!("{}: {}", v, t)).join(" "), raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
 
+        // There should only be one rewrite
+        assert_eq!(rw_infos.len(), 1);
+        let new_lemma_eq = &rw_infos[0].lemma_eq;
+        // Give the new goal the new lemma's name so that we can match its proof.
+        // Actually this isn't necessary for anything other than prettying the output,
+        // but having the name be ugly is better for debugging.
+        new_goal.name = new_lemma_name.clone();
+        let mut new_lemmas_state = self.lemmas_state.clone();
         // Zero out the possible lemmas and cyclic lemmas, we only want
         // to carry forward what we've proven already.
         new_lemmas_state.possible_lemmas = ChainSet::new();
