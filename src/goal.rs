@@ -1024,7 +1024,7 @@ impl<'a> Goal<'a> {
     }
   }
 
-  fn find_blocking(&self) -> (HashSet<Symbol>, HashSet<Id>) {
+  fn find_blocking(&self, state: &ProofState) -> (HashSet<Symbol>, HashSet<Id>) {
     let mut blocking_vars: HashSet<_> = HashSet::default();
     let mut blocking_exprs: HashSet<Id> = HashSet::default();
 
@@ -1055,6 +1055,9 @@ impl<'a> Goal<'a> {
 
       // use these patterns to search over the egraph
       for new_sexp in new_sexps {
+        if state.timeout() {
+          return (blocking_vars, blocking_exprs);
+        }
         let mod_searcher: Pattern<SymbolLang> = new_sexp.to_string().parse().unwrap();
 
         // for each new pattern, find the pattern variables in blocking positions so that we can use them to look up the substs later
@@ -1078,7 +1081,7 @@ impl<'a> Goal<'a> {
                   CanonicalForm::Var(n) => {
                     blocking_vars.insert(n.op);
                   }
-                  CanonicalForm::Stuck(_) => {
+                  CanonicalForm::Stuck(_) | CanonicalForm::Const(_) => {
                     if lhs_descendents.contains(&ecid) && rhs_descendents.contains(&ecid) {
                       blocking_exprs.insert(ecid);
                       // let expr = extractor.find_best(ecid).1;
@@ -1314,11 +1317,13 @@ impl<'a> Goal<'a> {
         if class_1_id >= class_2_id {
           continue;
         }
+
+        // NOTE: We no longer skip here because we need to generalize sometimes
         // Don't try unioning the LHS and RHS, we've seen those already.
-        if class_1_id == resolved_lhs_id && class_2_id == resolved_rhs_id
-          || class_1_id == resolved_rhs_id && class_2_id == resolved_lhs_id {
-            continue
-        }
+        // if class_1_id == resolved_lhs_id && class_2_id == resolved_rhs_id
+        //   || class_1_id == resolved_rhs_id && class_2_id == resolved_lhs_id {
+        //     continue
+        // }
 
         if let Some(true) = cvecs_equal(&self.egraph.analysis.cvec_analysis, &self.egraph[class_1_id].data.cvec_data, &self.egraph[class_2_id].data.cvec_data) {
           let class_1_canonical = &self.egraph[class_1_id].data.canonical_form_data;
@@ -1382,7 +1387,12 @@ impl<'a> Goal<'a> {
 
             lemmas.extend(generalized_eqs);
           }
-          lemmas.extend(new_rewrite_eqs);
+
+          // Optimization: skip adding any lemmas that would be subsumed by a cyclic lemma
+          if !(class_1_id == resolved_lhs_id && class_2_id == resolved_rhs_id
+            || class_1_id == resolved_rhs_id && class_2_id == resolved_lhs_id) {
+            lemmas.extend(new_rewrite_eqs);
+          }
           // if new_rewrite_names.len() > 0 {
           // // if let Some(_) = explanation {
           //   // Another method would be to try finding all possible lemmas from these two e-classes
@@ -1949,24 +1959,26 @@ impl<'a> ProofState<'a> {
           assert!(rws.is_empty(), "rw_infos is empty but rws isn't");
           continue;
         }
-        // HACK: Optimization to proving lemmas
-        // We will always try to prove the most general lemma we've theorized so far, but thereafter
-        // we require that the lemma be actually useful to us if we are going to try and prove it.
-        //
-        // This eliminates us spending time trying to prove a junk lemma like
-        // (mult (S n) Z) = (plus (mult (S n) Z) Z)
-        // when we already failed to prove the more general lemma
-        // (mult n Z) = (plus (mult n Z) Z)
-        //
-        // Really we should have more sophisticated lemma filtering - the junk
-        // lemma in this case is really no easier to prove than the first lemma
-        // (since we will try to prove it eventually when we case split the first),
-        // so we shouldn't consider it in the first place.
-        //
-        // Hence why I consider this optimization a hack, even though it
-        // probably avoids some lemmas which are junky in a more complicated
-        // way. I imagine it might rarely pass on interesting and useful lemmas.
-        // This is because sometimes you need more than one lemma to prove a goal.
+        // NOTE CK: This used to be necessary for speed, but with some patches to efficiency, we
+        // no longer need it. Perhaps if we allowed a greater proof depth we would need it.
+        // // HACK: Optimization to proving lemmas
+        // // We will always try to prove the most general lemma we've theorized so far, but thereafter
+        // // we require that the lemma be actually useful to us if we are going to try and prove it.
+        // //
+        // // This eliminates us spending time trying to prove a junk lemma like
+        // // (mult (S n) Z) = (plus (mult (S n) Z) Z)
+        // // when we already failed to prove the more general lemma
+        // // (mult n Z) = (plus (mult n Z) Z)
+        // //
+        // // Really we should have more sophisticated lemma filtering - the junk
+        // // lemma in this case is really no easier to prove than the first lemma
+        // // (since we will try to prove it eventually when we case split the first),
+        // // so we shouldn't consider it in the first place.
+        // //
+        // // Hence why I consider this optimization a hack, even though it
+        // // probably avoids some lemmas which are junky in a more complicated
+        // // way. I imagine it might rarely pass on interesting and useful lemmas.
+        // // This is because sometimes you need more than one lemma to prove a goal.
         if i > 0 {
           let goal_egraph_copy = goal.egraph.clone();
           let rewrites = goal.reductions.iter().chain(goal.lemmas.values()).chain(rws.values()).chain(self.lemmas_state.lemma_rewrites.values());
@@ -2023,8 +2035,7 @@ impl<'a> ProofState<'a> {
         if outcome == Outcome::Invalid {
           self.lemmas_state.invalid_lemmas.insert(raw_eq_with_params.clone());
         } else {
-          // NOTE: We don't try to prove a lemma twice, but actually we might
-          // be able to if we have another lemma.
+          // NOTE: We will try to prove a lemma twice
           // self.lemmas_state.proven_lemmas.insert(raw_eq_with_params.clone());
         }
       }
@@ -2178,7 +2189,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
         warn!("Blocking var analysis is disabled");
         (goal.scrutinees.iter().map(|(v, _)| v).cloned().collect(), HashSet::default())
       } else {
-        let (blocking_vars, blocking_exprs) = goal.find_blocking();
+        let (blocking_vars, blocking_exprs) = goal.find_blocking(&state);
         if CONFIG.verbose {
           println!("blocking vars: {:?}", blocking_vars);
         }
@@ -2186,6 +2197,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
       };
 
     if CONFIG.generalization {
+      // TODO: now that we generalize in the cc lemma search, do we need this?
       state.lemmas_state.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs));
     }
     if CONFIG.cc_lemmas {
@@ -2248,7 +2260,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
           continue;
         }
       }
-      if state.case_split_depth > CONFIG.max_split_depth {
+      if state.case_split_depth >= CONFIG.max_split_depth {
         // println!("Bailing because depth is too high");
         // This goal could be further split, but we have reached the maximum depth,
         // we cannot prove or disprove the conjecture
@@ -2271,7 +2283,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
           println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
         }
       }
-      if goal.scrutinees.iter().any(|(_, depth)| *depth > CONFIG.max_split_depth + state.proof_depth) {
+      if goal.scrutinees.iter().any(|(_, depth)| *depth >= CONFIG.max_split_depth) {
         let is_valid = state.try_prove_lemmas(&mut goal);
         if is_valid || goal.explanation.is_some() {
           state.process_goal_explanation(goal, is_valid);

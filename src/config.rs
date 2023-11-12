@@ -79,8 +79,8 @@ pub struct Args {
   #[clap(long = "cvec-num-random-terms-per-type", default_value = "10")]
   pub cvec_num_random_terms_per_type: usize,
   /// We won't consider lemmas with a total AST size (sum of LHS and RHS AST
-  /// size) greater than this.
-  #[clap(long = "max-lemma-size", default_value = "25")]
+  /// size) greater than this. If 0, we will allow any size.
+  #[clap(long = "max-lemma-size", default_value = "0")]
   pub max_lemma_size: usize,
   #[clap(long = "no-grounding")]
   pub no_grounding: bool,
