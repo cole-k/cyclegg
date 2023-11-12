@@ -7,7 +7,7 @@ use symbolic_expressions::Sexp;
 
 use crate::ast::{map_sexp, to_pattern, Context, Defns, Env, Type};
 use crate::config::CONFIG;
-use crate::goal::{Equation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, LEMMA_PREFIX, ProofInfo};
+use crate::goal::{Equation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, LEMMA_PREFIX, ProofInfo, ProofType};
 
 /// Constants from (Liquid)Haskell
 const EQUALS: &str = "=";
@@ -427,24 +427,44 @@ fn explain_proof(
   // If it's not in the proof tree, it must be a leaf.
   if !proof_info.proof.contains_key(goal) {
     match proof_info.solved_goal_explanation_and_context.get_mut(goal) {
-      Some(expl) => {
+      Some((proof_type, expl, ctx)) => {
         // We have a proper explanation
-        return explain_goal(
-          depth,
+        let expl_depth = match proof_type {
+          // We will call `unreachable` on this, so its depth needs to be deeper
+          ProofType::Contradiction => depth + 1,
+          // We will use this proof on its own.
+          ProofType::Refl => depth,
+        };
+        let proof = explain_goal(
+          expl_depth,
           expl,
+          ctx,
           top_goal_name,
           lemma_map,
         );
+        return
+          match proof_type {
+            ProofType::Refl => proof,
+            ProofType::Contradiction => {
+              let mut str_explanation = String::new();
+              add_indentation(&mut str_explanation, depth);
+              str_explanation.push_str(UNREACHABLE);
+              // Open paren (we will pass the proof to unreachable to prove by contradiction)
+              str_explanation.push(' ');
+              str_explanation.push('(');
+              str_explanation.push('\n');
+              // Add the proof itself
+              str_explanation.push_str(&proof);
+              // Close the paren
+              add_indentation(&mut str_explanation, depth);
+              str_explanation.push(')');
+              str_explanation.push('\n');
+              str_explanation.push('\n');
+              str_explanation
+            }
+        }
       }
-      // We'll assume it is otherwise proven by contradiction
-      None => {
-        let mut str_explanation = String::new();
-        add_indentation(&mut str_explanation, depth);
-        str_explanation.push_str(UNREACHABLE);
-        str_explanation.push('\n');
-        str_explanation.push('\n');
-        return str_explanation;
-      }
+      None => unreachable!("Missing proof explanation for {}", goal),
     }
   }
   // Need to clone to avoid borrowing... unfortunately this is all because we need
@@ -485,7 +505,8 @@ fn explain_proof(
 
 fn explain_goal(
   depth: usize,
-  (explanation, local_context): &mut (Explanation<SymbolLang>, Context),
+  explanation: &mut Explanation<SymbolLang>,
+  context: &Context,
   top_goal_name: &str,
   lemma_map: &mut HashMap<String, LemmaInfo>,
 ) -> String {

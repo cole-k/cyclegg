@@ -378,8 +378,9 @@ pub struct Goal<'a> {
   /// Global context (i.e. constructors and top-level bindings)
   pub global_context: &'a Context,
 
-  /// If the goal is discharged, an explanation of the proof
-  pub explanation: Option<Explanation<SymbolLang>>,
+  /// If the goal is discharged, how it was discharged and an explanation of the
+  /// proof
+  pub explanation: Option<(ProofType, Explanation<SymbolLang>)>,
   /// Definitions in a form amenable to proof emission
   pub defns: &'a Defns,
   /// Stores the expression each guard variable maps to
@@ -521,17 +522,14 @@ impl<'a> Goal<'a> {
     self.egraph = runner.egraph;
   }
 
-  fn get_explanation_and_validity(eq: &Equation, egraph: &mut Eg) -> (Option<Explanation<SymbolLang>>, bool) {
+  fn get_explanation(eq: &Equation, egraph: &mut Eg) -> Option<(ProofType, Explanation<SymbolLang>)> {
     if egraph.find(eq.lhs.id) == egraph.find(eq.rhs.id) {
       // We have shown that LHS == RHS
-      (Some(
+      Some((ProofType::Refl,
           egraph
-          .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr),
-      ),
-      true)
+          .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
+      ))
     } else {
-      // let mut explanation = None;
-
       // Check if this case in unreachable (i.e. if there are any inconsistent
       // e-classes in the e-graph)
       //
@@ -542,9 +540,7 @@ impl<'a> Goal<'a> {
       // that cause them to be unequal. This will probably require us to update
       // the Cvec analysis to track enodes, which is a little unfortunate.
       //
-      // FIXME: this should be a find_map, but we crash if the expression we're
-      // extracting has been removed because of a destructive rewrite.
-      let res = egraph.classes().any(|eclass| {
+      let res = egraph.classes().find_map(|eclass| {
         if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data.canonical_form_data {
           // println!("Proof by contradiction {} != {}", n1, n2);
           // FIXME: these nodes might have been removed, we'll need to be
@@ -556,8 +552,7 @@ impl<'a> Goal<'a> {
           if CONFIG.verbose {
             println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
           }
-          // Some(((expr1, expr2), true))
-          true
+          Some((expr1, expr2))
         // } else if let Cvec::Contradiction(id1, id2) = &eclass.data.cvec_data {
         //   let cvec_egraph = egraph.analysis.cvec_analysis.cvec_egraph.borrow();
         //   let cvec_extractor = Extractor::new(&cvec_egraph, AstSize);
@@ -568,16 +563,13 @@ impl<'a> Goal<'a> {
         //   }
         //   Some(((expr1, expr2), false))
         } else {
-          false
+          None
         }
       });
-      return (None, res);
-      // FIXME: add this back
-      // let is_valid = res.is_some();
-      // if let Some(((expr1, expr2), true)) = &res {
-      //   explanation = Some(egraph.explain_equivalence(&expr1, &expr2));
-      // }
-      // (explanation, is_valid)
+      res.map(|(expr1, expr2)| {
+        let explanation = egraph.explain_equivalence(&expr1, &expr2);
+        (ProofType::Contradiction, explanation)
+      })
     }
 
   }
@@ -589,9 +581,9 @@ impl<'a> Goal<'a> {
     //   println!("{}: {:?} CANONICAL {}", eclass.id, eclass.nodes, ConstructorFolding::extract_canonical(&self.egraph, eclass.id).unwrap_or(vec![].into()));
     // }
 
-    let (explanation, is_valid) = Goal::get_explanation_and_validity(&self.eq, &mut self.egraph);
+    let explanation = Goal::get_explanation(&self.eq, &mut self.egraph);
     self.explanation = explanation;
-    is_valid
+    self.explanation.is_some()
   }
 
   /// Check whether an expression is reducible using this goal's reductions
@@ -1810,6 +1802,22 @@ pub enum ProofTerm {
   ITESplit(String, String, Vec<(String, String)>),
 }
 
+pub enum ProofType {
+  /// Constructive equality shown: LHS = RHS
+  Refl,
+  /// Contradiction shown (e.g. True = False)
+  Contradiction,
+}
+
+impl std::fmt::Display for ProofType {
+  fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    match *self {
+      ProofType::Refl => write!(f, "Refl"),
+      ProofType::Contradiction => write!(f, "Contradiction"),
+    }
+  }
+}
+
 #[derive(Default, Clone)]
 pub struct LemmasState {
   pub proven_lemmas: MinElements<RawEqWithParams>,
@@ -1840,7 +1848,7 @@ impl LemmasState {
 }
 
 pub struct ProofInfo {
-  pub solved_goal_explanation_and_context: HashMap<String, (Explanation<SymbolLang>, Context)>,
+  pub solved_goal_explanation_and_context: HashMap<String, (ProofType, Explanation<SymbolLang>, Context)>,
   pub proof: HashMap<String, ProofTerm>,
 }
 
@@ -2043,21 +2051,16 @@ impl<'a> ProofState<'a> {
   }
 
   pub fn process_goal_explanation(&mut self, goal: Goal, is_valid: bool) {
-    if let Some(mut explanation) = goal.explanation {
+    if let Some((proof_type, mut explanation)) = goal.explanation {
       // This goal has been discharged, proceed to the next goal
       if CONFIG.verbose {
-        println!("{} {}", "Proved case".bright_blue(), goal.name);
+        println!("{} {} by {}", "Proved case".bright_blue(), goal.name, proof_type);
         println!("{}", explanation.get_flat_string());
       }
      self
         .proof_info
         .solved_goal_explanation_and_context
-        .insert(goal.name, (explanation, goal.local_context));
-    } else if is_valid {
-      if CONFIG.verbose {
-        println!("{} {}", "Proved case by contradiction".bright_blue(), goal.name);
-        println!("(no explanation for now)");
-      }
+        .insert(goal.name, (proof_type, explanation, goal.local_context));
     }
   }
 }
@@ -2148,7 +2151,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
       goal.save_egraph();
     }
     let is_valid = goal.check_validity();
-    if is_valid || goal.explanation.is_some() {
+    if is_valid {
       // println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
       state.process_goal_explanation(goal, is_valid);
       continue;
