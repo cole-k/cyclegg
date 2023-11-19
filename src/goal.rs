@@ -1836,6 +1836,10 @@ pub struct LemmasState {
   pub lemma_rewrites: HashMap<String, Rw>,
   pub cyclic_lemmas: ChainSet<RawEqWithParams>,
   pub cyclic_lemma_rewrites: HashMap<String, Rw>,
+  pub last_lemma_proven: Option<String>,
+  /// What was the last lemma we had proven at the time of our last attempt to
+  /// prove this lemma?
+  pub last_lemma_proven_at_last_attempt: HashMap<String, Option<String>>,
 }
 
 impl LemmasState {
@@ -1945,6 +1949,30 @@ impl<'a> ProofState<'a> {
           // println!("proven lemmas so far: {}", self.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
           // print_cvec(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec)
         }
+
+        // FIXME: Use a proper name scheme for indexing lemmas instead of using
+        // their serialized lhs = rhs (we can use the lemma numbering for this).
+        // We should also normalize lemmas so that they have the same names
+        // regardless of the names of their variables. Maybe this means
+        // converting to a locally nameless form.
+        //
+        // NOTE: This doesn't actually skip that many lemmas because we don't
+        // carry old lemmas around with us. Maybe we should and see if this is
+        // useful or maybe we should
+        let raw_eq_lemma_name = format!("{} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
+        // NOTE: Having None in the hashmap is meaningfully different from
+        // having no entry in the hashmap. We always try and prove if there is
+        // no entry.
+        if let Some(last_lemma_proven_at_last_attempt) = self.lemmas_state.last_lemma_proven_at_last_attempt.get(&raw_eq_lemma_name) {
+          if last_lemma_proven_at_last_attempt == &self.lemmas_state.last_lemma_proven {
+            println!("Skipping lemma because nothing has changed");
+            continue;
+          } else {
+            println!("New lemma proven since last attempt");
+          }
+        }
+        self.lemmas_state.last_lemma_proven_at_last_attempt.insert(raw_eq_lemma_name, self.lemmas_state.last_lemma_proven.clone());
+
         let lhs_id = new_goal.eq.lhs.id;
         let rhs_id = new_goal.eq.rhs.id;
         let mut exprs: HashMap<Id, Vec<Expr>> = vec![(lhs_id, vec![]), (rhs_id, vec![])]
@@ -2008,10 +2036,13 @@ impl<'a> ProofState<'a> {
         let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state, new_lemma_name.clone(), self.lemma_number);
         // Update the lemma number so we don't have a lemma name clash.
         self.lemma_number = ps.lemma_number;
-        // Steal the lemmas we got from the recursive proving.
+        // Steal the lemmas we got from the recursive proving, as well as any
+        // other info we learned from the lemmas state.
         self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
         self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
         self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
+        self.lemmas_state.last_lemma_proven = ps.lemmas_state.last_lemma_proven;
+        self.lemmas_state.last_lemma_proven_at_last_attempt.extend(ps.lemmas_state.last_lemma_proven_at_last_attempt);
         self.lemma_proofs.extend(ps.lemma_proofs);
         if outcome == Outcome::Valid {
           println!("proved {} = {}", raw_eq_with_params.eq.lhs, raw_eq_with_params.eq.rhs);
@@ -2023,7 +2054,9 @@ impl<'a> ProofState<'a> {
           self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
           self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
           // Add its proof
-          self.lemma_proofs.push((new_lemma_name, new_lemma_eq.clone(), ps.proof_info));
+          self.lemma_proofs.push((new_lemma_name.clone(), new_lemma_eq.clone(), ps.proof_info));
+          // This is now the last lemma we've proven
+          self.lemmas_state.last_lemma_proven = Some(new_lemma_name);
           goal.saturate(&self.lemmas_state.lemma_rewrites);
           if goal.check_validity() {
             return true;

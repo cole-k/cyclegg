@@ -62,7 +62,7 @@ pub struct Args {
   pub no_blocking_analysis: bool,
   /// Number of terms to put into the cvecs used to propose equalities between
   /// e-classes.
-  #[clap(long = "cvec-size", default_value = "5")]
+  #[clap(long = "cvec-size", default_value = "15")]
   pub cvec_size: usize,
   /// Maximum depth for the random terms we generate for the cvecs.
   #[clap(long = "cvec-term-max-depth", default_value = "4")]
@@ -76,7 +76,7 @@ pub struct Args {
   pub cvec_num_rolls: usize,
   /// The number of random terms we generate for each type. We select randomly
   /// from these each time we generate a cvec for a variable.
-  #[clap(long = "cvec-num-random-terms-per-type", default_value = "10")]
+  #[clap(long = "cvec-num-random-terms-per-type", default_value = "30")]
   pub cvec_num_random_terms_per_type: usize,
   /// We won't consider lemmas with a total AST size (sum of LHS and RHS AST
   /// size) greater than this. If 0, we will allow any size.
