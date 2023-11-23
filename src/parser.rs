@@ -37,9 +37,8 @@ fn make_rewrite_for_defn<A>(name: &str, args: &Sexp, value: &Sexp) -> Rewrite<Sy
 
 pub struct RawGoal {
   pub name: String,
-  pub equation: RawEquation,
-  pub premise: Option<RawEquation>,
-  pub params: Vec<(Symbol, Type)>,
+  pub prop: Prop,
+  pub premise: Option<Equation>,
   pub local_rules: Vec<Rw>,
   pub local_searchers: Vec<ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>>
 }
@@ -167,8 +166,8 @@ impl ParserState {
     goal: &RawGoal,
     local_rules: Vec<Rw>,
   ) -> (Vec<Rw>, Defns) {
-    let lhs: Expr = goal.equation.lhs.to_string().parse().unwrap();
-    let rhs: Expr = goal.equation.rhs.to_string().parse().unwrap();
+    let lhs: Expr = goal.prop.eq.lhs.to_string().parse().unwrap();
+    let rhs: Expr = goal.prop.eq.rhs.to_string().parse().unwrap();
     let mut roots = vec![lhs, rhs];
     if let Some(premise) = &goal.premise {
       let premise_lhs: Expr = premise.lhs.to_string().parse().unwrap();
@@ -347,7 +346,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
           let lhs: Sexp = mangle_sexp(&decl.list()?[index]);
           let rhs: Sexp = mangle_sexp(&decl.list()?[index + 1]);
           index += 2;
-          Some(RawEquation::new(lhs, rhs))
+          Some(Equation::new(lhs, rhs))
         } else {
           None
         };
@@ -355,7 +354,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         let lhs: Sexp = mangle_sexp(&decl.list()?[index]);
         let rhs: Sexp = mangle_sexp(&decl.list()?[index + 1]);
         index += 2;
-        let equation = RawEquation::new(lhs, rhs);
+        let equation = Equation::new(lhs, rhs);
 
         let mut local_rules = vec![];
         let mut local_searchers = vec![];
@@ -410,8 +409,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         let raw_goal = RawGoal {
           name,
           premise,
-          equation,
-          params,
+          prop: Prop::new(equation, params),
           local_rules,
           local_searchers,
         };

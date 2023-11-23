@@ -1,13 +1,12 @@
 use egg::*;
-use indexmap::IndexMap;
 use itertools::{EitherOrBoth, Itertools};
 use std::collections::HashMap;
 use std::str::FromStr;
 use symbolic_expressions::Sexp;
 
-use crate::ast::{map_sexp, to_pattern, Context, Defns, Env, Type, find_instantiations};
+use crate::ast::{map_sexp, Context, Defns, Env, Type, find_instantiations};
 use crate::config::CONFIG;
-use crate::goal::{Equation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, LEMMA_PREFIX, ProofInfo, ProofType};
+use crate::goal::{ETermEquation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, ProofInfo, ProofType, GlobalSearchState};
 
 /// Constants from (Liquid)Haskell
 const EQUALS: &str = "=";
@@ -20,7 +19,6 @@ const LH_PROOF: &str = "Proof";
 const DATA: &str = "data";
 const WHERE: &str = "where";
 const MODULE: &str = "module";
-const UNDEFINED: &str = "undefined";
 const TAB_WIDTH: usize = 2;
 
 const PRAGMA_GADT_SYNTAX: &str = "{-# LANGUAGE GADTSyntax #-}";
@@ -87,10 +85,8 @@ pub fn goal_name_to_filename(goal_name: &str) -> String {
 fn add_header_and_defns(
   filename: &str,
   goal: &str,
-  eq: &Equation,
-  defns: &Defns,
-  env: &Env,
-  global_context: &Context,
+  eq: &ETermEquation,
+  global_search_state: GlobalSearchState,
 ) -> String {
   let mut str_explanation = String::new();
 
@@ -125,7 +121,7 @@ fn add_header_and_defns(
   str_explanation.push('\n');
 
   // Haskell data declarations
-  str_explanation.push_str(&add_data_definitions(env, global_context));
+  str_explanation.push_str(&add_data_definitions(global_search_state.env, global_search_state.context));
 
   // Add custom unreachable definition.
   str_explanation.push_str(UNREACHABLE_DEF);
@@ -133,7 +129,7 @@ fn add_header_and_defns(
   str_explanation.push('\n');
 
   // Haskell definitions
-  str_explanation.push_str(&add_definitions(defns, global_context));
+  str_explanation.push_str(&add_definitions(global_search_state.defns, global_search_state.context));
 
   str_explanation
 
@@ -177,17 +173,15 @@ pub fn explain_top(
   filename: &str,
   goal: &str,
   state: &mut ProofState,
-  eq: &Equation,
+  eq: &ETermEquation,
   params: &[Symbol],
   top_level_vars: &HashMap<Symbol, Type>,
-  defns: &Defns,
-  env: &Env,
-  global_context: &Context,
+  global_search_state: GlobalSearchState,
 ) -> String {
   let mut str_explanation = String::new();
 
   // Add the boilerplate and definitions
-  str_explanation.push_str(&add_header_and_defns(filename, goal, eq, defns, env, global_context));
+  str_explanation.push_str(&add_header_and_defns(filename, goal, eq, global_search_state));
 
   // (arg name, arg type), to be used in creating the type.
   let args: Vec<(Symbol, Type)> = params
@@ -427,7 +421,7 @@ fn explain_proof(
   // If it's not in the proof tree, it must be a leaf.
   if !proof_info.proof.contains_key(goal) {
     match proof_info.solved_goal_explanation_and_context.get_mut(goal) {
-      Some((proof_type, expl, ctx)) => {
+      Some((proof_type, expl, _ctx)) => {
         // We have a proper explanation
         let expl_depth = match proof_type {
           // We will call `unreachable` on this, so its depth needs to be deeper
@@ -438,7 +432,6 @@ fn explain_proof(
         let proof = explain_goal(
           expl_depth,
           expl,
-          ctx,
           top_goal_name,
           lemma_map,
         );
@@ -506,7 +499,6 @@ fn explain_proof(
 fn explain_goal(
   depth: usize,
   explanation: &mut Explanation<SymbolLang>,
-  context: &Context,
   top_goal_name: &str,
   lemma_map: &mut HashMap<String, LemmaInfo>,
 ) -> String {
@@ -909,103 +901,3 @@ fn get_flat_term_from_trace(
   }
   current_flat_term.clone()
 }
-
-/// Given two strings, s1 and s2, where s1 is a pattern and s2 is a string
-/// returns a map from the variables in s1 to the corresponding substrings in s2.
-fn map_variables(s1: &str, s2: &str) -> IndexMap<String, String> {
-  let mut result_map = IndexMap::new();
-  // println!("s1 is {}", s1);
-  // println!("s2 is {}", s2);
-  // let mut stack = Vec::new();
-  let mut s1_iter = s1.chars().peekable();
-  let mut s2_iter = s2.chars().peekable();
-
-  while let Some(&c1) = s1_iter.peek() {
-    // if s2_iter.peek().is_none() {
-    //   // println!("c1 = {}, s1 = {}",c1, s1_iter.collect::<String>());
-    //   panic!();
-    // }
-    let c2 = s2_iter.peek().unwrap();
-    match c1 {
-      '?' => {
-        let mut temp_str = String::new();
-        let mut nested_paren_count = 0;
-
-        while let Some(&next_char) = s2_iter.peek() {
-          match next_char {
-            '(' if nested_paren_count > 0 => {
-              temp_str.push(next_char);
-              nested_paren_count += 1;
-            }
-            '(' => nested_paren_count += 1,
-            ')' if nested_paren_count > 1 => {
-              temp_str.push(next_char);
-              nested_paren_count -= 1;
-            }
-            ')' => break,
-            ' ' if nested_paren_count == 0 => break,
-            _ => temp_str.push(next_char),
-          }
-          s2_iter.next();
-        }
-        // println!("variable matches {}", temp_str);
-
-        if !temp_str.is_empty() {
-          let mut extracted_str = String::new();
-          s1_iter.next();
-          while let Some(&next_char) = s1_iter.peek() {
-            if next_char.is_whitespace() {
-              break;
-            } else if next_char == ')' {
-              s1_iter.next();
-              break;
-            }
-            extracted_str.push(next_char);
-            s1_iter.next();
-          }
-          s1_iter.next();
-          // println!("{:?}", s1_iter.peek());
-          // println!("{:?}", s2_iter.peek());
-          s2_iter.next();
-          while let Some(&next_char) = s2_iter.peek() {
-            if next_char.is_whitespace() {
-              s2_iter.next();
-            } else {
-              break;
-            }
-          }
-          // println!("next {:?}", s2_iter.peek());
-
-          result_map.insert(extracted_str, temp_str);
-        }
-      }
-      _ if c1 == *c2 => {
-        s1_iter.next();
-        s2_iter.next();
-      }
-      _ => {
-        println!("mismatch {}!={}", c1, c2);
-        println!("rest of s1: {}, s2: {}", s1_iter.collect::<String>(), s2_iter.collect::<String>());
-        panic!("map_variables couldn't match variables");
-      }
-    }
-  }
-
-  result_map
-}
-
-// TODO: Lemma generation.
-// How to do lemmas:
-// 1.
-// 2. Anti-unficiation between terms to figure out:
-//   1. What lemma was used?
-//   2. What were its arguments? Specifically, for each variable
-//      used in the lemma x, what term t is x mapped to in this invocation?
-// 3. (If the lemma is the base induction hypothesis, simply call
-//    it. -- this is probably unnecessary and is generalized by the following method).
-//    Otherwise, look up the explanation for how its LHS relates to the goal
-//    LHS and its RHS relates to the goal RHS. Use the argument map to instantiate
-//    the explanations with concrete arguments. Inline the lemma as follows:
-//    (LHS ==. proof of LHS -> goal LHS ? inductionHypothesis ==. proof of goal RHS -> RHS ==. RHS)
-//    it might require some thinking to determine the relationship between the lemma's arguments
-//    and the arguments to the induction hypothesis.

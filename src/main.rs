@@ -1,5 +1,4 @@
 use colored::Colorize;
-use std::collections::HashMap;
 use std::fs::*;
 use std::io::{Result, Write};
 use std::time::{Duration, Instant};
@@ -42,17 +41,12 @@ fn main() -> Result<()> {
         continue;
       }
     }
+    let global_search_state = GlobalSearchState::new(&parser_state.env, &parser_state.context, &reductions, &parser_state.cvec_rules, &defns, &raw_goal.local_searchers);
     let mut goal = Goal::top(
       &raw_goal.name,
-      &raw_goal.equation,
+      &raw_goal.prop,
       &raw_goal.premise,
-      raw_goal.params.clone(),
-      &parser_state.env,
-      &parser_state.context,
-      &reductions,
-      &parser_state.cvec_rules,
-      &defns,
-      &raw_goal.local_searchers,
+      global_search_state,
     );
     num_goals_attempted += 1;
     println!(
@@ -148,7 +142,7 @@ fn main() -> Result<()> {
 fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
   CONFIG.set_cyclic(cyclic);
   let start_time = Instant::now();
-  let (result, mut proof_state) = goal::prove(goal.copy(), 0, LemmasState::default(), goal.name.clone(), 0);
+  let (result, mut proof_state) = goal::prove(goal.duplicate(), 0, LemmasState::default(), goal.name.clone(), 0);
   let duration = start_time.elapsed();
   if CONFIG.emit_proofs {
     if let Outcome::Valid = result {
@@ -160,9 +154,7 @@ fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
         &goal.eq,
         &goal.params,
         &goal.local_context,
-        goal.defns,
-        goal.env,
-        goal.global_context,
+        goal.global_search_state,
       );
       let mut file = File::create(CONFIG.proofs_directory.join(format!("{}.hs", filename)))?;
       file.write_all(explanation.as_bytes())?;

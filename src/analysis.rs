@@ -9,7 +9,6 @@ use rand::distributions::weighted::WeightedIndex;
 use rand::distributions::Distribution;
 use rand::seq::SliceRandom;
 use std::cell::RefCell;
-use std::iter::repeat;
 use std::{collections::{HashMap, HashSet}, iter::zip, str::FromStr};
 use symbolic_expressions::Sexp;
 
@@ -587,15 +586,19 @@ impl CanonicalFormAnalysis {
   /// Check if the canonical form of eclass id (whose constructor node is n)
   /// has a cycle back to itself made up of only constructors.
   /// This means that the eclass represents an infinite term.
-  fn is_canonical_cycle(egraph: &EGraph<SymbolLang, CycleggAnalysis>, n: &SymbolLang, id: Id) -> bool {
+  // FIXME: when we find a contradiction this way, we store the conflicting
+  // e-nodes, but these nodes might be removed due to a destructive rewrite
+  // later. So we need to generate an explanation for their equality immediately
+  // - or just not use this part of the analysis.
+  fn _is_canonical_cycle(egraph: &EGraph<SymbolLang, CycleggAnalysis>, n: &SymbolLang, id: Id) -> bool {
     // We have to keep track of visited nodes because there might also be a lasso
     // (i.e. a cycle not starting at id)
     let mut visited: HashSet<Id> = HashSet::new();
     visited.insert(id);
-    Self::is_reachable(egraph, n, id, &mut visited)
+    Self::_is_reachable(egraph, n, id, &mut visited)
   }
 
-  fn is_reachable(egraph: &EGraph<SymbolLang, CycleggAnalysis>, n: &SymbolLang, id: Id, visited: &mut HashSet<Id>) -> bool {
+  fn _is_reachable(egraph: &EGraph<SymbolLang, CycleggAnalysis>, n: &SymbolLang, id: Id, visited: &mut HashSet<Id>) -> bool {
     n.children.iter().any(|c| {
       let c = egraph.find(*c);
       if c == id {
@@ -607,7 +610,7 @@ impl CanonicalFormAnalysis {
       } else {
         visited.insert(c);
         if let CanonicalForm::Const(n2) = &egraph[c].data.canonical_form_data {
-          Self::is_reachable(egraph, n2, id, visited)
+          Self::_is_reachable(egraph, n2, id, visited)
         } else {
           false
         }

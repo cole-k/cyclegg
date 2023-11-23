@@ -473,12 +473,12 @@ pub fn mk_context(descr: &[(&str, &str)]) -> Context {
 }
 
 #[derive(Clone, Debug)]
-pub struct RawEquation {
+pub struct Equation {
   pub lhs: Sexp,
   pub rhs: Sexp,
 }
 
-impl RawEquation {
+impl Equation {
 
   /// Creates a RawEquation, ensuring that it is in the right order
   pub fn new(lhs: Sexp, rhs: Sexp) -> Self {
@@ -501,11 +501,11 @@ impl RawEquation {
     let lhs = symbolic_expressions::parser::parse_str(&lhs_string).unwrap();
     let rhs = symbolic_expressions::parser::parse_str(&rhs_string).unwrap();
     if lhs_string < rhs_string {
-      RawEquation {
+      Equation {
         lhs, rhs
       }
     } else {
-      RawEquation {
+      Equation {
         lhs: rhs,
         rhs: lhs
       }
@@ -528,24 +528,25 @@ where F: FnOnce(&str) -> bool + Copy {
   }
 }
 
+// TODO: add a precondition
 #[derive(Debug, Clone)]
-pub struct RawEqWithParams {
-  pub eq: RawEquation,
+pub struct Prop {
+  pub eq: Equation,
   pub params: Vec<(Symbol, Type)>
 }
 
-impl RawEqWithParams {
-    pub fn new(eq: RawEquation, params: Vec<(Symbol, Type)>) -> Self { Self { eq, params } }
+impl Prop {
+    pub fn new(eq: Equation, params: Vec<(Symbol, Type)>) -> Self { Self { eq, params } }
 
 }
 
-impl PartialEq for RawEqWithParams {
+impl PartialEq for Prop {
     fn eq(&self, other: &Self) -> bool {
       self.partial_cmp(other) == Some(std::cmp::Ordering::Equal)
     }
 }
 
-impl PartialOrd for RawEqWithParams {
+impl PartialOrd for Prop {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
       // let vars: HashSet<String> = self.params.iter().chain(other.params.iter()).map(|(var, _)| var.to_string()).collect();
       let is_var = |s: &str| {

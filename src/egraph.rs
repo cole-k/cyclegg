@@ -1,8 +1,6 @@
 use egg::*;
 use std::{collections::{HashMap, HashSet}, iter::zip};
 
-use crate::analysis::CycleggAnalysis;
-
 /// Denotation of an egraph (or its subgraph)
 /// is a map from eclass ids to sets of expressions
 type Denotation<L> = HashMap<Id, Vec<RecExpr<L>>>;
@@ -234,7 +232,7 @@ impl<N> Applier<SymbolLang, N> for DestructiveApplier
         // }
         // egraph[eclass].data.previous_rewrites.insert(memo);
         let mut ids = self.applier.apply_one(egraph, eclass, subst, searcher_ast, rule_name);
-        if prune_enodes_matching(egraph, &self.searcher.ast, subst, &eclass, rule_name) {
+        if prune_enodes_matching(egraph, &self.searcher.ast, subst, &eclass) {
             ids.push(eclass);
         }
         ids
@@ -256,7 +254,7 @@ impl<N> Applier<SymbolLang, N> for DestructiveApplier
 /// between passing around clones of a HashMap/HashSet everywhere and using a
 /// single mutable HashMap is minimal in my testing (0.2s for a test taking 9s -
 /// although this was just a single test).
-fn prune_enodes_matching<N>(egraph: &mut EGraph<SymbolLang, N>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, subst: &Subst, eclass: &Id, rule_name: Symbol) -> bool
+fn prune_enodes_matching<N>(egraph: &mut EGraph<SymbolLang, N>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, subst: &Subst, eclass: &Id) -> bool
   where
   N: Analysis<SymbolLang>
 {
