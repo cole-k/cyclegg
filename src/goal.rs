@@ -358,6 +358,41 @@ impl LemmaRewrite {
 
 }
 
+#[derive(Debug, Clone)]
+enum ScrutineeType {
+  Guard,
+  Var,
+}
+
+#[derive(Debug, Clone)]
+struct Scrutinee {
+  pub name: Symbol,
+  pub depth: usize,
+  pub scrutinee_type: ScrutineeType,
+}
+
+impl Scrutinee {
+  /// Creates a new var scrutinee
+  pub fn new_var(name: Symbol, depth: usize) -> Self {
+    Self {
+      name,
+      depth,
+      scrutinee_type: ScrutineeType::Var
+    }
+  }
+  /// Creates a new guard scrutinee (a scrutinee that will split a conditional
+  /// expression).
+  ///
+  /// This will have depth 0 since it will always be fresh.
+  pub fn new_guard(name: Symbol) -> Self {
+    Self {
+      name,
+      depth: 0,
+      scrutinee_type: ScrutineeType::Guard
+    }
+  }
+}
+
 /// These are all values that will not be modified throughout the course of
 /// proving the goal which we will thread through new goals we create from it.
 ///
@@ -418,7 +453,7 @@ pub struct Goal<'a> {
   pub params: Vec<Symbol>,
   /// Variables we can case-split
   /// (i.e. the subset of local_context that have datatype types)
-  scrutinees: VecDeque<(Symbol, usize)>,
+  scrutinees: VecDeque<Scrutinee>,
   /// Variables that we have already case split
   pub case_split_vars: HashSet<Symbol>,
   /// Instantiations of the induction hypothesis that are in the egraph
@@ -774,12 +809,11 @@ impl<'a> Goal<'a> {
     (name, rw)
   }
 
-  /// Add var as a scrutinee if its type `ty` is a datatype;
-  /// if depth bound is exceeded, add a sentinel symbol instead
+  /// Add var as a scrutinee if its type `ty` is a datatype
   fn add_scrutinee(&mut self, var: Symbol, ty: &Type, depth: usize) {
     if let Ok((dt, _)) = ty.datatype() {
       if self.global_search_state.env.contains_key(&Symbol::from(dt)) {
-        self.scrutinees.push_back((var, depth));
+        self.scrutinees.push_back(Scrutinee::new_var(var, depth));
       }
     }
   }
@@ -816,7 +850,7 @@ impl<'a> Goal<'a> {
         .insert(fresh_var, BOOL_TYPE.parse().unwrap());
       // We are adding the new scrutinee to the front of the deque,
       // because we want to split conditions first, since they don't introduce new variables
-      self.scrutinees.push_front((fresh_var, 1));
+      self.scrutinees.push_front(Scrutinee::new_guard(fresh_var));
       let new_node = SymbolLang::leaf(fresh_var);
       let new_pattern_ast = vec![ENodeOrVar::ENode(new_node.clone())].into();
       let guard_var_pattern_ast = vec![ENodeOrVar::Var(guard_var)].into();
@@ -832,17 +866,17 @@ impl<'a> Goal<'a> {
   }
 
   /// Consume this goal and add its case splits to the proof state
-  fn case_split(self, var: Symbol, depth: usize, state: &mut ProofState<'a>) {
+  fn case_split(self, scrutinee: Scrutinee, state: &mut ProofState<'a>) {
     let new_lemmas = self.add_lemma_rewrites(state);
 
-    let var_str = var.to_string();
-    warn!("case-split on {}", var);
-    let var_node = SymbolLang::leaf(var);
+    let var_str = scrutinee.name.to_string();
+    warn!("case-split on {}", scrutinee.name);
+    let var_node = SymbolLang::leaf(scrutinee.name);
     let var_pattern_ast: RecExpr<ENodeOrVar<SymbolLang>> = vec![ENodeOrVar::ENode(var_node.clone())].into();
     // Get the type of the variable, and then remove the variable
-    let ty = match self.local_context.get(&var) {
+    let ty = match self.local_context.get(&scrutinee.name) {
       Some(ty) => ty,
-      None => panic!("{} not in local context", var),
+      None => panic!("{} not in local context", scrutinee.name),
     };
     // Convert to datatype name
     let dt = Symbol::from(ty.datatype().unwrap().0);
@@ -854,7 +888,7 @@ impl<'a> Goal<'a> {
     // (we process constructors in reverse order so that base case ends up at the top of the stack)
     for &con in cons.iter().rev() {
       let mut new_goal = self.duplicate();
-      new_goal.case_split_vars.insert(var);
+      new_goal.case_split_vars.insert(scrutinee.name);
       new_goal.name = format!("{}:", self.name);
       new_goal.lemmas = new_lemmas.clone();
 
@@ -867,13 +901,12 @@ impl<'a> Goal<'a> {
       new_goal.egraph.analysis.cvec_analysis.current_timestamp += 1;
 
       for (i, arg_type) in con_args.iter().enumerate() {
-        let fresh_var_name = format!("{}_{}{}", var, self.egraph.total_size(), i);
-        // let depth = var_depth(&fresh_var_name[..]);
+        let fresh_var_name = format!("{}_{}{}", scrutinee.name, self.egraph.total_size(), i);
         let fresh_var = Symbol::from(fresh_var_name.clone());
         fresh_vars.push(fresh_var);
         // Add new variable to context
         new_goal.local_context.insert(fresh_var, arg_type.clone());
-        new_goal.add_scrutinee(fresh_var, arg_type, depth + 1);
+        new_goal.add_scrutinee(fresh_var, arg_type, scrutinee.depth + 1);
         let id = new_goal.egraph.add(SymbolLang::leaf(fresh_var));
         new_goal.var_classes.insert(fresh_var, id);
         // We can only generate a cvec for non-arrow types.
@@ -889,7 +922,7 @@ impl<'a> Goal<'a> {
         if CONFIG.add_grounding && ty == arg_type {
           // This is a recursive constructor parameter:
           // add new grounding instantiations replacing var with fresh_var
-          new_goal.add_grounding(var, fresh_var);
+          new_goal.add_grounding(scrutinee.name, fresh_var);
         }
       }
 
@@ -905,7 +938,7 @@ impl<'a> Goal<'a> {
       );
       let con_app: Expr = con_app_string.parse().unwrap();
 
-      new_goal.name = format!("{}{}={}", new_goal.name, var, con_app);
+      new_goal.name = format!("{}{}={}", new_goal.name, scrutinee.name, con_app);
 
       instantiated_cons_and_goals.push((con_app_string, new_goal.name.clone()));
       // new_goal.egraph.analysis.cvec_analysis.timestamp += 1;
@@ -960,31 +993,29 @@ impl<'a> Goal<'a> {
     }
     // We split on var into the various instantiated constructors and subgoals.
     //
-    // If the var begins with the guard prefix, it is an ITE split and we will
-    // add the condition that was split on to our proof term. This is necessary
-    // because for ITE splits we introduce a new variable that we bind an
-    // expression to.
-    //
-    // HACK: We might try to prove a generalization/cc lemma that contains a guard
-    // variable, in which case we will skip this part.
-    if var_str.starts_with(GUARD_PREFIX) && self.guard_exprs.contains_key(&var_str) {
-      // There should only be two cases.
-      assert_eq!(instantiated_cons_and_goals.len(), 2);
-      state.proof_info.proof.insert(
-        self.name,
-        ProofTerm::ITESplit(
-          var_str.clone(),
-          self.guard_exprs[&var_str].to_string(),
-          instantiated_cons_and_goals,
-        ),
-      );
-    // Otherwise, we are doing a case split on a variable.
-    } else {
-      state.proof_info.proof.insert(
-        self.name,
-        ProofTerm::CaseSplit(var_str, instantiated_cons_and_goals),
-      );
-    }
+    // If the var is an ITE split, we will add the condition that was split on
+    // to our proof term. This is necessary because for ITE splits we introduce
+    // a new variable that we bind an expression to.
+    match scrutinee.scrutinee_type {
+      ScrutineeType::Guard => {
+        // There should only be two cases.
+        assert_eq!(instantiated_cons_and_goals.len(), 2);
+        state.proof_info.proof.insert(
+          self.name,
+          ProofTerm::ITESplit(
+            var_str.clone(),
+            self.guard_exprs[&var_str].to_string(),
+            instantiated_cons_and_goals,
+          ),
+        );
+      }
+      ScrutineeType::Var => {
+        state.proof_info.proof.insert(
+          self.name,
+          ProofTerm::CaseSplit(var_str, instantiated_cons_and_goals),
+        );
+      }
+    };
   }
 
   fn find_blocking(&self, state: &ProofState) -> (HashSet<Symbol>, HashSet<Id>) {
@@ -1080,11 +1111,11 @@ impl<'a> Goal<'a> {
   }
 
   /// Gets the next variable to case split on using the blocking var analysis
-  fn next_scrutinee(&mut self, mut blocking_vars: HashSet<Symbol>) -> Option<(Symbol, usize)> {
+  fn next_scrutinee(&mut self, mut blocking_vars: HashSet<Symbol>) -> Option<Scrutinee> {
     let blocking = self
       .scrutinees
       .iter()
-      .find_position(|(x, _)| blocking_vars.contains(x));
+      .find_position(|s| blocking_vars.contains(&s.name));
 
     // Add the vars we already have case split on, since those were previously
     // blocking. This is important for our soundness check, since we skip
@@ -1299,25 +1330,9 @@ impl<'a> Goal<'a> {
             }
             _ => {}
           }
-          // let extractor = Extractor::new(&self.egraph, AstSize);
-          // let e1 = CanonicalFormAnalysis::extract_canonical(&self.egraph, class_1_id).unwrap_or_else(||{
-          //   extractor.find_best(class_1_id).1
-          // });
-          // let e2 = CanonicalFormAnalysis::extract_canonical(&self.egraph, class_2_id).unwrap_or_else(||{
-          //   extractor.find_best(class_2_id).1
-          // });
-          // let (_, e1) = extractor.find_best(class_1_id);
-          // let (_, e2) = extractor.find_best(class_2_id);
-
-          // let new_egraph = self.egraph.clone();
-
-          // let mut exprs: HashMap<Id, Vec<Expr>> = vec![(class_1_id, vec![]), (class_2_id, vec![])]
-          //   .into_iter()
-          //   .collect();
-          // exprs.insert(class_1_id, vec!(e1.clone()));
-          // exprs.insert(class_2_id, vec!(e2.clone()));
           let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), state, false);
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
+          // let new_egraph = self.egraph.clone();
           // let rewrites = self.reductions.iter().chain(new_rewrites.values());
           // let mut runner = Runner::default()
           //   .with_explanations_enabled()
@@ -1346,81 +1361,6 @@ impl<'a> Goal<'a> {
             || class_1_id == resolved_rhs_id && class_2_id == resolved_lhs_id) {
             lemmas.extend(new_rewrite_eqs);
           }
-          // if new_rewrite_names.len() > 0 {
-          // // if let Some(_) = explanation {
-          //   // Another method would be to try finding all possible lemmas from these two e-classes
-          //   // and then try to prove each, but this would be cumbersome and I figure that since
-          //   // they're all equivalent the lemmas are probably equivalent too.
-          //   //
-          //   // let cc_lemmas: HashSet<Symbol> = exp.make_flat_explanation().iter().flat_map(|flat_term|{
-          //   //   flat_term.backward_rule.or(flat_term.forward_rule).and_then(|name|{
-          //   //     if name.to_string().starts_with(CC_LEMMA_PREFIX) {
-          //   //       Some(name)
-          //   //     } else {
-          //   //       None
-          //   //     }
-          //   //   })
-          //   // }).collect();
-          //   // We assume that if we proved something with this CC lemma, then
-          //   // there must be a new rewrite - and therefore a new name.
-          //   let rw = new_rewrites.get(&new_rewrite_names[0]).unwrap();
-          //   let lhs_vars: HashSet<Var> = rw.searcher.vars().iter().cloned().collect();
-          //   let rhs_vars: HashSet<Var> = rw.applier.vars().iter().cloned().collect();
-          //   let cc_lemma_params: Vec<(Symbol, Type)> = lhs_vars.union(&rhs_vars).map(|var|{
-          //     let var_str = var.to_string();
-          //     let mut var_name = var_str.chars();
-          //     // Remove leading ? from var name
-          //     var_name.next();
-          //     let var_symb = Symbol::from(var_name.collect::<String>());
-          //     let var_ty = self.local_context.get(&var_symb).unwrap();
-          //     (var_symb, var_ty.clone())
-          //   }).collect();
-          //   let cc_lemma_eq = RawEquation::from_exprs(&e1, &e2);
-          //   let mut new_goal = Goal::top(
-          //     &rw.name.to_string(),
-          //     &cc_lemma_eq,
-          //     &None,
-          //     cc_lemma_params.clone(),
-          //     self.env,
-          //     self.global_context,
-          //     self.reductions,
-          //     self.cvec_reductions,
-          //     self.defns,
-          //   );
-          //   new_goal.egraph.analysis.cvec_analysis.saturate();
-          //   let new_goal_lhs_cvec = &new_goal.egraph[new_goal.eq.lhs.id].data.cvec_data;
-          //   let new_goal_rhs_cvec = &new_goal.egraph[new_goal.eq.rhs.id].data.cvec_data;
-          //   if let Some(true) = cvecs_equal(&new_goal.egraph.analysis.cvec_analysis, &new_goal_lhs_cvec, &new_goal_rhs_cvec) {
-          //     lemmas.push(RawEqWithParams::new(cc_lemma_eq.clone(), cc_lemma_params));
-          //   }
-          //   // println!("CC lemma: {} = {}", e1, e2);
-          //   // let (outcome, _) = prove(new_goal, state.depth + 1, state.lemmas_state.clone());
-          //   // if let Outcome::Valid = outcome {
-          //   //   println!("Proved");
-          //   //   // Add the new lemmas
-          //   //   // found_lemmas.extend(new_rewrite_names.iter().map(|rw_name| (rw_name.clone(), new_rewrites.get(rw_name).unwrap().clone())));
-          //   // }
-          // } else {
-          //   // println!("CC lemma not useful: {} = {}", e1, e2);
-          // }
-
-          // if runner.egraph.find(self.eq.lhs.id) == runner.egraph.find(self.eq.rhs.id) {
-          //   // let new_goal = Goal::top(
-          //   //   &raw_goal.name,
-          //   //   &raw_goal.equation,
-          //   //   None,
-          //   //   raw_goal.params.clone(),
-          //   //   self.env,
-          //   //   self.global_context,
-          //   //   self.reductions,
-          //   //   self.cvec_reductions,
-          //   //   self.defns,
-          //   // );
-          //   println!("CC lemma: {} = {}", e1, e2);
-          //   found_lemma = true;
-          // }
-          // self.egraph.union_trusted(class_1_id, class_2_id, "CC lemma search");
-          // self.egraph.rebuild();
         }
       }
     }
@@ -2108,7 +2048,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
     let (blocking_vars, blocking_exprs) =
       if !CONFIG.blocking_vars_analysis {
         warn!("Blocking var analysis is disabled");
-        (goal.scrutinees.iter().map(|(v, _)| v).cloned().collect(), HashSet::default())
+        (goal.scrutinees.iter().map(|s| s.name).collect(), HashSet::default())
       } else {
         let (blocking_vars, blocking_exprs) = goal.find_blocking(&state);
         if CONFIG.verbose {
@@ -2156,23 +2096,9 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
       };
     });
 
-    // if state.update_depth(goal.scrutinees.front().unwrap().1) {
-    //   // This goal could be further split, but we have reached the maximum depth,
-    //   // we cannot prove or disprove the conjecture
-    //   if CONFIG.verbose {
-    //     for remaining_goal in &state.goals {
-    //       println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
-    //     }
-    //   }
-    //   if state.handle_depth_exceeded_failure(goal) {
-    //     continue;
-    //   }
-    //   return (Outcome::Unknown, state);
-    // }
-    // let depth_at_front = goal.scrutinees.front().unwrap().1;
-    if let Some((scrutinee, depth)) = goal.next_scrutinee(blocking_vars) {
+    if let Some(scrutinee) = goal.next_scrutinee(blocking_vars) {
       // let d = depth.max(depth_at_front);
-      if depth > state.case_split_depth {
+      if scrutinee.depth > state.case_split_depth {
         // println!("depth {} is greater than current depth, increasing.", depth);
         state.case_split_depth = depth;
         if let Some((proof_type, explanation)) = state.try_prove_lemmas(&mut goal) {
@@ -2192,10 +2118,10 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
         println!(
           "{}: {}",
           "Case splitting and continuing".purple(),
-          scrutinee.to_string().purple()
+          scrutinee.name.to_string().purple()
         );
       }
-      goal.case_split(scrutinee, depth, &mut state);
+      goal.case_split(scrutinee, &mut state);
     } else {
       if CONFIG.verbose {
         println!("{}", "Cannot case split: no blocking variables found".red());
@@ -2203,22 +2129,11 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
           println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
         }
       }
-      if goal.scrutinees.iter().any(|(_, depth)| *depth >= CONFIG.max_split_depth) {
+      if goal.scrutinees.iter().any(|s| s.depth >= CONFIG.max_split_depth) {
         if let Some((proof_type, explanation)) = state.try_prove_lemmas(&mut goal) {
           state.process_goal_explanation(proof_type, explanation, goal);
           continue;
         }
-        // println!("Failed to prove case {}, trying CC lemmas", goal.name);
-        // // goal.print_lhs_rhs();
-        // if goal.try_prove_generalized_goal(&blocking_exprs, &state) {
-        //   continue;
-        // }
-        // let lemmas = goal.search_for_cc_lemmas(&state);
-        // if !lemmas.
-        //   // state.cc_lemmas.extend(lemmas);
-        //   continue;
-        // }
-        // // goal.look_for_generalizations_2();
 
         // state.goals.push_back(goal);
         // continue;
