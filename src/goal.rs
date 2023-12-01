@@ -3,7 +3,7 @@ use egg::*;
 use itertools::Itertools;
 use log::warn;
 use std::collections::HashSet;
-use std::collections::{hash_map::Entry, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Display;
 use std::iter::zip;
 use std::time::{Duration, Instant};
@@ -266,7 +266,6 @@ impl Display for ETermEquation {
   }
 }
 
-// TODO: make it work for RawEqWithParams, need to take in global context
 fn find_generalizations_prop(prop: &Prop, global_context: &Context, fresh_name: String) -> Vec<Prop> {
   let lhs_nontrivial_subexprs = nontrivial_sexp_subexpressions_containing_vars(&prop.eq.lhs);
   let rhs_nontrivial_subexprs = nontrivial_sexp_subexpressions_containing_vars(&prop.eq.rhs);
@@ -327,21 +326,36 @@ impl ETermEquation {
 
 }
 
-/// When we make a new lemma and rewrites out of it, this tracks the names of
-/// the rewrites we made as well as the information about the lemma.
-pub struct RewriteInfo {
-  pub lhs_to_rhs_rewrite_name: Option<String>,
-  pub rhs_to_lhs_rewrite_name: Option<String>,
+/// When we make a new lemma and rewrites out of it, this tracks the the
+/// rewrites we made as well as the information about the lemma.
+pub struct LemmaRewrite {
+  pub lhs_to_rhs: Option<(String, Rw)>,
+  pub rhs_to_lhs: Option<(String, Rw)>,
   pub lemma_name: String,
   pub lemma_prop: Prop,
 }
 
-impl RewriteInfo {
-    pub fn new(lhs_to_rhs_rewrite_name: Option<String>, rhs_to_lhs_rewrite_name: Option<String>, lemma_name: String, lemma_eq: Prop) -> Self { Self { lhs_to_rhs_rewrite_name, rhs_to_lhs_rewrite_name, lemma_name, lemma_prop: lemma_eq } }
+impl LemmaRewrite {
+  pub fn new(lhs_to_rhs: Option<(String, Rw)>, rhs_to_lhs: Option<(String, Rw)>, lemma_name: String, lemma_prop: Prop) -> Self { Self { lhs_to_rhs, rhs_to_lhs, lemma_name, lemma_prop } }
 
-  pub fn rewrite_names(&self) -> Vec<String> {
-    self.lhs_to_rhs_rewrite_name.iter().chain(self.rhs_to_lhs_rewrite_name.iter()).cloned().collect()
+  pub fn names_and_rewrites(&self) -> Vec<(String, Rw)> {
+    self.lhs_to_rhs.iter().chain(self.rhs_to_lhs.iter()).cloned().collect()
   }
+
+  pub fn rewrites(&self) -> Vec<Rw> {
+    self.names_and_rewrites().into_iter().map(|(_, rw)| rw).collect()
+  }
+
+  pub fn add_to_rewrites(&self, rewrites: &mut HashMap<String, Rw>) {
+    self.lhs_to_rhs.as_ref().map(|(name, rw)| {
+      rewrites.entry(name.clone()).or_insert(rw.clone());
+    });
+    self.rhs_to_lhs.as_ref().map(|(name, rw)| {
+      rewrites.entry(name.clone()).or_insert(rw.clone());
+    });
+  }
+
+
 }
 
 /// These are all values that will not be modified throughout the course of
@@ -350,6 +364,15 @@ impl RewriteInfo {
 /// Contains things such as the global context or environment.
 ///
 /// This is copyable because it only refers to shared references.
+///
+// TODO: Can we wrap most of this state in a lazy_static! block at initialization?
+// - reductions and cvec_reductions might need to be cloned
+//   * Or we could make the full set of reductions and cvec_reductions lazy_static!
+//     and pass around a small set that corresponds to the keys which we can obtain
+//     the rewrites from the global map. Cloning that shouldn't be too bad.
+// - defns doesn't need to be threaded through in the first place.
+// - searchers could be copied since it's for debugging
+// - The rest should be safe to keep in a truly global block.
 #[derive(Copy, Clone)]
 pub struct GlobalSearchState<'a> {
   /// Environment
@@ -449,29 +472,26 @@ impl<'a> Goal<'a> {
     // FIXME: this could really also be a reference. Probably not necessary
     // for efficiency reason but yeah.
     res.egraph.analysis.cvec_analysis.reductions = global_search_state.cvec_reductions.clone();
-    // res.egraph.classes().for_each(|c| println!("class {}: {}, timestamp: {}", c.id, c.data.canonical_form_data.get_enode(), c.data.timestamp));
     for (name, ty) in &prop.params {
       res.add_scrutinee(*name, &ty, 0);
       res.local_context.insert(*name, ty.clone());
     }
     res.build_cvecs();
-    // let lhs_cvec = &res.egraph[res.eq.lhs.id].data.cvec_data;
-    // let rhs_cvec = &res.egraph[res.eq.rhs.id].data.cvec_data;
-    // println!("{}: lhs_cvecs: {:?}, rhs_cvecs: {:?}", res.name, res.egraph[res.eq.lhs.id].data.cvec_data, res.egraph[res.eq.rhs.id].data.cvec_data);
-    // println!("eq? {:?}", cvecs_equal(&res.egraph.analysis.cvec_analysis, lhs_cvec, rhs_cvec));
-    // res.eq.find_generalizations();
     res
   }
 
+  /// Construct cvecs for the goal's parameters. We need type information in order
+  /// to construct these, so they cannot be created automatically.
   fn build_cvecs(&mut self) {
-    self.egraph.analysis.cvec_analysis.timestamp += 1;
+    // Update the timestamp so that we ensure the new cvecs are applied.
+    self.egraph.analysis.cvec_analysis.current_timestamp += 1;
     for name in self.params.iter() {
       let ty = &self.local_context[name];
       if !ty.is_arrow() {
         let var_id = self.var_classes[name];
         let var_cvec = self.egraph.analysis.cvec_analysis.make_cvec_for_type(&ty, self.global_search_state.env, &self.global_search_state.context);
         let mut analysis = self.egraph[var_id].data.clone();
-        analysis.timestamp = self.egraph.analysis.cvec_analysis.timestamp;
+        analysis.timestamp = self.egraph.analysis.cvec_analysis.current_timestamp;
         analysis.cvec_data = var_cvec;
         self.egraph.set_analysis_data(var_id, analysis);
         // println!("var {} has id {}", name, var_id);
@@ -488,10 +508,13 @@ impl<'a> Goal<'a> {
     res == Some(true)
   }
 
+  // FIXME: Can we figure out if it's possible to implement clone in a reasonable way?
+  // Maybe we shouldn't even have this function.
   pub fn duplicate(&self) -> Self {
     Goal {
       name: self.name.clone(),
       egraph: self.egraph.clone(),
+      // TODO: Verify if this is true
       lemmas: HashMap::new(), // the lemmas will be re-generated immediately anyway
       local_context: self.local_context.clone(),
       var_classes: self.var_classes.clone(),
@@ -528,71 +551,15 @@ impl<'a> Goal<'a> {
     self.egraph = runner.egraph;
   }
 
-  fn get_explanation(eq: &ETermEquation, egraph: &mut Eg) -> Option<(ProofType, Explanation<SymbolLang>)> {
-    if egraph.find(eq.lhs.id) == egraph.find(eq.rhs.id) {
-      // We have shown that LHS == RHS
-      Some((ProofType::Refl,
-          egraph
-          .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
-      ))
-    } else {
-      // Check if this case in unreachable (i.e. if there are any inconsistent
-      // e-classes in the e-graph)
-      //
-      // FIXME: I've hacked it such that we only get an explanation from the
-      // contradiction. If we find a contradiction from the cvecs, we need to
-      // first find which enode the cvec came from, then we need to find explain
-      // why those nodes are equal, then we need to provide the concrete values
-      // that cause them to be unequal. This will probably require us to update
-      // the Cvec analysis to track enodes, which is a little unfortunate.
-      //
-      let res = egraph.classes().find_map(|eclass| {
-        if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data.canonical_form_data {
-          // println!("Proof by contradiction {} != {}", n1, n2);
-          // FIXME: these nodes might have been removed, we'll need to be
-          // careful about how we generate this proof.
-          // // This is here only for the purpose of proof generation:
-          let extractor = Extractor::new(&egraph, AstSize);
-          let expr1 = extract_with_node(n1, &extractor);
-          let expr2 = extract_with_node(n2, &extractor);
-          if CONFIG.verbose {
-            println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
-          }
-          Some((expr1, expr2))
-        // } else if let Cvec::Contradiction(id1, id2) = &eclass.data.cvec_data {
-        //   let cvec_egraph = egraph.analysis.cvec_analysis.cvec_egraph.borrow();
-        //   let cvec_extractor = Extractor::new(&cvec_egraph, AstSize);
-        //   let (_, expr1) = cvec_extractor.find_best(*id1);
-        //   let (_, expr2) = cvec_extractor.find_best(*id2);
-        //   if CONFIG.verbose {
-        //     println!("{}: {} = {}", "CONTRADICTION".bright_red(), expr1, expr2);
-        //   }
-        //   Some(((expr1, expr2), false))
-        } else {
-          None
-        }
-      });
-      res.map(|(expr1, expr2)| {
-        let explanation = egraph.explain_equivalence(&expr1, &expr2);
-        (ProofType::Contradiction, explanation)
-      })
-    }
-
-  }
-
-  /// Check if the goal has been discharged,
-  /// and if so, create an explanation.
-  pub fn check_validity(&mut self) -> bool {
-    // for eclass in self.egraph.classes() {
-    //   println!("{}: {:?} CANONICAL {}", eclass.id, eclass.nodes, ConstructorFolding::extract_canonical(&self.egraph, eclass.id).unwrap_or(vec![].into()));
-    // }
-
-    let explanation = Goal::get_explanation(&self.eq, &mut self.egraph);
-    self.explanation = explanation;
-    self.explanation.is_some()
+  /// Look to see if we have proven the goal somehow. Note that this does not
+  /// perform the actual proof search, it simply checks if the proof exists.
+  pub fn find_proof(&mut self) -> Option<(ProofType, Explanation<SymbolLang>)> {
+    find_proof(&self.eq, &mut self.egraph)
   }
 
   /// Check whether an expression is reducible using this goal's reductions
+  /// NOTE: This is largely not necessary when we have destructive rewrites
+  /// enabled (the default). This is why it is by default disabled.
   pub fn is_reducible(&self, expr: &Expr) -> bool {
     let mut local_graph: Eg = Default::default();
     local_graph.add_expr(expr);
@@ -605,11 +572,21 @@ impl<'a> Goal<'a> {
     false
   }
 
-
-  fn make_rewrites_from(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, exprs: HashMap<Id, Vec<Expr>>, state: &mut ProofState, add_termination_check: bool, given_lemma_name: Option<String>) -> (HashMap<String, Rw>, Vec<RewriteInfo>) {
+  /// Creates rewrites from all of the expressions in lhs_id to all of the
+  /// expressions in rhs_id.
+  ///
+  /// Returns a hashmap of the rewrites as well as a vector of LemmaRewrites
+  /// describing each rewrite.
+  ///
+  /// The rewrites will have a termination (soundness) check if
+  /// add_termination_check is true, otherwise they will not.
+  ///
+  /// The rewrites will each be named lemma_n.
+  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, state: &mut ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<LemmaRewrite>) {
+    let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
     let is_var = |v| self.local_context.contains_key(v);
     let mut rewrites = self.lemmas.clone();
-    let mut rewrite_infos = vec!();
+    let mut lemma_rws = vec!();
     for lhs_expr in exprs.get(&lhs_id).unwrap() {
       let lhs: Pattern<SymbolLang> = to_pattern(lhs_expr, is_var);
       if (CONFIG.irreducible_only && self.is_reducible(lhs_expr)) || has_guard_wildcards(&lhs) {
@@ -617,173 +594,167 @@ impl<'a> Goal<'a> {
       }
       for rhs_expr in exprs.get(&rhs_id).unwrap() {
         if state.timeout() {
-          return (rewrites, rewrite_infos);
+          return (rewrites, lemma_rws);
+        }
+        let lemma_name = state.fresh_lemma_name();
+
+        if let Some(lemma_rw) = self.make_lemma_rewrite(lhs_expr, rhs_expr, &premises, add_termination_check, lemma_name) {
+          // Add the rewrites (if lemma_rw is some at least one is guaranteed to exist).
+          lemma_rw.add_to_rewrites(&mut rewrites);
+          lemma_rws.push(lemma_rw);
         }
 
-        let rhs: Pattern<SymbolLang> = to_pattern(rhs_expr, is_var);
-        if (CONFIG.irreducible_only && self.is_reducible(rhs_expr)) || has_guard_wildcards(&rhs) {
-          continue;
-        }
-
-        let lhs_vars = var_set(&lhs);
-        let rhs_vars = var_set(&rhs);
-        let lemma_vars = lhs_vars.union(&rhs_vars).cloned().collect();
-
-        // If any of my premises contain variables that are not present in lhs or rhs,
-        // skip because we don't know how to check such a premise
-        if !premises.iter().all(|eq| {
-          let premise_lhs_vars = var_set(&to_pattern(&eq.lhs.expr, is_var));
-          let premise_rhs_vars = var_set(&to_pattern(&eq.rhs.expr, is_var));
-          let premise_vars: HashSet<Var> =
-            premise_lhs_vars.union(&premise_rhs_vars).cloned().collect();
-          premise_vars.is_subset(&lemma_vars)
-        }) {
-          continue;
-        }
-
-        // This allows us to force the lemma name for the IH
-        let lemma_name = match &given_lemma_name {
-          Some(name) => name.clone(),
-          None => {
-            let name = format!("lemma_{}", state.lemma_number);
-            state.lemma_number += 1;
-            name
-          }
-        };
-
-        // Pick out those variables that occur in the lemma
-        let lemma_var_classes: IdSubst = self
-          .var_classes
-          .iter()
-          .filter(|(x, _)| lemma_vars.contains(&to_wildcard(x)))
-          .map(|(x, id)| (*x, *id))
-          .collect();
-        let params: Vec<(Symbol, Type)> = lemma_var_classes.keys().map(|var|{
-          (*var, self.local_context.get(var).unwrap().clone())
-        }).collect();
-
-        let condition = Soundness {
-          free_vars: lemma_var_classes,
-          premises: premises.clone(),
-        };
-        let rewrite_eq = Equation::from_exprs(lhs_expr, rhs_expr);
-        let mut rw_info = RewriteInfo {
-          lhs_to_rhs_rewrite_name: None,
-          rhs_to_lhs_rewrite_name: None,
-          lemma_name: lemma_name.clone(),
-          lemma_prop: Prop {
-            eq: rewrite_eq,
-            params: params.clone(),
-          }
-        };
-        if rhs_vars.is_subset(&lhs_vars) {
-          // if rhs has no extra wildcards, create a lemma lhs => rhs
-          let lhs_to_rhs_rewrite_name = if add_termination_check {
-            Goal::add_lemma(lhs.clone(), rhs.clone(), condition.clone(), &mut rewrites, lemma_name.clone())
-          } else {
-            Goal::add_unchecked_lemma(lhs.clone(), rhs.clone(), &mut rewrites, lemma_name.clone())
-          };
-          rw_info.lhs_to_rhs_rewrite_name = Some(lhs_to_rhs_rewrite_name);
-
-          if CONFIG.single_rhs {
-            continue;
-          };
-        }
-        if lhs_vars.is_subset(&rhs_vars) {
-          // if lhs has no extra wildcards, create a lemma rhs => lhs;
-          // NOTE (CK): This below comment is no longer true when our termination check is more complicated.
-          // in non-cyclic mode, a single direction of IH is always sufficient
-          // (because grounding adds all instantiations we could possibly care about).
-          let rhs_to_lhs_rewrite_name = if add_termination_check {
-            Goal::add_lemma(rhs.clone(), lhs.clone(), condition.clone(), &mut rewrites, lemma_name.clone())
-          } else {
-            Goal::add_unchecked_lemma(rhs.clone(), lhs.clone(), &mut rewrites, lemma_name.clone())
-          };
-          rw_info.rhs_to_lhs_rewrite_name = Some(rhs_to_lhs_rewrite_name);
-        }
-        let added_lemma = rw_info.lhs_to_rhs_rewrite_name.is_some() || rw_info.rhs_to_lhs_rewrite_name.is_some();
-        if !added_lemma {
-          warn!("cannot create a lemma from {} and {}", lhs, rhs);
-        }
-        rewrite_infos.push(rw_info);
       }
     }
-    (rewrites, rewrite_infos)
+    (rewrites, lemma_rws)
+  }
+
+  fn make_lemma_rewrite(&self, lhs_expr: &Expr, rhs_expr: &Expr, premises: &Vec<ETermEquation>, add_termination_check: bool, lemma_name: String)
+                        -> Option<LemmaRewrite> {
+    let is_var = |v| self.local_context.contains_key(v);
+
+    // NOTE: (CK) Before we would not recreate the lhs from lhs_expr every time we made a lemma rewrite since we did nested for loops
+    // for lhs_expr {
+    //   let lhs = ...
+    //   for rhs_expr {
+    //   ...
+    //
+    // which meant we just needed to clone it.
+    //
+    // I don't think this is a huge hit to efficiency though. If we cared, we
+    // could instead loop over all lhs and rhs exprs first and precompute their
+    // patterns + figure out which ones we don't need to consider.
+    let lhs: Pattern<SymbolLang> = to_pattern(lhs_expr, is_var);
+    if (CONFIG.irreducible_only && self.is_reducible(lhs_expr)) || has_guard_wildcards(&lhs) {
+      return None;
+    }
+
+    let rhs: Pattern<SymbolLang> = to_pattern(rhs_expr, is_var);
+    if (CONFIG.irreducible_only && self.is_reducible(rhs_expr)) || has_guard_wildcards(&rhs) {
+      return None;
+    }
+
+    let lhs_vars = var_set(&lhs);
+    let rhs_vars = var_set(&rhs);
+    let lemma_vars = lhs_vars.union(&rhs_vars).cloned().collect();
+
+    // If any of my premises contain variables that are not present in lhs or rhs,
+    // skip because we don't know how to check such a premise
+    if !premises.iter().all(|eq| {
+      let premise_lhs_vars = var_set(&to_pattern(&eq.lhs.expr, is_var));
+      let premise_rhs_vars = var_set(&to_pattern(&eq.rhs.expr, is_var));
+      let premise_vars: HashSet<Var> =
+        premise_lhs_vars.union(&premise_rhs_vars).cloned().collect();
+      premise_vars.is_subset(&lemma_vars)
+    }) {
+      return None;
+    }
+
+    // Pick out those variables that occur in the lemma
+    let lemma_var_classes: IdSubst = self
+      .var_classes
+      .iter()
+      .filter(|(x, _)| lemma_vars.contains(&to_wildcard(x)))
+      .map(|(x, id)| (*x, *id))
+      .collect();
+    let params: Vec<(Symbol, Type)> = lemma_var_classes.keys().map(|var|{
+      (*var, self.local_context.get(var).unwrap().clone())
+    }).collect();
+
+    let condition = Soundness {
+      free_vars: lemma_var_classes,
+      premises: premises.clone(),
+    };
+    let rewrite_eq = Equation::from_exprs(lhs_expr, rhs_expr);
+    let mut lemma_rw = LemmaRewrite {
+      lhs_to_rhs: None,
+      rhs_to_lhs: None,
+      lemma_name: lemma_name.clone(),
+      lemma_prop: Prop {
+        eq: rewrite_eq,
+        params: params.clone(),
+      }
+    };
+    if rhs_vars.is_subset(&lhs_vars) {
+      // if rhs has no extra wildcards, create a lemma lhs => rhs
+      let lhs_to_rhs = Goal::make_rewrite(lhs.clone(), rhs.clone(), condition.clone(), lemma_name.clone(), add_termination_check);
+      lemma_rw.lhs_to_rhs = Some(lhs_to_rhs);
+
+      if CONFIG.single_rhs {
+        return Some(lemma_rw);
+      };
+    }
+    if lhs_vars.is_subset(&rhs_vars) {
+      // if lhs has no extra wildcards, create a lemma rhs => lhs;
+      // NOTE: (CK) This below comment is no longer true when our termination check is more complicated.
+      // in non-cyclic mode, a single direction of IH is always sufficient
+      // (because grounding adds all instantiations we could possibly care about).
+      let rhs_to_lhs = Goal::make_rewrite(rhs.clone(), lhs.clone(), condition.clone(), lemma_name.clone(), add_termination_check);
+      lemma_rw.rhs_to_lhs = Some(rhs_to_lhs);
+    }
+    let has_lemma_rw = lemma_rw.lhs_to_rhs.is_some() || lemma_rw.rhs_to_lhs.is_some();
+    if !has_lemma_rw {
+      warn!("cannot create a lemma from {} and {}", lhs, rhs);
+      None
+    } else {
+      Some(lemma_rw)
+    }
+  }
+
+  /// Before creating a lemma with premises, we need to update the variables
+  /// in the premises with their canonical forms in terms of the current goal
+  /// variables
+  fn update_premises(&self) -> Vec<ETermEquation> {
+    self
+      .premises
+      .iter()
+      .map(|eq| eq.update_variables(&self.var_classes, &self.egraph))
+      .collect()
   }
 
   /// Create a rewrite `lhs => rhs` which will serve as the lemma ("induction hypothesis") for a cycle in the proof;
   /// here lhs and rhs are patterns, created by replacing all scrutinees with wildcards;
   /// soundness requires that the pattern only apply to variable tuples smaller than the current scrutinee tuple.
   fn add_lemma_rewrites(&self, state: &mut ProofState) -> HashMap<String, Rw> {
-    let lhs_id = self.egraph.find(self.eq.lhs.id);
-    let rhs_id = self.egraph.find(self.eq.rhs.id);
-
-    if CONFIG.is_cyclic() {
-      // If we are doing cyclic proofs: make lemmas out of all LHS and RHS variants
-      self.make_cyclic_lemmas(state, true).0
-    } else {
+    // Special case: the first time we add lemmas (i.e. when there are no
+    // previous lemmas), we will make lemma rewrites out of the lhs and rhs only
+    // and we will use the special IH name.
+    if self.lemmas.is_empty() {
+      let premises = self.update_premises();
+      let mut rewrites = self.lemmas.clone();
       // In the non-cyclic case, only use the original LHS and RHS
       // and only if no other lemmas have been added yet
-      let mut exprs: HashMap<Id, Vec<Expr>> = vec![(lhs_id, vec![]), (rhs_id, vec![])]
-        .into_iter()
-        .collect();
-      if self.lemmas.is_empty() {
-        exprs
-          .get_mut(&lhs_id)
-          .unwrap()
-          .push(self.eq.lhs.expr.clone());
-        exprs
-          .get_mut(&rhs_id)
-          .unwrap()
-          .push(self.eq.rhs.expr.clone());
-      }
-
-      // Before creating a cyclic lemma with premises,
-      // we need to update the variables in the premises
-      // with their canonical forms in terms of the current goal variables
-      let premises: Vec<ETermEquation> = self
-        .premises
-        .iter()
-        .map(|eq| eq.update_variables(&self.var_classes, &self.egraph))
-        .collect();
-
-      let (rewrites, _rw_infos) = self.make_rewrites_from(lhs_id, rhs_id, premises, exprs, state, true, Some(state.ih_lemma_name.clone()));
-      // In this case, we are adding the special IH lemma, so we will record
-      // that in the state for proof emission.
-      rewrites
+      let lemma_rw = self.make_lemma_rewrite(&self.eq.lhs.expr, &self.eq.rhs.expr, &premises, true, state.ih_lemma_name.clone()).unwrap();
+      lemma_rw.add_to_rewrites(&mut rewrites);
+      return rewrites;
+    }
+    // Otherwise, we only create lemmas when we are operating in the cyclic mode
+    if CONFIG.is_cyclic() {
+      self.make_cyclic_lemma_rewrites(state, true).0
+    } else {
+      self.lemmas.clone()
     }
 
   }
 
-  fn make_cyclic_lemmas(&self, state: &mut ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<Prop>) {
+  /// Creates cyclic lemmas from the current goal.
+  fn make_cyclic_lemma_rewrites(&self, state: &mut ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<LemmaRewrite>) {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
-    let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
-
-    // Before creating a cyclic lemma with premises,
-    // we need to update the variables in the premises
-    // with their canonical forms in terms of the current goal variables
-    let premises: Vec<ETermEquation> = self
-      .premises
-      .iter()
-      .map(|eq| eq.update_variables(&self.var_classes, &self.egraph))
-      .collect();
-
-
-    let (rewrites, rewrite_infos) = self.make_rewrites_from(lhs_id, rhs_id, premises, exprs, state, add_termination_check, None);
-    (rewrites, rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect())
+    let premises = self.update_premises();
+    self.make_lemma_rewrites_from_all_exprs(lhs_id, rhs_id, premises, state, add_termination_check)
   }
 
   /// Add a rewrite `lhs => rhs` to `rewrites` if not already present
-  fn add_lemma(lhs: Pat, rhs: Pat, cond: Soundness, rewrites: &mut HashMap<String, Rw>, lemma_name: String) -> String {
+  fn make_rewrite(lhs: Pat, rhs: Pat, cond: Soundness, lemma_name: String, add_termination_check: bool) -> (String, Rw) {
+    // TODO: I think we should put just the lemma name and rewrite direction now
+    // that we can record information about the lemmas elsewhere.
     let name = format!("{}-{}={}", lemma_name, lhs, rhs);
-    // Insert the lemma into the rewrites map if it's not already there
-    match rewrites.entry(name.clone()) {
-      Entry::Occupied(_) => (),
-      Entry::Vacant(entry) => {
-        warn!("creating lemma: {} => {}", lhs, rhs);
-        let rw = Rewrite::new(
+    warn!("creating{}lemma: {} => {}", if add_termination_check {" "} else {" unconditional "}, lhs, rhs);
+    let rw =
+      if add_termination_check {
+        Rewrite::new(
           name.clone(),
           ConditionalSearcher {
             condition: cond,
@@ -791,30 +762,16 @@ impl<'a> Goal<'a> {
           },
           rhs,
         )
-        .unwrap();
-        entry.insert(rw);
-      }
-    };
-    name
-  }
-
-  fn add_unchecked_lemma(lhs: Pat, rhs: Pat, rewrites: &mut HashMap<String, Rw>, lemma_name: String) -> String {
-    let name = format!("{}-{}={}", lemma_name, lhs, rhs);
-    // Insert the lemma into the rewrites map if it's not already there
-    match rewrites.entry(name.clone()) {
-      Entry::Occupied(_) => (),
-      Entry::Vacant(entry) => {
-        warn!("making cc lemma: {} => {}", lhs, rhs);
-        let rw = Rewrite::new(
+        .unwrap()
+      } else {
+        Rewrite::new(
           name.clone(),
           lhs,
           rhs,
         )
-        .unwrap();
-        entry.insert(rw);
-      }
-    };
-    name
+        .unwrap()
+      };
+    (name, rw)
   }
 
   /// Add var as a scrutinee if its type `ty` is a datatype;
@@ -907,7 +864,7 @@ impl<'a> Goal<'a> {
       // For each argument: create a fresh variable and add it to the context and to scrutinees
       let mut fresh_vars = vec![];
 
-      new_goal.egraph.analysis.cvec_analysis.timestamp += 1;
+      new_goal.egraph.analysis.cvec_analysis.current_timestamp += 1;
 
       for (i, arg_type) in con_args.iter().enumerate() {
         let fresh_var_name = format!("{}_{}{}", var, self.egraph.total_size(), i);
@@ -924,7 +881,7 @@ impl<'a> Goal<'a> {
           // new_goal.egraph.analysis.cvec_analysis.timestamp += 1;
           let fresh_var_cvec = new_goal.egraph.analysis.cvec_analysis.make_cvec_for_type(arg_type, self.global_search_state.env, &self.global_search_state.context);
           let mut analysis = new_goal.egraph[id].data.clone();
-          analysis.timestamp = new_goal.egraph.analysis.cvec_analysis.timestamp;
+          analysis.timestamp = new_goal.egraph.analysis.cvec_analysis.current_timestamp;
           analysis.cvec_data = fresh_var_cvec;
           new_goal.egraph.set_analysis_data(id, analysis);
         }
@@ -1354,14 +1311,12 @@ impl<'a> Goal<'a> {
 
           // let new_egraph = self.egraph.clone();
 
-          let exprs = get_all_expressions(&self.egraph, vec![class_1_id, class_2_id]);
-
           // let mut exprs: HashMap<Id, Vec<Expr>> = vec![(class_1_id, vec![]), (class_2_id, vec![])]
           //   .into_iter()
           //   .collect();
           // exprs.insert(class_1_id, vec!(e1.clone()));
           // exprs.insert(class_2_id, vec!(e2.clone()));
-          let (_rewrites, rewrite_infos) = self.make_rewrites_from(class_1_id, class_2_id, vec!(), exprs, state, false, None);
+          let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), state, false);
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
           // let rewrites = self.reductions.iter().chain(new_rewrites.values());
           // let mut runner = Runner::default()
@@ -1593,13 +1548,18 @@ impl<'a> Goal<'a> {
     let lhs_expr = self.extract_generalized_expr(class, fresh_symb, lhs_id);
     let rhs_expr = self.extract_generalized_expr(class, fresh_symb, rhs_id);
     // println!("generalizing {} === {}", lhs_expr, rhs_expr);
-    let params: Vec<(Symbol, Type)> = get_vars(&lhs_expr).union(&get_vars(&rhs_expr)).into_iter().map(|var| {
-      let var_ty = if var == &fresh_symb {
-        class_ty.clone()
+    let params: Vec<(Symbol, Type)> = get_vars(&lhs_expr).union(&get_vars(&rhs_expr)).into_iter().flat_map(|var| {
+      let var_ty_opt = if var == &fresh_symb {
+        Some(class_ty.clone())
+      } else if self.local_context.contains_key(var) {
+        Some(self.local_context.get(var).unwrap().clone())
       } else {
-        self.local_context.get(var).unwrap().clone()
+        warn!("Leaf of term that isn't a known variable: {}", var);
+        None
       };
-      (*var, var_ty)
+      var_ty_opt.map(|var_ty| {
+        (*var, var_ty)
+      })
     }).collect();
     let eq = Equation::from_exprs(&lhs_expr, &rhs_expr);
     let prop = Prop::new(eq.clone(), params.clone());
@@ -1780,10 +1740,16 @@ impl<'a> ProofState<'a> {
       && self.start_time.elapsed() > Duration::new(CONFIG.timeout.unwrap(), 0)
   }
 
+  pub fn fresh_lemma_name(&mut self) -> String {
+    let name = format!("lemma_{}", self.lemma_number);
+    self.lemma_number += 1;
+    name
+  }
+
   /// Try to prove all of the lemmas we've collected so far.
-  pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> bool {
+  pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> Option<(ProofType, Explanation<SymbolLang>)> {
     if self.proof_depth == CONFIG.proof_depth {
-      return false;
+      return None;
     }
     // println!("Try prove lemmas for goal {}", goal.name);
     // self.lemmas_state.possible_lemmas.chains.iter().for_each(|chain| chain.chain.iter().for_each(|lem| println!("lemma: {} = {}", lem.eq.lhs, lem.eq.rhs)));
@@ -1793,7 +1759,7 @@ impl<'a> ProofState<'a> {
     for chain in lemma_chains.iter() {
       for (i, lemma_prop) in chain.chain.iter().enumerate() {
         if self.timeout() {
-          return false;
+          return None;
         }
         // Is the lemma already proven or subsumed by a cyclic lemma?
         if self.lemmas_state.proven_lemmas.contains_leq(&lemma_prop) || self.lemmas_state.cyclic_lemmas.contains_leq(&lemma_prop) {
@@ -1853,20 +1819,13 @@ impl<'a> ProofState<'a> {
         }
         self.lemmas_state.last_lemma_proven_at_last_attempt.insert(lemma_prop_name, self.lemmas_state.last_lemma_proven.clone());
 
-        let lhs_id = new_goal.eq.lhs.id;
-        let rhs_id = new_goal.eq.rhs.id;
-        let mut exprs: HashMap<Id, Vec<Expr>> = vec![(lhs_id, vec![]), (rhs_id, vec![])]
-          .into_iter()
-          .collect();
-        exprs.insert(lhs_id, vec!(new_goal.eq.lhs.expr.clone()));
-        exprs.insert(rhs_id, vec!(new_goal.eq.rhs.expr.clone()));
-        let new_lemma_name = format!("lemma_{}", self.lemma_number);
-        self.lemma_number += 1;
-        let (rws, rw_infos) = new_goal.make_rewrites_from(lhs_id, rhs_id, new_goal.premises.clone(), exprs, self, false, Some(new_lemma_name.clone()));
-        if rw_infos.len() == 0 {
-          assert!(rws.is_empty(), "rw_infos is empty but rws isn't");
-          continue;
-        }
+        let new_lemma_name = self.fresh_lemma_name();
+        let lemma_rw_opt = new_goal.make_lemma_rewrite(&new_goal.eq.lhs.expr, &new_goal.eq.rhs.expr, &new_goal.premises, false, new_lemma_name.clone());
+        // If we can't make a rewrite out of this lemma, it's not useful to us, so we'll just keep going.
+        let lemma_rw = match lemma_rw_opt {
+          None => continue,
+          Some(lemma_rw) => lemma_rw,
+        };
         // NOTE CK: This used to be necessary for speed, but with some patches to efficiency, we
         // no longer need it. Perhaps if we allowed a greater proof depth we would need it.
         // // HACK: Optimization to proving lemmas
@@ -1889,7 +1848,8 @@ impl<'a> ProofState<'a> {
         // // This is because sometimes you need more than one lemma to prove a goal.
         if i > 0 {
           let goal_egraph_copy = goal.egraph.clone();
-          let rewrites = goal.global_search_state.reductions.iter().chain(goal.lemmas.values()).chain(rws.values()).chain(self.lemmas_state.lemma_rewrites.values());
+          let new_lemma_rws = lemma_rw.rewrites();
+          let rewrites = goal.global_search_state.reductions.iter().chain(goal.lemmas.values()).chain(new_lemma_rws.iter()).chain(self.lemmas_state.lemma_rewrites.values());
           let runner = Runner::default()
             // .with_explanations_enabled()
             .with_egraph(goal_egraph_copy)
@@ -1900,9 +1860,7 @@ impl<'a> ProofState<'a> {
         }
         println!("Trying to prove lemma: forall {}. {} = {}", lemma_prop.params.iter().map(|(v, t)| format!("{}: {}", v, t)).join(" "), lemma_prop.eq.lhs, lemma_prop.eq.rhs);
 
-        // There should only be one rewrite
-        assert_eq!(rw_infos.len(), 1);
-        let new_lemma_eq = &rw_infos[0].lemma_prop;
+        let new_lemma_eq = &lemma_rw.lemma_prop;
         // Give the new goal the new lemma's name so that we can match its proof.
         // Actually this isn't necessary for anything other than prettying the output,
         // but having the name be ugly is better for debugging.
@@ -1929,7 +1887,7 @@ impl<'a> ProofState<'a> {
           // TODO: This comes for free in the proven lemmas we get, so we
           // probably don't need to insert it.
           self.lemmas_state.proven_lemmas.insert(lemma_prop.clone());
-          self.lemmas_state.lemma_rewrites.extend(rws);
+          self.lemmas_state.lemma_rewrites.extend(lemma_rw.names_and_rewrites());
           // Add any cyclic lemmas we proved too
           self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
           self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
@@ -1938,8 +1896,9 @@ impl<'a> ProofState<'a> {
           // This is now the last lemma we've proven
           self.lemmas_state.last_lemma_proven = Some(new_lemma_name);
           goal.saturate(&self.lemmas_state.lemma_rewrites);
-          if goal.check_validity() {
-            return true;
+          let proof = goal.find_proof();
+          if proof.is_some() {
+            return proof;
           }
           break;
         }
@@ -1953,7 +1912,7 @@ impl<'a> ProofState<'a> {
         }
       }
     }
-    false
+    None
   }
 
   pub fn add_cyclic_lemmas(&mut self, goal: &Goal) {
@@ -1961,8 +1920,8 @@ impl<'a> ProofState<'a> {
     if !goal.premises.is_empty() {
       return;
     }
-    let (rws, rewrite_eqs) = goal.make_cyclic_lemmas(self, false);
-    self.lemmas_state.cyclic_lemmas.extend(rewrite_eqs);
+    let (rws, lemma_rws) = goal.make_cyclic_lemma_rewrites(self, false);
+    self.lemmas_state.cyclic_lemmas.extend(lemma_rws.into_iter().map(|lemma_rw| lemma_rw.lemma_prop));
     self.lemmas_state.cyclic_lemma_rewrites.extend(rws);
   }
 
@@ -1975,18 +1934,16 @@ impl<'a> ProofState<'a> {
     }
   }
 
-  pub fn process_goal_explanation(&mut self, goal: Goal) {
-    if let Some((proof_type, mut explanation)) = goal.explanation {
-      // This goal has been discharged, proceed to the next goal
-      if CONFIG.verbose {
-        println!("{} {} by {}", "Proved case".bright_blue(), goal.name, proof_type);
-        println!("{}", explanation.get_flat_string());
-      }
-     self
-        .proof_info
-        .solved_goal_explanation_and_context
-        .insert(goal.name, (proof_type, explanation, goal.local_context));
+  pub fn process_goal_explanation(&mut self, proof_type: ProofType, mut explanation: Explanation<SymbolLang>, goal: Goal) {
+    // This goal has been discharged, proceed to the next goal
+    if CONFIG.verbose {
+      println!("{} {} by {}", "Proved case".bright_blue(), goal.name, proof_type);
+      println!("{}", explanation.get_flat_string());
     }
+    self
+      .proof_info
+      .solved_goal_explanation_and_context
+      .insert(goal.name, (proof_type, explanation, goal.local_context));
   }
 }
 
@@ -2033,6 +1990,57 @@ pub fn explain_goal_failure(goal: &Goal) {
   print_expressions_in_eclass(&goal.egraph, goal.eq.rhs.id);
 }
 
+fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<(ProofType, Explanation<SymbolLang>)> {
+  if egraph.find(eq.lhs.id) == egraph.find(eq.rhs.id) {
+    // We have shown that LHS == RHS
+    Some((ProofType::Refl,
+        egraph
+        .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
+    ))
+  } else {
+    // Check if this case in unreachable (i.e. if there are any inconsistent
+    // e-classes in the e-graph)
+
+    // TODO: Right now we only look for contradictions using the canonical
+    // form analysis. We currently don't generate contradictions from the
+    // cvec analysis, but we should be able to. However, even if we find
+    // a cvec contradiction, it isn't as easy to use in our proof.
+    //
+    // If we find a contradiction from the cvecs, we need to first find which
+    // enodes the cvecs came from, then we need to explain why those nodes are
+    // equal, then we need to provide the concrete values that cause them to
+    // be unequal. This will probably require us to update the Cvec analysis
+    // to track enodes, which is a little unfortunate.
+    let inconsistent_exprs = egraph.classes().find_map(|eclass| {
+      if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data.canonical_form_data {
+        // println!("Proof by contradiction {} != {}", n1, n2);
+
+        // FIXME: these nodes might have been removed, we'll need to be
+        // careful about how we generate this proof. Perhaps we can generate
+        // the proof when we discover the contradiction, since we hopefully
+        // will not have finished removing the e-node at this point.
+
+        // This is here only for the purpose of proof generation:
+        let extractor = Extractor::new(&egraph, AstSize);
+        let expr1 = extract_with_node(n1, &extractor);
+        let expr2 = extract_with_node(n2, &extractor);
+        if CONFIG.verbose {
+          println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
+        }
+        Some((expr1, expr2))
+      } else {
+        None
+      }
+    });
+    inconsistent_exprs.map(|(expr1, expr2)| {
+      let explanation = egraph.explain_equivalence(&expr1, &expr2);
+      (ProofType::Contradiction, explanation)
+    })
+  }
+
+}
+
+
 /// Top-level interface to the theorem prover.
 pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_name: String, lemma_number: usize) -> (Outcome, ProofState) {
   // let goal_name = goal.name.clone();
@@ -2075,11 +2083,11 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
     if CONFIG.save_graphs {
       goal.save_egraph();
     }
-    let is_valid = goal.check_validity();
-    if is_valid {
+    if let Some((proof_type, explanation)) = goal.find_proof() {
       // println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
-      state.process_goal_explanation(goal);
+      state.process_goal_explanation(proof_type, explanation, goal);
       continue;
+
     }
     if CONFIG.verbose {
       explain_goal_failure(&goal);
@@ -2167,9 +2175,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
       if depth > state.case_split_depth {
         // println!("depth {} is greater than current depth, increasing.", depth);
         state.case_split_depth = depth;
-        let is_valid = state.try_prove_lemmas(&mut goal);
-        if is_valid || goal.explanation.is_some() {
-          state.process_goal_explanation(goal);
+        if let Some((proof_type, explanation)) = state.try_prove_lemmas(&mut goal) {
+          state.process_goal_explanation(proof_type, explanation, goal);
           continue;
         }
       }
@@ -2197,9 +2204,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
         }
       }
       if goal.scrutinees.iter().any(|(_, depth)| *depth >= CONFIG.max_split_depth) {
-        let is_valid = state.try_prove_lemmas(&mut goal);
-        if is_valid || goal.explanation.is_some() {
-          state.process_goal_explanation(goal);
+        if let Some((proof_type, explanation)) = state.try_prove_lemmas(&mut goal) {
+          state.process_goal_explanation(proof_type, explanation, goal);
           continue;
         }
         // println!("Failed to prove case {}, trying CC lemmas", goal.name);

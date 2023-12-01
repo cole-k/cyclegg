@@ -143,9 +143,16 @@ pub struct CvecAnalysis {
   /// This is necessary to avoid infinitely looping when we rebuild the e-graph
   /// analysis for cycles. We will update analyses that have older timestamps, but
   /// break the loop when we try to merge analyses with the same timestamp.
-  pub timestamp: usize,
+  pub current_timestamp: usize,
   // TODO: Add hashmap from Cvec to Id that we can use to efficiently find
   // candidate equalities.
+
+  // FIXME: it's an implementation detail that we don't thread the global environment
+  // and contex through to the CvecAnalysis. It's worth doing that so we can make
+  // cvecs variables when they are merged in instead of making their value Stuck until
+  // we can set them manually.
+  //
+  // This will probably allow us to remove the timestamp (almost) entirely
 }
 
 impl Default for CvecAnalysis {
@@ -158,7 +165,7 @@ impl Default for CvecAnalysis {
       num_rolls: CONFIG.cvec_num_rolls,
       num_random_terms_per_type: CONFIG.cvec_num_random_terms_per_type,
       reductions: vec!(),
-      timestamp: 0,
+      current_timestamp: 0,
     }
   }
 }
@@ -174,7 +181,7 @@ impl CvecAnalysis {
       num_rolls: max_tries_to_make_distinct_term,
       num_random_terms_per_type,
       reductions,
-      timestamp: 0,
+      current_timestamp: 0,
     }
   }
 
@@ -334,7 +341,7 @@ impl Cvec {
 
   fn make(egraph: &EGraph<SymbolLang, CycleggAnalysis>, enode: &SymbolLang) -> (Self, usize) {
     // println!("making cvec for enode: {}", enode);
-    let mut max_child_timestamp = egraph.analysis.cvec_analysis.timestamp;
+    let mut max_child_timestamp = egraph.analysis.cvec_analysis.current_timestamp;
     if enode.is_leaf() {
       // We can't evaluate vars (we need outside input, i.e. type information to create them)
       // This could be resolved by having a type information analysis.
@@ -362,7 +369,7 @@ impl Cvec {
         // If it's stuck, then propagate that it's stuck
         // NOTE: we don't update the timestamp because we don't use its children from which it would've
         // gotten a fresher timestamp
-        None => return (Cvec::Stuck, egraph.analysis.cvec_analysis.timestamp),
+        None => return (Cvec::Stuck, egraph.analysis.cvec_analysis.current_timestamp),
         Some(cvec_children) => {
           let new_enode = SymbolLang::new(op, cvec_children);
           let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(new_enode);
