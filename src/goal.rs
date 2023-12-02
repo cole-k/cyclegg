@@ -535,12 +535,11 @@ impl<'a> Goal<'a> {
     self.egraph.rebuild();
   }
 
-  pub fn cvecs_valid(&mut self) -> bool {
+  pub fn cvecs_valid(&mut self) -> Option<bool> {
     self.egraph.analysis.cvec_analysis.saturate();
     let lhs_cvec = &self.egraph[self.eq.lhs.id].data.cvec_data;
     let rhs_cvec = &self.egraph[self.eq.rhs.id].data.cvec_data;
-    let res = cvecs_equal(&self.egraph.analysis.cvec_analysis, lhs_cvec, rhs_cvec);
-    res == Some(true)
+    cvecs_equal(&self.egraph.analysis.cvec_analysis, lhs_cvec, rhs_cvec)
   }
 
   // FIXME: Can we figure out if it's possible to implement clone in a reasonable way?
@@ -1530,7 +1529,7 @@ impl<'a> Goal<'a> {
     // let gen_exp = orig_extractor.find_best(class).1;
     // let lhs_exp = extractor.find_best(new_goal.eq.lhs.id).1;
     // let rhs_exp = extractor.find_best(new_goal.eq.rhs.id).1;
-    if new_goal.cvecs_valid() {
+    if new_goal.cvecs_valid() == Some(true) {
       // println!("generalizing {} === {}", lhs_expr, rhs_expr);
       Some((Prop::new(eq, params), new_goal))
     } else {
@@ -1715,13 +1714,13 @@ impl<'a> ProofState<'a> {
                                  &None,
                                  goal.global_search_state,
         );
-        let try1 = new_goal.cvecs_valid();
+        let try1 = new_goal.cvecs_valid() == Some(true);
         let mut new_goal_2 = Goal::top(&goal_name,
                                  &lemma_prop,
                                  &None,
                                  goal.global_search_state,
         );
-        let try2 = new_goal_2.cvecs_valid();
+        let try2 = new_goal_2.cvecs_valid() == Some(true);
         if try1 && !try2 {
           // println!("Second try helped");
           // println!("Invalidated lemma {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
@@ -1931,52 +1930,61 @@ pub fn explain_goal_failure(goal: &Goal) {
 }
 
 fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<(ProofType, Explanation<SymbolLang>)> {
-  if egraph.find(eq.lhs.id) == egraph.find(eq.rhs.id) {
-    // We have shown that LHS == RHS
-    Some((ProofType::Refl,
+  let resolved_lhs_id = egraph.find(eq.lhs.id);
+  let resolved_rhs_id = egraph.find(eq.rhs.id);
+  // Have we proven LHS == RHS?
+  if resolved_lhs_id == resolved_rhs_id {
+    return Some((ProofType::Refl,
         egraph
         .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
-    ))
-  } else {
-    // Check if this case in unreachable (i.e. if there are any inconsistent
-    // e-classes in the e-graph)
-
-    // TODO: Right now we only look for contradictions using the canonical
-    // form analysis. We currently don't generate contradictions from the
-    // cvec analysis, but we should be able to. However, even if we find
-    // a cvec contradiction, it isn't as easy to use in our proof.
-    //
-    // If we find a contradiction from the cvecs, we need to first find which
-    // enodes the cvecs came from, then we need to explain why those nodes are
-    // equal, then we need to provide the concrete values that cause them to
-    // be unequal. This will probably require us to update the Cvec analysis
-    // to track enodes, which is a little unfortunate.
-    let inconsistent_exprs = egraph.classes().find_map(|eclass| {
-      if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data.canonical_form_data {
-        // println!("Proof by contradiction {} != {}", n1, n2);
-
-        // FIXME: these nodes might have been removed, we'll need to be
-        // careful about how we generate this proof. Perhaps we can generate
-        // the proof when we discover the contradiction, since we hopefully
-        // will not have finished removing the e-node at this point.
-
-        // This is here only for the purpose of proof generation:
-        let extractor = Extractor::new(&egraph, AstSize);
-        let expr1 = extract_with_node(n1, &extractor);
-        let expr2 = extract_with_node(n2, &extractor);
-        if CONFIG.verbose {
-          println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
-        }
-        Some((expr1, expr2))
-      } else {
-        None
-      }
-    });
-    inconsistent_exprs.map(|(expr1, expr2)| {
-      let explanation = egraph.explain_equivalence(&expr1, &expr2);
-      (ProofType::Contradiction, explanation)
-    })
+    ));
   }
+
+  match (&egraph[resolved_lhs_id].data.canonical_form_data, &egraph[resolved_rhs_id].data.canonical_form_data) {
+    (CanonicalForm::Const(c1), CanonicalForm::Const(c2)) if c1 != c2 => {
+      println!("TODO: Emit proof of differing constructor contradiction")
+    }
+    _ => {}
+  }
+
+  // Check if this case in unreachable (i.e. if there are any inconsistent
+  // e-classes in the e-graph)
+
+  // TODO: Right now we only look for contradictions using the canonical
+  // form analysis. We currently don't generate contradictions from the
+  // cvec analysis, but we should be able to. However, even if we find
+  // a cvec contradiction, it isn't as easy to use in our proof.
+  //
+  // If we find a contradiction from the cvecs, we need to first find which
+  // enodes the cvecs came from, then we need to explain why those nodes are
+  // equal, then we need to provide the concrete values that cause them to
+  // be unequal. This will probably require us to update the Cvec analysis
+  // to track enodes, which is a little unfortunate.
+  let inconsistent_exprs = egraph.classes().find_map(|eclass| {
+    if let CanonicalForm::Inconsistent(n1, n2) = &eclass.data.canonical_form_data {
+      // println!("Proof by contradiction {} != {}", n1, n2);
+
+      // FIXME: these nodes might have been removed, we'll need to be
+      // careful about how we generate this proof. Perhaps we can generate
+      // the proof when we discover the contradiction, since we hopefully
+      // will not have finished removing the e-node at this point.
+
+      // This is here only for the purpose of proof generation:
+      let extractor = Extractor::new(&egraph, AstSize);
+      let expr1 = extract_with_node(n1, &extractor);
+      let expr2 = extract_with_node(n2, &extractor);
+      if CONFIG.verbose {
+        println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
+      }
+      Some((expr1, expr2))
+    } else {
+      None
+    }
+  });
+  inconsistent_exprs.map(|(expr1, expr2)| {
+    let explanation = egraph.explain_equivalence(&expr1, &expr2);
+    (ProofType::Contradiction, explanation)
+  })
 
 }
 
@@ -2018,6 +2026,14 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
     warn!("PROOF STATE: {}", pretty_state(&state));
     // Pop the first subgoal
     goal = state.goals.pop_front().unwrap();
+    // FIXME: need to run the analysis properly here
+    // if goal.cvecs_valid() == Some(false) {
+    //   // FIXME: add cvec counterexample to proof
+    //   if CONFIG.verbose {
+    //     println!("proved goal via cvec counterexample");
+    //   }
+    //   continue;
+    // }
     // Saturate the goal
     goal.saturate(&state.lemmas_state.lemma_rewrites);
     if CONFIG.save_graphs {
