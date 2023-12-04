@@ -1,6 +1,5 @@
 use crate::ast::{Context, Env, Type, SSubst, resolve_sexp, Expr, is_constructor, is_var, mangle_name};
 use crate::config::CONFIG;
-use crate::egraph::extract_with_node;
 use egg::*;
 use itertools::{repeat_n, Itertools};
 use rand::{thread_rng, Rng};
@@ -520,12 +519,13 @@ impl CanonicalForm {
         .collect();
 
       for n2 in other_constructors {
-        // The extraction is only here for logging purposes
-        let extractor = Extractor::new(egraph, AstSize);
-        let expr1 = extract_with_node(&n1, &extractor);
-        let expr2 = extract_with_node(&n2, &extractor);
-        if CONFIG.verbose && expr1.to_string() != expr2.to_string() {
-          println!("INJECTIVITY {} = {}", expr1, expr2);
+        // We can't always extract because of destructive rewrites
+        // // The extraction is only here for logging purposes
+        // let extractor = Extractor::new(egraph, AstSize);
+        // let expr1 = extract_with_node(&n1, &extractor);
+        // let expr2 = extract_with_node(&n2, &extractor);
+        if CONFIG.verbose && n1 != n2 {
+          println!("INJECTIVITY {} = {}", n1, n2);
         }
         // Unify the parameters of the two constructors
         for (c1, c2) in n1.children.iter().zip(n2.children.iter()) {
@@ -535,7 +535,7 @@ impl CanonicalForm {
             egraph.union_trusted(
               c1,
               c2,
-              format!("constructor-injective {} = {}", expr1, expr2),
+              format!("constructor-injective {} = {}", n1, n2),
             );
           }
         }

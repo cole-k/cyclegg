@@ -433,6 +433,7 @@ impl<'a> GlobalSearchState<'a> {
 }
 
 /// Proof goal
+#[derive(Clone)]
 pub struct Goal<'a> {
   /// Goal name
   pub name: String,
@@ -462,9 +463,6 @@ pub struct Goal<'a> {
   pub eq: ETermEquation,
   /// If this is a conditional prop, the premises
   pub premises: Vec<ETermEquation>,
-  /// If the goal is discharged, how it was discharged and an explanation of the
-  /// proof
-  pub explanation: Option<(ProofType, Explanation<SymbolLang>)>,
   /// Stores the expression each guard variable maps to
   guard_exprs: HashMap<String, Expr>,
   /// The global search state.
@@ -492,7 +490,6 @@ impl<'a> Goal<'a> {
       var_classes: var_classes.clone(),
       grounding_instantiations: vec![var_classes.clone()],
       egraph,
-      explanation: None,
       lemmas: HashMap::new(),
       local_context: Context::new(),
       params: prop.params.iter().map(|(x, _)| *x).collect(),
@@ -542,29 +539,6 @@ impl<'a> Goal<'a> {
     cvecs_equal(&self.egraph.analysis.cvec_analysis, lhs_cvec, rhs_cvec)
   }
 
-  // FIXME: Can we figure out if it's possible to implement clone in a reasonable way?
-  // Maybe we shouldn't even have this function.
-  pub fn duplicate(&self) -> Self {
-    Goal {
-      name: self.name.clone(),
-      egraph: self.egraph.clone(),
-      // TODO: Verify if this is true
-      lemmas: HashMap::new(), // the lemmas will be re-generated immediately anyway
-      local_context: self.local_context.clone(),
-      var_classes: self.var_classes.clone(),
-      params: self.params.clone(),
-      case_split_vars: self.case_split_vars.clone(),
-      scrutinees: self.scrutinees.clone(),
-      grounding_instantiations: self.grounding_instantiations.clone(),
-      eq: self.eq.clone(),
-      premises: self.premises.clone(),
-      // If we reach this point, I think we won't have an explanation
-      explanation: None,
-      guard_exprs: self.guard_exprs.clone(),
-      global_search_state: self.global_search_state,
-    }
-  }
-
   /// Saturate the goal by applying all available rewrites
   pub fn saturate(&mut self, top_lemmas: &HashMap<String, Rw>) {
     let rewrites = self.global_search_state.reductions.iter().chain(self.lemmas.values()).chain(top_lemmas.values());
@@ -587,7 +561,7 @@ impl<'a> Goal<'a> {
 
   /// Look to see if we have proven the goal somehow. Note that this does not
   /// perform the actual proof search, it simply checks if the proof exists.
-  pub fn find_proof(&mut self) -> Option<(ProofType, Explanation<SymbolLang>)> {
+  pub fn find_proof(&mut self) -> Option<ProofLeaf> {
     find_proof(&self.eq, &mut self.egraph)
   }
 
@@ -886,7 +860,7 @@ impl<'a> Goal<'a> {
 
     // (we process constructors in reverse order so that base case ends up at the top of the stack)
     for &con in cons.iter().rev() {
-      let mut new_goal = self.duplicate();
+      let mut new_goal = self.clone();
       new_goal.case_split_vars.insert(scrutinee.name);
       new_goal.name = format!("{}:", self.name);
       new_goal.lemmas = new_lemmas.clone();
@@ -1603,18 +1577,31 @@ pub enum ProofTerm {
   ITESplit(String, String, Vec<(String, String)>),
 }
 
-pub enum ProofType {
+pub enum ProofLeaf {
   /// Constructive equality shown: LHS = RHS
-  Refl,
+  Refl(Explanation<SymbolLang>),
   /// Contradiction shown (e.g. True = False)
-  Contradiction,
+  Contradiction(Explanation<SymbolLang>),
+  /// Unimplemented proof type (will crash on proof emission)
+  Todo,
 }
 
-impl std::fmt::Display for ProofType {
+impl ProofLeaf {
+  fn name(&self) -> String {
+    match &self {
+      Self::Refl(_) => "Refl".to_string(),
+      Self::Contradiction(_) => "Contradiction".to_string(),
+      Self::Todo => "TODO".to_string(),
+    }
+  }
+}
+
+impl std::fmt::Display for ProofLeaf {
   fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-    match *self {
-      ProofType::Refl => write!(f, "Refl"),
-      ProofType::Contradiction => write!(f, "Contradiction"),
+    match self {
+      ProofLeaf::Refl(expl) => write!(f, "{}", expl.get_string()),
+      ProofLeaf::Contradiction(expl) => write!(f, "{}", expl.get_string()),
+      ProofLeaf::Todo => write!(f, "TODO: proof"),
     }
   }
 }
@@ -1653,7 +1640,7 @@ impl LemmasState {
 }
 
 pub struct ProofInfo {
-  pub solved_goal_explanation_and_context: HashMap<String, (ProofType, Explanation<SymbolLang>, Context)>,
+  pub solved_goal_proofs: HashMap<String, ProofLeaf>,
   pub proof: HashMap<String, ProofTerm>,
 }
 
@@ -1686,7 +1673,7 @@ impl<'a> ProofState<'a> {
   }
 
   /// Try to prove all of the lemmas we've collected so far.
-  pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> Option<(ProofType, Explanation<SymbolLang>)> {
+  pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> Option<ProofLeaf> {
     if self.proof_depth == CONFIG.proof_depth {
       return None;
     }
@@ -1873,16 +1860,16 @@ impl<'a> ProofState<'a> {
     }
   }
 
-  pub fn process_goal_explanation(&mut self, proof_type: ProofType, mut explanation: Explanation<SymbolLang>, goal: Goal) {
+  pub fn process_goal_explanation(&mut self, proof_leaf: ProofLeaf, goal: Goal) {
     // This goal has been discharged, proceed to the next goal
     if CONFIG.verbose {
-      println!("{} {} by {}", "Proved case".bright_blue(), goal.name, proof_type);
-      println!("{}", explanation.get_flat_string());
+      println!("{} {} by {}", "Proved case".bright_blue(), goal.name, proof_leaf.name());
+      println!("{}", proof_leaf);
     }
     self
       .proof_info
-      .solved_goal_explanation_and_context
-      .insert(goal.name, (proof_type, explanation, goal.local_context));
+      .solved_goal_proofs
+      .insert(goal.name, proof_leaf);
   }
 }
 
@@ -1929,20 +1916,20 @@ pub fn explain_goal_failure(goal: &Goal) {
   print_expressions_in_eclass(&goal.egraph, goal.eq.rhs.id);
 }
 
-fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<(ProofType, Explanation<SymbolLang>)> {
+fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
   let resolved_lhs_id = egraph.find(eq.lhs.id);
   let resolved_rhs_id = egraph.find(eq.rhs.id);
   // Have we proven LHS == RHS?
   if resolved_lhs_id == resolved_rhs_id {
-    return Some((ProofType::Refl,
-        egraph
+    return Some(ProofLeaf::Refl(
+      egraph
         .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
     ));
   }
 
   match (&egraph[resolved_lhs_id].data.canonical_form_data, &egraph[resolved_rhs_id].data.canonical_form_data) {
     (CanonicalForm::Const(c1), CanonicalForm::Const(c2)) if c1 != c2 => {
-      println!("TODO: Emit proof of differing constructor contradiction")
+      return Some(ProofLeaf::Todo);
     }
     _ => {}
   }
@@ -1968,22 +1955,26 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<(ProofType, Explana
       // careful about how we generate this proof. Perhaps we can generate
       // the proof when we discover the contradiction, since we hopefully
       // will not have finished removing the e-node at this point.
-
-      // This is here only for the purpose of proof generation:
-      let extractor = Extractor::new(&egraph, AstSize);
-      let expr1 = extract_with_node(n1, &extractor);
-      let expr2 = extract_with_node(n2, &extractor);
-      if CONFIG.verbose {
-        println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
+      if egraph.lookup(n1.clone()).is_none() || egraph.lookup(n2.clone()).is_none() {
+        println!("One of {} or {} was removed from the e-graph! We can't emit a proof", n1, n2);
+        None
+      } else {
+        // This is here only for the purpose of proof generation:
+        let extractor = Extractor::new(&egraph, AstSize);
+        let expr1 = extract_with_node(n1, &extractor);
+        let expr2 = extract_with_node(n2, &extractor);
+        if CONFIG.verbose {
+          println!("{}: {} = {}", "UNREACHABLE".bright_red(), expr1, expr2);
+        }
+        Some((expr1, expr2))
       }
-      Some((expr1, expr2))
     } else {
       None
     }
   });
   inconsistent_exprs.map(|(expr1, expr2)| {
     let explanation = egraph.explain_equivalence(&expr1, &expr2);
-    (ProofType::Contradiction, explanation)
+    ProofLeaf::Contradiction(explanation)
   })
 
 }
@@ -1999,7 +1990,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
   let mut state = ProofState {
     goals: vec![goal].into(),
     proof_info: ProofInfo {
-      solved_goal_explanation_and_context: HashMap::default(),
+      solved_goal_proofs: HashMap::default(),
       proof: HashMap::default(),
     },
     start_time: Instant::now(),
@@ -2039,9 +2030,9 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
     if CONFIG.save_graphs {
       goal.save_egraph();
     }
-    if let Some((proof_type, explanation)) = goal.find_proof() {
+    if let Some(proof_leaf) = goal.find_proof() {
       // println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
-      state.process_goal_explanation(proof_type, explanation, goal);
+      state.process_goal_explanation(proof_leaf, goal);
       continue;
 
     }
@@ -2117,8 +2108,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
       if scrutinee.depth > state.case_split_depth {
         // println!("depth {} is greater than current depth, increasing.", depth);
         state.case_split_depth = depth;
-        if let Some((proof_type, explanation)) = state.try_prove_lemmas(&mut goal) {
-          state.process_goal_explanation(proof_type, explanation, goal);
+        if let Some(proof_leaf) = state.try_prove_lemmas(&mut goal) {
+          state.process_goal_explanation(proof_leaf, goal);
           continue;
         }
       }
@@ -2146,8 +2137,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
         }
       }
       if goal.scrutinees.iter().any(|s| s.depth >= CONFIG.max_split_depth) {
-        if let Some((proof_type, explanation)) = state.try_prove_lemmas(&mut goal) {
-          state.process_goal_explanation(proof_type, explanation, goal);
+        if let Some(proof_leaf) = state.try_prove_lemmas(&mut goal) {
+          state.process_goal_explanation(proof_leaf, goal);
           continue;
         }
 

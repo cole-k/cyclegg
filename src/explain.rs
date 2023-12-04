@@ -6,7 +6,7 @@ use symbolic_expressions::Sexp;
 
 use crate::ast::{map_sexp, Context, Defns, Env, Type, find_instantiations};
 use crate::config::CONFIG;
-use crate::goal::{ETermEquation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, ProofInfo, ProofType, GlobalSearchState};
+use crate::goal::{ETermEquation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, ProofInfo, ProofLeaf, GlobalSearchState};
 
 /// Constants from (Liquid)Haskell
 const EQUALS: &str = "=";
@@ -420,25 +420,11 @@ fn explain_proof(
 ) -> String {
   // If it's not in the proof tree, it must be a leaf.
   if !proof_info.proof.contains_key(goal) {
-    match proof_info.solved_goal_explanation_and_context.get_mut(goal) {
-      Some((proof_type, expl, _ctx)) => {
+    match proof_info.solved_goal_proofs.get_mut(goal) {
+      Some(proof_leaf) => {
         // We have a proper explanation
-        let expl_depth = match proof_type {
-          // We will call `unreachable` on this, so its depth needs to be deeper
-          ProofType::Contradiction => depth + 1,
-          // We will use this proof on its own.
-          ProofType::Refl => depth,
-        };
-        let proof = explain_goal(
-          expl_depth,
-          expl,
-          top_goal_name,
-          lemma_map,
-        );
-        return
-          match proof_type {
-            ProofType::Refl => proof,
-            ProofType::Contradiction => {
+        return match proof_leaf {
+          ProofLeaf::Contradiction(expl) => {
               let mut str_explanation = String::new();
               add_indentation(&mut str_explanation, depth);
               str_explanation.push_str(UNREACHABLE);
@@ -446,6 +432,14 @@ fn explain_proof(
               str_explanation.push(' ');
               str_explanation.push('(');
               str_explanation.push('\n');
+              let proof = explain_goal(
+                // Increase depth of the proof because we want `unreachable` to
+                // be at a lower depth.
+                depth + 1,
+                expl,
+                top_goal_name,
+                lemma_map,
+              );
               // Add the proof itself
               str_explanation.push_str(&proof);
               // Close the paren
@@ -454,8 +448,14 @@ fn explain_proof(
               str_explanation.push('\n');
               str_explanation.push('\n');
               str_explanation
-            }
-        }
+          }
+          ProofLeaf::Refl(expl) => {
+            // Just use this proof on its own.
+            explain_goal(depth, expl, top_goal_name, lemma_map)
+          }
+          // It doesn't matter what we do here
+          ProofLeaf::Todo => todo!("Proof not implemented for proof of {}", goal),
+        };
       }
       None => unreachable!("Missing proof explanation for {}", goal),
     }
