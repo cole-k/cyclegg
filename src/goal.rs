@@ -1243,6 +1243,10 @@ impl<'a> Goal<'a> {
     self.grounding_instantiations.extend(new_instantiations);
   }
 
+  /// Search for cc (concrete correspondence) lemmas.
+  ///
+  /// These are lemmas we propose from subterms in the e-graph that our concrete
+  /// analysis deems equal on some set of random terms.
   fn search_for_cc_lemmas(&mut self, state: &mut ProofState) -> Vec<Prop> {
     let mut lemmas = vec!();
     self.egraph.analysis.cvec_analysis.saturate();
@@ -1287,6 +1291,19 @@ impl<'a> Goal<'a> {
                 }
               }).sum();
               // There is a simpler CC lemma to prove.
+              //
+              // Consider for example the case when the canonical forms are
+              //   c1: (S (plus x x))
+              //   c2: (S (double x))
+              // In this case, the number of differing children is only 1.
+              // The differing children are
+              //   (plus x x) and (double x)
+              // However, we can be sure that if the cvec analysis deemed c1 and
+              // c2 equal, then it will deem these two differing children equal.
+              //
+              // Thus we won't waste our time trying to prove c1 == c2 when
+              // we could instead prove (plus x x) == (double x), which implies
+              // by congruence that c1 == c2.
               if num_differing_children <= 1 {
                 continue;
               }
@@ -1319,6 +1336,7 @@ impl<'a> Goal<'a> {
     lemmas
   }
 
+  /// Used for debugging.
   fn _print_lhs_rhs(&self) {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
@@ -1343,6 +1361,8 @@ impl<'a> Goal<'a> {
 
   }
 
+  /// Poorly-named helper function for extract_generalized_expr. See that
+  /// function for how it works.
   fn compute_parents(&self, class: Id, parents_map: &mut HashMap<Id, HashSet<(Id, usize)>>, seen: &mut HashSet<Id>) {
     if seen.contains(&class) {
       return;
@@ -1358,6 +1378,8 @@ impl<'a> Goal<'a> {
     }
   }
 
+  /// Poorly-named helper function for extract_generalized_expr. See that
+  /// function for how it works.
   fn all_parents(&self, start_class: Id, child_to_parent: &HashMap<Id, HashSet<(Id, usize)>>, parent_to_child_index: &mut HashMap<Id, usize>, seen: &mut HashSet<Id>) {
     if seen.contains(&start_class) {
       return;
@@ -1373,10 +1395,17 @@ impl<'a> Goal<'a> {
   }
 
   fn extract_generalized_expr_helper(&self, gen_class: Id, gen_fresh_sym: Symbol, extract_class: Id, parent_to_child_index: &HashMap<Id, usize>, cache: &mut HashMap<Id, Option<Expr>>) -> Expr {
+    // We handle cycles by using a cache. The cache contains an Option.
     match cache.get(&extract_class) {
+      // If the Option is Some, that means we have successfully computed a value
+      // and can reuse it.
       Some(Some(expr)) => {
         return expr.clone();
       }
+      // If the Option is None, that means we have followed a cycle to this
+      // class. If we contined trying to extract normally, we would infinitely
+      // loop. So instead, we give up and ask it to do a regular extraction
+      // using AstSize.
       Some(None) => {
         let extractor = Extractor::new(&self.egraph, AstSize);
         let expr = extractor.find_best(extract_class).1;
@@ -1385,16 +1414,20 @@ impl<'a> Goal<'a> {
       }
       _ => {}
     }
-    if gen_class == extract_class {
-      return vec!(SymbolLang::leaf(gen_fresh_sym)).into();
-    }
 
+    // If this class can lead us to gen_class, it will be in
+    // the parent_to_child_index map.
     parent_to_child_index.get(&extract_class).map(|node_index|{
+      // Get the node we need to follow.
       let node = &self.egraph[extract_class].nodes[*node_index];
+      // Record that we have seen this class once so that we don't infinitely loop.
       cache.insert(extract_class, None);
+      // Extract an expression for it.
       let expr = node.join_recexprs(|child_class| self.extract_generalized_expr_helper(gen_class, gen_fresh_sym, child_class, parent_to_child_index, cache));
       cache.insert(extract_class, Some(expr.clone()));
       expr
+    // If this class can't lead us to gen_class, we don't care
+    // about it and we can just extract whatever.
     }).unwrap_or_else(||{
       let extractor = Extractor::new(&self.egraph, AstSize);
       let expr = extractor.find_best(extract_class).1;
@@ -1403,21 +1436,34 @@ impl<'a> Goal<'a> {
     })
   }
 
+  /// Extracts an expr from extract_class where all occurrences of gen_class are
+  /// replaced by gen_fresh_sym. gen_class is assumed to be contained in the
+  /// egraph rooted at extract_class.
+  // NOTE (CK): This probably can be more effectively accomplished by using a
+  // custom extractor that prioritizes the class we want to generalize - but we
+  // would then need to figure out what parts of the returned expression
+  // correspond to that class so we can generalize them.
   fn extract_generalized_expr(&self, gen_class: Id, gen_fresh_sym: Symbol, extract_class: Id) -> Expr {
     // println!("extracting generalized expr ({}) for {}", gen_class, extract_class);
     let mut parent_map = HashMap::default();
     let mut parents = HashSet::default();
+    // Compute a map from each eclass to its parent enodes in the egraph rooted
+    // at extract_class.
     self.compute_parents(extract_class, &mut parent_map, &mut parents);
     // println!("parent map: {:?}", parent_map);
     let mut parent_to_child_index = HashMap::default();
+
+    // Computes a map from parent eclass to the index of the enode that will
+    // lead the parent to gen_class. If there are multiple indices, one (I
+    // believe the largest) is chosen arbitrarily.
     self.all_parents(gen_class, &parent_map, &mut parent_to_child_index, &mut HashSet::default());
     // println!("parent to child index: {:?}", parent_to_child_index);
     let mut cache = HashMap::default();
     cache.insert(gen_class, Some(vec!(SymbolLang::leaf(gen_fresh_sym)).into()));
-    // FIXME: skip extraction if gen_class can't reach both the LHS and RHS. I
-    // think it's fine to keep it as is for now because the generalized lemma
-    // will just be the LHS = RHS and it will probably be rejected by our lemma
-    // set since we seed it with LHS = RHS.
+    // FIXME: skip extraction if gen_class isn't contained in either the LHS and
+    // RHS. I think it's fine to keep it as is for now because the generalized
+    // lemma will just be the LHS = RHS and it will probably be rejected by our
+    // lemma set since we seed it with LHS = RHS.
     self.extract_generalized_expr_helper(gen_class, gen_fresh_sym, extract_class, &parent_to_child_index, &mut cache)
   }
 
@@ -1460,28 +1506,6 @@ impl<'a> Goal<'a> {
                              &None,
                              self.global_search_state,
     );
-    // // Add the node as a scrutinee and note its type.
-    // new_goal.local_context.insert(fresh_symb, class_ty.clone());
-    // new_goal.scrutinees.push_front(fresh_symb);
-    // // Add the new variable and clear the other nodes in the eclass so that we
-    // // don't do anything unsound.
-    // new_goal.egraph[class].nodes = vec!(SymbolLang::leaf(fresh_symb));
-    // // Create the cvec for the new var
-    // let var_cvec = new_goal.egraph.analysis.cvec_analysis.make_cvec_for_type(&class_ty, new_goal.env, &new_goal.global_context);
-    // let mut analysis = new_goal.egraph[class].data.clone();
-    // // println!("var_cvec: {:?}", var_cvec);
-    // analysis.cvec_data = var_cvec;
-    // new_goal.egraph.set_analysis_data(class, analysis);
-    // new_goal.egraph.rebuild();
-    // new_goal.saturate_cvecs();
-    // let new_goal_lhs_cvec = &new_goal.egraph[new_goal.eq.lhs.id].data.cvec_data;
-    // let new_goal_rhs_cvec = &new_goal.egraph[new_goal.eq.rhs.id].data.cvec_data;
-    // // println!("lhs_cvecs: {:?}, rhs_cvecs: {:?}", new_goal_lhs_cvec, new_goal_rhs_cvec);
-    // let orig_extractor = Extractor::new(&self.egraph, AstSize);
-    // let extractor = Extractor::new(&new_goal.egraph, AstSize);
-    // let gen_exp = orig_extractor.find_best(class).1;
-    // let lhs_exp = extractor.find_best(new_goal.eq.lhs.id).1;
-    // let rhs_exp = extractor.find_best(new_goal.eq.rhs.id).1;
     if new_goal.cvecs_valid() == Some(true) {
       // println!("generalizing {} === {}", lhs_expr, rhs_expr);
       Some((Prop::new(eq, params), new_goal))
@@ -1492,6 +1516,8 @@ impl<'a> Goal<'a> {
     }
   }
 
+  /// Return generalizations of the current goal found by generalizing a
+  /// blocking_expr.
   fn find_generalized_goals(&self, blocking_exprs: &HashSet<Id>) -> Vec<Prop> {
     blocking_exprs.iter().flat_map(|blocking_expr| {
       self.make_generalized_goal(*blocking_expr).map(|(generalized_prop, _new_goal)|{
