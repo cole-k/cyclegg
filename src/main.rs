@@ -152,7 +152,7 @@ fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
         &goal.name,
         &mut proof_state,
         &goal.eq,
-        &goal.params,
+        &goal.top_level_params,
         &goal.local_context,
         goal.global_search_state,
       );

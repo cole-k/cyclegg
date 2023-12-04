@@ -451,7 +451,7 @@ pub struct Goal<'a> {
   /// (note this includes both current and old variables, which have been case-split away)
   pub var_classes: IdSubst,
   /// The top-level parameters to the goal
-  pub params: Vec<Symbol>,
+  pub top_level_params: Vec<Symbol>,
   /// Variables we can case-split
   /// (i.e. the subset of local_context that have datatype types)
   scrutinees: VecDeque<Scrutinee>,
@@ -492,7 +492,7 @@ impl<'a> Goal<'a> {
       egraph,
       lemmas: HashMap::new(),
       local_context: Context::new(),
-      params: prop.params.iter().map(|(x, _)| *x).collect(),
+      top_level_params: prop.params.iter().map(|(x, _)| *x).collect(),
       case_split_vars: HashSet::new(),
       guard_exprs: HashMap::new(),
       scrutinees: VecDeque::new(),
@@ -514,22 +514,40 @@ impl<'a> Goal<'a> {
 
   /// Construct cvecs for the goal's parameters. We need type information in order
   /// to construct these, so they cannot be created automatically.
+  // FIXME: This currently does not work for any goal other than the top-level goal.
   fn build_cvecs(&mut self) {
     // Update the timestamp so that we ensure the new cvecs are applied.
     self.egraph.analysis.cvec_analysis.current_timestamp += 1;
-    for name in self.params.iter() {
-      let ty = &self.local_context[name];
-      if !ty.is_arrow() {
-        let var_id = self.var_classes[name];
-        let var_cvec = self.egraph.analysis.cvec_analysis.make_cvec_for_type(&ty, self.global_search_state.env, &self.global_search_state.context);
-        let mut analysis = self.egraph[var_id].data.clone();
-        analysis.timestamp = self.egraph.analysis.cvec_analysis.current_timestamp;
-        analysis.cvec_data = var_cvec;
-        self.egraph.set_analysis_data(var_id, analysis);
-        // println!("var {} has id {}", name, var_id);
-      }
+    // Annoyingly, we need to collect these values before we iterate over them
+    // to avoid mutably borrowing self. I think it's worth it so that we can
+    // factor out the add_cvec_for_class function which is used elsewhere.
+    let var_tys: Vec<(Id, Type)> = self.top_level_params.iter().map(|param|{
+      let ty = self.local_context[param].clone();
+      let var_id = self.var_classes[param];
+      (var_id, ty)
+    }).collect();
+    for (var_id, ty) in var_tys {
+      self.add_cvec_for_class(var_id, &ty);
     }
     self.egraph.rebuild();
+  }
+
+  /// Constructs a cvec for the class at id with type ty.
+  ///
+  /// It's important to update the current timestamp before calling this function.
+  ///
+  /// Returns whether it made a cvec (we don't make cvecs for arrow types
+  /// because we don't know how to make arbitrary functions).
+  fn add_cvec_for_class(&mut self, id: Id, ty: &Type) -> bool {
+    if ty.is_arrow() {
+      return false;
+    }
+    let cvec = self.egraph.analysis.cvec_analysis.make_cvec_for_type(&ty, self.global_search_state.env, &self.global_search_state.context);
+    let mut analysis = self.egraph[id].data.clone();
+    analysis.timestamp = self.egraph.analysis.cvec_analysis.current_timestamp;
+    analysis.cvec_data = cvec;
+    self.egraph.set_analysis_data(id, analysis);
+    true
   }
 
   pub fn cvecs_valid(&mut self) -> Option<bool> {
@@ -858,19 +876,26 @@ impl<'a> Goal<'a> {
     // We will add this to state.proof to describe the case split.
     let mut instantiated_cons_and_goals: Vec<(String, String)> = vec![];
 
-    // (we process constructors in reverse order so that base case ends up at the top of the stack)
+    // Create a new goal for each constructor we can case split to and add it to
+    // the proof state.
+    //
+    // (We process constructors in reverse order so that base case ends up at
+    // the top of the stack - this is due to how we typically define the orders
+    // for our datatypes in our definitions files. It's not a very principled
+    // iteration order)
     for &con in cons.iter().rev() {
       let mut new_goal = self.clone();
       new_goal.case_split_vars.insert(scrutinee.name);
-      new_goal.name = format!("{}:", self.name);
       new_goal.lemmas = new_lemmas.clone();
 
-      // Get the types of constructor arguments
-      let con_ty = self.global_search_state.context.get(&con).unwrap();
-      let con_args = Goal::instantiate_constructor(con_ty, ty);
-      // For each argument: create a fresh variable and add it to the context and to scrutinees
+      // Get the arguments of the constructor.
+      let con_args = self.instantiate_constructor(&con, ty);
+      // For each argument: we will create a fresh variable that we can use as a
+      // scrutinee.
       let mut fresh_vars = vec![];
 
+      // We will update the timestamp of the cvec analysis so that we enforce
+      // the update when we generate a cvec.
       new_goal.egraph.analysis.cvec_analysis.current_timestamp += 1;
 
       for (i, arg_type) in con_args.iter().enumerate() {
@@ -879,18 +904,14 @@ impl<'a> Goal<'a> {
         fresh_vars.push(fresh_var);
         // Add new variable to context
         new_goal.local_context.insert(fresh_var, arg_type.clone());
+        // The depth of a scrutinee tracks how many ancestors are between it and
+        // a top-level parameter, so we add 1 when we case split.
         new_goal.add_scrutinee(fresh_var, arg_type, scrutinee.depth + 1);
         let id = new_goal.egraph.add(SymbolLang::leaf(fresh_var));
+        // The class corresponding to this var is its class in the e-graph.
         new_goal.var_classes.insert(fresh_var, id);
-        // We can only generate a cvec for non-arrow types.
-        if !arg_type.is_arrow() {
-          // new_goal.egraph.analysis.cvec_analysis.timestamp += 1;
-          let fresh_var_cvec = new_goal.egraph.analysis.cvec_analysis.make_cvec_for_type(arg_type, self.global_search_state.env, &self.global_search_state.context);
-          let mut analysis = new_goal.egraph[id].data.clone();
-          analysis.timestamp = new_goal.egraph.analysis.cvec_analysis.current_timestamp;
-          analysis.cvec_data = fresh_var_cvec;
-          new_goal.egraph.set_analysis_data(id, analysis);
-        }
+        // Generate a cvec for the fresh_var.
+        new_goal.add_cvec_for_class(id, arg_type);
 
         if CONFIG.add_grounding && ty == arg_type {
           // This is a recursive constructor parameter:
@@ -912,15 +933,11 @@ impl<'a> Goal<'a> {
       let con_app: Expr = con_app_string.parse().unwrap();
 
       new_goal.name = format!("{}{}={}", new_goal.name, scrutinee.name, con_app);
-
+      // This is tracked for proof emission.
       instantiated_cons_and_goals.push((con_app_string, new_goal.name.clone()));
-      // new_goal.egraph.analysis.cvec_analysis.timestamp += 1;
 
-      // let var_id = new_goal.egraph.lookup(var_node.clone()).unwrap();
-      // println!("egraph pre union: {:?}", new_goal.egraph.dump());
       // Add con_app to the new goal's egraph and union it with var
       new_goal.egraph.add_expr(&con_app);
-      // Not sure if it's proper to use new_goal.name here
       new_goal.egraph.union_instantiations(
         &var_pattern_ast,
         &rec_expr_to_pattern_ast(con_app.clone()),
@@ -929,29 +946,8 @@ impl<'a> Goal<'a> {
       );
       // Remove old variable from the egraph and context
       remove_node(&mut new_goal.egraph, &var_node);
-      // println!("id: {}", con_app_id);
-      // for node in new_goal.egraph[con_app_id].nodes.iter() {
-      //   println!("node: {:?}", node);
-      // }
-      // println!("egraph: {:?}", new_goal.egraph.dump());
-      // if count == 3 {
-      //   panic!();
-      // }
 
-      // new_goal.egraph.analysis.cvec_analysis.timestamp += 1;
       new_goal.egraph.rebuild();
-
-      // // After we instantiate the variable, its class's new cvec is just the instantiated value.
-      // let cvec_con_app_id = new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add_expr(&con_app);
-      // let mut analysis = new_goal.egraph[con_app_id].data.clone();
-      // analysis.cvec_data = Cvec::Stuck(cvec_con_app_id);
-      // new_goal.egraph.set_analysis_data(con_app_id, analysis);
-
-      // new_goal.egraph.rebuild();
-      // let cvec_var_id = new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow().lookup(var_node.clone()).unwrap();
-      // new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().union_trusted(cvec_var_id, cvec_con_app_id, "case split");
-      // new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().rebuild();
-      // remove_node(&mut new_goal.egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut(), &var_node);
 
       // In cyclic mode: add the guard to premises,
       if CONFIG.is_cyclic() && var_str.starts_with(GUARD_PREFIX) && self.guard_exprs.contains_key(&var_str) {
@@ -1006,8 +1002,7 @@ impl<'a> Goal<'a> {
       let sexp = symbolic_expressions::parser::parse_str(&x.to_string()).unwrap();
 
       // Hack to dedup the new patterns (sexps) we generated
-      let mut new_sexps: Vec<Sexp> = self
-        .analyze_sexp_for_blocking_vars(&sexp)
+      let mut new_sexps: Vec<Sexp> = Goal::analyze_sexp_for_blocking_vars(&sexp)
         .into_iter()
         .map(|x| x.to_string())
         .collect::<HashSet<_>>()
@@ -1017,7 +1012,7 @@ impl<'a> Goal<'a> {
 
       // the patterns we generated contained only ? instead of ?var, so we go and add fresh variable names everywhere
       for ns in new_sexps.iter_mut() {
-        *ns = self.gen_fresh_vars(ns.clone(), 1);
+        *ns = Goal::gen_fresh_vars(ns.clone(), 1);
       }
 
       // use these patterns to search over the egraph
@@ -1106,23 +1101,16 @@ impl<'a> Goal<'a> {
     self.scrutinees.remove(var_idx)
   }
 
-  fn sexp_is_constructor(&self, sexp: &Sexp) -> bool {
+  // FIXME: factor this out somehow
+  // (it relies on the magic string "?" so I'm not sure how to)
+  fn gen_fresh_vars(sexp: Sexp, mut idx: i32) -> Sexp {
     match sexp {
-      Sexp::String(s) => is_constructor(s),
-      Sexp::List(v) => is_constructor(&v[0].string().unwrap()),
-      _ => false,
-    }
-  }
-
-  fn gen_fresh_vars(&self, sexp: Sexp, mut idx: i32) -> Sexp {
-    let qm = "?".to_string();
-    match sexp {
-      Sexp::String(s) if s == qm => Sexp::String(format!("?block_{}", idx)),
+      Sexp::String(s) if s == "?" => Sexp::String(format!("?block_{}", idx)),
       Sexp::List(v) => Sexp::List(
         v.iter()
           .map(|x| {
             idx = idx + 1;
-            self.gen_fresh_vars(x.clone(), idx + 1)
+            Goal::gen_fresh_vars(x.clone(), idx + 1)
           })
           .collect(),
       ),
@@ -1138,12 +1126,13 @@ impl<'a> Goal<'a> {
   ///   3. `foo ?fresh1 (Cons ?fresh2 ?xs)`
   ///   4. `foo Z ?fresh2`
   ///   5. `foo Z (Cons ?fresh1 ?xs)`
-  fn analyze_sexp_for_blocking_vars(&self, sexp: &Sexp) -> Vec<Sexp> {
+  // FIXME: factor this out somehow
+  fn analyze_sexp_for_blocking_vars(sexp: &Sexp) -> Vec<Sexp> {
     let mut new_exps: Vec<Sexp> = vec![];
     new_exps.push(sexp.clone());
 
     // If this sexp is a constructor application, replace it by ?
-    if self.sexp_is_constructor(sexp) {
+    if sexp_is_constructor(sexp) {
       // for now, just indicate by "?" each position where we could have a blocking var, and later go and replace them with fresh vars
       let fresh_var_indicator = "?";
       new_exps.push(Sexp::String(fresh_var_indicator.to_string()));
@@ -1155,7 +1144,7 @@ impl<'a> Goal<'a> {
         let head = &v[0];
         let mut all_replacements: Vec<Vec<Sexp>> = vec![];
         for (_, sub_arg) in v[1..].iter().enumerate() {
-          all_replacements.push(self.analyze_sexp_for_blocking_vars(sub_arg));
+          all_replacements.push(Goal::analyze_sexp_for_blocking_vars(sub_arg));
         }
         // get all possible subsets of the replacements (i.e. every subset of constructor applications replaced by fresh pattern vars)
         let all_combinations = cartesian_product(&all_replacements);
@@ -1185,9 +1174,10 @@ impl<'a> Goal<'a> {
       .unwrap();
   }
 
-  /// Given a polymorphic constructor type and a concrete instantiation of a datatype,
-  /// return the concrete types of constructor arguments.
-  fn instantiate_constructor(con_ty: &Type, actual: &Type) -> Vec<Type> {
+  /// Given a polymorphic constructor and a concrete instantiation of a
+  /// datatype, return the concrete types of the constructor's arguments.
+  fn instantiate_constructor(&self, con: &Symbol, actual: &Type) -> Vec<Type> {
+    let con_ty = self.global_search_state.context.get(con).unwrap();
     let (args, ret) = con_ty.args_ret();
     let instantiations = find_instantiations(&ret.repr, &actual.repr, is_var).unwrap();
     let ret = args
@@ -1212,7 +1202,7 @@ impl<'a> Goal<'a> {
     let mut new_instantiations = vec![];
     for inst in self.grounding_instantiations.iter() {
       let replaced_canonicals: Vec<(Symbol, ETerm, bool)> = self
-        .params
+        .top_level_params
         .iter()
         .map(|x| {
           // Which class was this param instantiated to?
@@ -1305,19 +1295,8 @@ impl<'a> Goal<'a> {
           }
           let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), state, false);
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
-          // let new_egraph = self.egraph.clone();
-          // let rewrites = self.reductions.iter().chain(new_rewrites.values());
-          // let mut runner = Runner::default()
-          //   .with_explanations_enabled()
-          //   .with_egraph(new_egraph)
-          //   .run(rewrites);
-          // let (explanation, valid) = Goal::get_explanation_and_validity(&self.eq, &mut runner.egraph);
-          // if explanation.is_none() {
-          //   continue;
-          // }
-          // if valid && explanation.is_none() {
-          //   println!("Skipping useful CC lemma {} = {} because no explanation came from its use", e1, e2);
-          // }
+          // We used to check the egraph to see if the lemma helped us, but now
+          // we just throw it into our list. We do that check in try_prove_lemmas.
           if new_rewrite_eqs.is_empty() {
             continue;
           }
@@ -1338,21 +1317,6 @@ impl<'a> Goal<'a> {
       }
     }
     lemmas
-  }
-
-  fn compute_parents(&self, class: Id, parents_map: &mut HashMap<Id, HashSet<(Id, usize)>>, seen: &mut HashSet<Id>) {
-    if seen.contains(&class) {
-      return;
-    }
-    seen.insert(class);
-    for (i, node) in self.egraph[class].nodes.iter().enumerate() {
-      for child in node.children() {
-        parents_map.entry(*child)
-                   .and_modify(|e| {e.insert((class, i));})
-                   .or_insert(vec!((class, i)).into_iter().collect());
-        self.compute_parents(*child, parents_map, seen);
-      }
-    }
   }
 
   fn _print_lhs_rhs(&self) {
@@ -1377,6 +1341,21 @@ impl<'a> Goal<'a> {
       println!("{}", rhs_expr);
     }
 
+  }
+
+  fn compute_parents(&self, class: Id, parents_map: &mut HashMap<Id, HashSet<(Id, usize)>>, seen: &mut HashSet<Id>) {
+    if seen.contains(&class) {
+      return;
+    }
+    seen.insert(class);
+    for (i, node) in self.egraph[class].nodes.iter().enumerate() {
+      for child in node.children() {
+        parents_map.entry(*child)
+                   .and_modify(|e| {e.insert((class, i));})
+                   .or_insert(vec!((class, i)).into_iter().collect());
+        self.compute_parents(*child, parents_map, seen);
+      }
+    }
   }
 
   fn all_parents(&self, start_class: Id, child_to_parent: &HashMap<Id, HashSet<(Id, usize)>>, parent_to_child_index: &mut HashMap<Id, usize>, seen: &mut HashSet<Id>) {
@@ -1984,7 +1963,7 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
 pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_name: String, lemma_number: usize) -> (Outcome, ProofState) {
   // let goal_name = goal.name.clone();
   let goal_eq = Equation::new(goal.eq.lhs.sexp.clone(), goal.eq.rhs.sexp.clone());
-  let goal_prop = Prop::new(goal_eq, goal.params.iter().cloned().map(|param| (param, goal.local_context.get(&param).unwrap().clone())).collect());
+  let goal_prop = Prop::new(goal_eq, goal.top_level_params.iter().cloned().map(|param| (param, goal.local_context.get(&param).unwrap().clone())).collect());
   // We won't attempt to prove the goal again (it isn't actually proven).
   lemmas_state.proven_lemmas.insert(goal_prop);
   let mut state = ProofState {

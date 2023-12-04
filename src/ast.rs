@@ -374,6 +374,18 @@ pub fn is_constructor(var_name: &str) -> bool {
   var_name.chars().next().unwrap().is_uppercase()
 }
 
+pub fn sexp_is_constructor(sexp: &Sexp) -> bool {
+  match sexp {
+    Sexp::String(s) => is_constructor(s),
+    Sexp::List(v) => is_constructor(&v[0].string().unwrap()),
+    _ => false,
+  }
+}
+
+/// WARNING: this should probably only be used for type variables, because we might
+/// want to declare terms in our language such as one = (S Z) and this function
+/// will incorrectly identify this as a variable. For us, variables really means
+/// parameters (e.g. xs in the equation sorted xs === True).
 pub fn is_var(var_name: &str) -> bool {
   var_name.chars().next().unwrap().is_lowercase()
 }
