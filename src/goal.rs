@@ -408,6 +408,7 @@ impl Scrutinee {
 // - defns doesn't need to be threaded through in the first place.
 // - searchers could be copied since it's for debugging
 // - The rest should be safe to keep in a truly global block.
+// TODO: This can probably be moved into the ProofState.
 #[derive(Copy, Clone)]
 pub struct GlobalSearchState<'a> {
   /// Environment
