@@ -1,6 +1,6 @@
 use egg::*;
 use itertools::{EitherOrBoth, Itertools};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use symbolic_expressions::Sexp;
 
@@ -141,7 +141,7 @@ fn explain_body(
   lhs: &Sexp,
   rhs: &Sexp,
   params: &[(Symbol, Type)],
-  lemma_map: &mut HashMap<String, LemmaInfo>,
+  lemma_map: &mut BTreeMap<String, LemmaInfo>,
 ) -> String {
   let mut str_explanation = String::new();
   // (arg name, arg type), to be used in creating the type.
@@ -175,7 +175,7 @@ pub fn explain_top(
   state: &mut ProofState,
   eq: &ETermEquation,
   params: &[Symbol],
-  top_level_vars: &HashMap<Symbol, Type>,
+  top_level_vars: &BTreeMap<Symbol, Type>,
   global_search_state: GlobalSearchState,
 ) -> String {
   let mut str_explanation = String::new();
@@ -195,7 +195,7 @@ pub fn explain_top(
   // (fresh_lemma_name, lemma_vars).
   // In the beginning add only the top-level inductive hypothesis.
   // TODO: still need to handle the inverted IH? (RHS => LHS)
-  let mut lemma_map = HashMap::new();
+  let mut lemma_map = BTreeMap::new();
   // let pat_lhs: Pattern<SymbolLang> = to_pattern(&eq.lhs.expr, |v| top_level_vars.contains_key(v));
   // let pat_rhs: Pattern<SymbolLang> = to_pattern(&eq.rhs.expr, |v| top_level_vars.contains_key(v));
   let lemma_info = LemmaInfo {
@@ -416,7 +416,7 @@ fn explain_proof(
   goal: &str,
   proof_info: &mut ProofInfo,
   top_goal_name: &str,
-  lemma_map: &mut HashMap<String, LemmaInfo>,
+  lemma_map: &mut BTreeMap<String, LemmaInfo>,
 ) -> String {
   // If it's not in the proof tree, it must be a leaf.
   if !proof_info.proof.contains_key(goal) {
@@ -500,7 +500,7 @@ fn explain_goal(
   depth: usize,
   explanation: &mut Explanation<SymbolLang>,
   top_goal_name: &str,
-  lemma_map: &mut HashMap<String, LemmaInfo>,
+  lemma_map: &mut BTreeMap<String, LemmaInfo>,
 ) -> String {
   let mut str_explanation: String = String::new();
   let flat_terms = explanation.make_flat_explanation();
@@ -679,7 +679,7 @@ fn extract_lemma_invocation(
   rw_dir: &RwDirection,
   curr_term: &FlatTerm<SymbolLang>,
   next_term: &FlatTerm<SymbolLang>,
-  lemma_map: &mut HashMap<String, LemmaInfo>,
+  lemma_map: &mut BTreeMap<String, LemmaInfo>,
 ) -> String {
   let mut rewrite_pos: Vec<i32> = vec![];
   let trace = find_rewritten_term(&mut rewrite_pos, next_term).unwrap();

@@ -1,16 +1,16 @@
 use egg::*;
-use std::{collections::{HashMap, HashSet}, iter::zip};
+use std::{collections::{BTreeMap, BTreeSet}, iter::zip};
 
 /// Denotation of an egraph (or its subgraph)
 /// is a map from eclass ids to sets of expressions
-type Denotation<L> = HashMap<Id, Vec<RecExpr<L>>>;
+type Denotation<L> = BTreeMap<Id, Vec<RecExpr<L>>>;
 
 /// Compute the denotation of all roots in egraph, ignoring cycles
 pub fn get_all_expressions<L: Language, A: Analysis<L>>(
   egraph: &EGraph<L, A>,
   roots: Vec<Id>,
 ) -> Denotation<L> {
-  let mut memo = HashMap::new();
+  let mut memo = BTreeMap::new();
   for root in roots {
     collect_expressions(egraph, root, &mut memo);
   }
@@ -41,7 +41,7 @@ fn collect_expressions<L: Language, A: Analysis<L>>(
         // Otherwise, recursively collect the denotations of its children
         // and create a new expression from each tuple of their cross product.
         // Each products[i] stores the product of denotation sizes of all nodes from i+1 onwards
-        let mut products: HashMap<Id, usize> = HashMap::new();
+        let mut products: BTreeMap<Id, usize> = BTreeMap::new();
         for (i, c) in node.children().iter().enumerate() {
           collect_expressions(egraph, *c, memo);
           products.insert(*c, 1);
@@ -94,7 +94,7 @@ pub fn extract_with_node<L: Language, A: Analysis<L>, CF: CostFunction<L>>(
 }
 
 /// Variables of a pattern as a set
-pub fn var_set<L: Language>(pattern: &Pattern<L>) -> HashSet<Var> {
+pub fn var_set<L: Language>(pattern: &Pattern<L>) -> BTreeSet<Var> {
   pattern.vars().iter().cloned().collect()
 }
 
@@ -251,14 +251,14 @@ impl<N> Applier<SymbolLang, N> for DestructiveApplier
 ///
 /// I think that we could do slightly better than a HashMap by having a mutable
 /// RecExpr and storing which Ids we've visited on the nodes, but the difference
-/// between passing around clones of a HashMap/HashSet everywhere and using a
+/// between passing around clones of a HashMap/BTreeSet everywhere and using a
 /// single mutable HashMap is minimal in my testing (0.2s for a test taking 9s -
 /// although this was just a single test).
 fn prune_enodes_matching<N>(egraph: &mut EGraph<SymbolLang, N>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, subst: &Subst, eclass: &Id) -> bool
   where
   N: Analysis<SymbolLang>
 {
-    let mut memo = HashMap::default();
+    let mut memo = BTreeMap::default();
     let rec_expr_id: Id = (rec_expr.as_ref().len() - 1).into();
     // Handles cycles - if we get back here then it matches.
     memo.insert((rec_expr_id, *eclass), true);
@@ -285,7 +285,7 @@ fn prune_enodes_matching<N>(egraph: &mut EGraph<SymbolLang, N>, rec_expr: &RecEx
 /// they have matching constants, then we can simply check their equality. Most
 /// of the cases, however, come from recursively checking the contained rec_expr
 /// nodes against contained eclasses.
-fn match_enode<N>(egraph: &EGraph<SymbolLang, N>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, rec_expr_id: &Id, subst: &Subst, enode: &SymbolLang, memo: &mut HashMap<(Id, Id), bool>) -> bool
+fn match_enode<N>(egraph: &EGraph<SymbolLang, N>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, rec_expr_id: &Id, subst: &Subst, enode: &SymbolLang, memo: &mut BTreeMap<(Id, Id), bool>) -> bool
   where
   N: Analysis<SymbolLang>
 {
@@ -318,7 +318,7 @@ fn match_enode<N>(egraph: &EGraph<SymbolLang, N>, rec_expr: &RecExpr<ENodeOrVar<
 /// eclass. Comparing a Var to an eclass is a base case - we just check to see
 /// if they're the same. Otherwise, we need to check if there is any enode in
 /// the class that we can match with the concrete AST node.
-fn any_enode_in_eclass_matches<N>(egraph: &EGraph<SymbolLang, N>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, rec_expr_id: &Id, subst: &Subst, eclass: &Id, memo: &mut HashMap<(Id, Id), bool>) -> bool
+fn any_enode_in_eclass_matches<N>(egraph: &EGraph<SymbolLang, N>, rec_expr: &RecExpr<ENodeOrVar<SymbolLang>>, rec_expr_id: &Id, subst: &Subst, eclass: &Id, memo: &mut BTreeMap<(Id, Id), bool>) -> bool
   where
   N: Analysis<SymbolLang>
 {

@@ -8,7 +8,7 @@ use rand::distributions::weighted::WeightedIndex;
 use rand::distributions::Distribution;
 use rand::seq::SliceRandom;
 use std::cell::RefCell;
-use std::{collections::{HashMap, HashSet}, iter::zip, str::FromStr};
+use std::{collections::{BTreeMap, BTreeSet}, iter::zip, str::FromStr};
 use symbolic_expressions::Sexp;
 
 // We use an analysis inspired by cvecs from Ruler (https://github.com/uwplse/ruler)
@@ -23,7 +23,7 @@ pub fn random_term_from_type(
   ctx: &Context,
   max_depth: usize,
 ) -> Sexp {
-  random_term_from_type_with_weight::<usize>(ty, env, ctx, max_depth, &HashMap::default())
+  random_term_from_type_with_weight::<usize>(ty, env, ctx, max_depth, &BTreeMap::default())
 }
 
 /// Generates random terms that are up to `max_depth` deep. Constructors are depth 0.
@@ -43,7 +43,7 @@ pub fn random_term_from_type_with_weight<W>(
   env: &Env,
   ctx: &Context,
   max_depth: usize,
-  constructor_weights: &HashMap<String, WeightedIndex<W>>,
+  constructor_weights: &BTreeMap<String, WeightedIndex<W>>,
 ) -> Sexp
 where
   W: SampleUniform + PartialOrd,
@@ -573,10 +573,10 @@ impl CanonicalFormAnalysis {
     match &egraph[id].data.canonical_form_data {
       CanonicalForm::Const(n) => {
         // Extract canonical forms of the children:
-        let children: HashMap<Id, Expr> =
+        let children: BTreeMap<Id, Expr> =
           n.children
             .iter()
-            .try_fold(HashMap::new(), |mut acc, child| {
+            .try_fold(BTreeMap::new(), |mut acc, child| {
               let child_expr = Self::extract_canonical(egraph, *child)?;
               acc.insert(*child, child_expr);
               Some(acc)
@@ -600,12 +600,12 @@ impl CanonicalFormAnalysis {
   fn _is_canonical_cycle(egraph: &EGraph<SymbolLang, CycleggAnalysis>, n: &SymbolLang, id: Id) -> bool {
     // We have to keep track of visited nodes because there might also be a lasso
     // (i.e. a cycle not starting at id)
-    let mut visited: HashSet<Id> = HashSet::new();
+    let mut visited: BTreeSet<Id> = BTreeSet::new();
     visited.insert(id);
     Self::_is_reachable(egraph, n, id, &mut visited)
   }
 
-  fn _is_reachable(egraph: &EGraph<SymbolLang, CycleggAnalysis>, n: &SymbolLang, id: Id, visited: &mut HashSet<Id>) -> bool {
+  fn _is_reachable(egraph: &EGraph<SymbolLang, CycleggAnalysis>, n: &SymbolLang, id: Id, visited: &mut BTreeSet<Id>) -> bool {
     n.children.iter().any(|c| {
       let c = egraph.find(*c);
       if c == id {
@@ -629,7 +629,7 @@ impl CanonicalFormAnalysis {
 #[derive(Debug, Clone, Default)]
 pub struct CycleggAnalysis {
   pub cvec_analysis: CvecAnalysis,
-  pub blocking_vars: HashSet<Symbol>,
+  pub blocking_vars: BTreeSet<Symbol>,
 }
 
 #[derive(Debug, Clone)]

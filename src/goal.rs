@@ -2,8 +2,8 @@ use colored::Colorize;
 use egg::*;
 use itertools::Itertools;
 use log::warn;
-use std::collections::HashSet;
-use std::collections::{HashMap, VecDeque};
+use std::collections::BTreeSet;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::iter::zip;
 use std::time::{Duration, Instant};
@@ -56,7 +56,7 @@ impl Soundness {
   /// Are the canonical forms of the e-classes in new_subst strictly smaller than those in orig_subst?
   /// For now implements a sound but incomplete measure,
   /// where all forms need to be no larger, and at least one has to be strictly smaller.
-  fn smaller_tuple(&self, triples: &Vec<(Symbol, Expr, Expr)>, _blocking_vars: &HashSet<Symbol>) -> bool {
+  fn smaller_tuple(&self, triples: &Vec<(Symbol, Expr, Expr)>, _blocking_vars: &BTreeSet<Symbol>) -> bool {
     let mut has_strictly_smaller = false;
     for (_, orig, new) in triples {
       match is_subterm(new, orig) {
@@ -346,7 +346,7 @@ impl LemmaRewrite {
     self.names_and_rewrites().into_iter().map(|(_, rw)| rw).collect()
   }
 
-  pub fn add_to_rewrites(&self, rewrites: &mut HashMap<String, Rw>) {
+  pub fn add_to_rewrites(&self, rewrites: &mut BTreeMap<String, Rw>) {
     self.lhs_to_rhs.as_ref().map(|(name, rw)| {
       rewrites.entry(name.clone()).or_insert(rw.clone());
     });
@@ -444,7 +444,7 @@ pub struct Goal<'a> {
   /// Rewrites are split into reductions (invertible rules) and lemmas
   /// (non-invertible rules). Reductions - being unchanging - live in
   /// global_search_state.
-  lemmas: HashMap<String, Rw>,
+  lemmas: BTreeMap<String, Rw>,
   /// Mapping from all universally-quantified variables of the goal to their types
   /// (note this includes both current and old variables, which have been case-split away)
   pub local_context: Context,
@@ -457,7 +457,7 @@ pub struct Goal<'a> {
   /// (i.e. the subset of local_context that have datatype types)
   scrutinees: VecDeque<Scrutinee>,
   /// Variables that we have already case split
-  pub case_split_vars: HashSet<Symbol>,
+  pub case_split_vars: BTreeSet<Symbol>,
   /// Instantiations of the induction hypothesis that are in the egraph
   grounding_instantiations: Vec<IdSubst>,
   /// The equation we are trying to prove
@@ -465,7 +465,7 @@ pub struct Goal<'a> {
   /// If this is a conditional prop, the premises
   pub premises: Vec<ETermEquation>,
   /// Stores the expression each guard variable maps to
-  guard_exprs: HashMap<String, Expr>,
+  guard_exprs: BTreeMap<String, Expr>,
   /// The global search state.
   pub global_search_state: GlobalSearchState<'a>,
 }
@@ -491,11 +491,11 @@ impl<'a> Goal<'a> {
       var_classes: var_classes.clone(),
       grounding_instantiations: vec![var_classes.clone()],
       egraph,
-      lemmas: HashMap::new(),
+      lemmas: BTreeMap::new(),
       local_context: Context::new(),
       top_level_params: prop.params.iter().map(|(x, _)| *x).collect(),
-      case_split_vars: HashSet::new(),
-      guard_exprs: HashMap::new(),
+      case_split_vars: BTreeSet::new(),
+      guard_exprs: BTreeMap::new(),
       scrutinees: VecDeque::new(),
       eq,
       // Convert to a singleton list if the Option is Some, else the empty list
@@ -559,7 +559,7 @@ impl<'a> Goal<'a> {
   }
 
   /// Saturate the goal by applying all available rewrites
-  pub fn saturate(&mut self, top_lemmas: &HashMap<String, Rw>) {
+  pub fn saturate(&mut self, top_lemmas: &BTreeMap<String, Rw>) {
     let rewrites = self.global_search_state.reductions.iter().chain(self.lemmas.values()).chain(top_lemmas.values());
     let lhs_id = self.eq.lhs.id;
     let rhs_id = self.eq.rhs.id;
@@ -609,7 +609,7 @@ impl<'a> Goal<'a> {
   /// add_termination_check is true, otherwise they will not.
   ///
   /// The rewrites will each be named lemma_n.
-  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, state: &mut ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<LemmaRewrite>) {
+  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, state: &mut ProofState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
     let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
     let is_var = |v| self.local_context.contains_key(v);
     let mut rewrites = self.lemmas.clone();
@@ -670,7 +670,7 @@ impl<'a> Goal<'a> {
     if !premises.iter().all(|eq| {
       let premise_lhs_vars = var_set(&to_pattern(&eq.lhs.expr, is_var));
       let premise_rhs_vars = var_set(&to_pattern(&eq.rhs.expr, is_var));
-      let premise_vars: HashSet<Var> =
+      let premise_vars: BTreeSet<Var> =
         premise_lhs_vars.union(&premise_rhs_vars).cloned().collect();
       premise_vars.is_subset(&lemma_vars)
     }) {
@@ -742,7 +742,7 @@ impl<'a> Goal<'a> {
   /// Create a rewrite `lhs => rhs` which will serve as the lemma ("induction hypothesis") for a cycle in the proof;
   /// here lhs and rhs are patterns, created by replacing all scrutinees with wildcards;
   /// soundness requires that the pattern only apply to variable tuples smaller than the current scrutinee tuple.
-  fn add_lemma_rewrites(&self, state: &mut ProofState) -> HashMap<String, Rw> {
+  fn add_lemma_rewrites(&self, state: &mut ProofState) -> BTreeMap<String, Rw> {
     // Special case: the first time we add lemmas (i.e. when there are no
     // previous lemmas), we will make lemma rewrites out of the lhs and rhs only
     // and we will use the special IH name.
@@ -765,7 +765,7 @@ impl<'a> Goal<'a> {
   }
 
   /// Creates cyclic lemmas from the current goal.
-  fn make_cyclic_lemma_rewrites(&self, state: &mut ProofState, add_termination_check: bool) -> (HashMap<String, Rw>, Vec<LemmaRewrite>) {
+  fn make_cyclic_lemma_rewrites(&self, state: &mut ProofState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
@@ -820,7 +820,7 @@ impl<'a> Goal<'a> {
     let matches = searcher.search(&self.egraph);
     // Collects class IDs of all stuck guards;
     // it's a map because the same guard can match more than once, but we only want to add a new scrutinee once
-    let mut stuck_guards = HashMap::new();
+    let mut stuck_guards = BTreeMap::new();
     for m in matches {
       for subst in m.substs {
         let guard_id = *subst.get(guard_var).unwrap();
@@ -988,14 +988,14 @@ impl<'a> Goal<'a> {
     };
   }
 
-  fn find_blocking(&self, state: &ProofState) -> (HashSet<Symbol>, HashSet<Id>) {
-    let mut blocking_vars: HashSet<_> = HashSet::default();
-    let mut blocking_exprs: HashSet<Id> = HashSet::default();
+  fn find_blocking(&self, state: &ProofState) -> (BTreeSet<Symbol>, BTreeSet<Id>) {
+    let mut blocking_vars: BTreeSet<_> = BTreeSet::default();
+    let mut blocking_exprs: BTreeSet<Id> = BTreeSet::default();
 
-    let mut lhs_descendents = HashSet::default();
+    let mut lhs_descendents = BTreeSet::default();
     self.compute_descendents(self.eq.lhs.id, &mut lhs_descendents);
 
-    let mut rhs_descendents = HashSet::default();
+    let mut rhs_descendents = BTreeSet::default();
     self.compute_descendents(self.eq.rhs.id, &mut rhs_descendents);
 
     for reduction in self.global_search_state.reductions {
@@ -1006,7 +1006,7 @@ impl<'a> Goal<'a> {
       let mut new_sexps: Vec<Sexp> = Goal::analyze_sexp_for_blocking_vars(&sexp)
         .into_iter()
         .map(|x| x.to_string())
-        .collect::<HashSet<_>>()
+        .collect::<BTreeSet<_>>()
         .into_iter()
         .map(|x| symbolic_expressions::parser::parse_str(x.as_str()).unwrap())
         .collect();
@@ -1067,7 +1067,7 @@ impl<'a> Goal<'a> {
     (blocking_vars, blocking_exprs)
   }
 
-  fn compute_descendents(&self, class: Id, descendents: &mut HashSet<Id>) {
+  fn compute_descendents(&self, class: Id, descendents: &mut BTreeSet<Id>) {
     if descendents.contains(&class) {
       return;
     }
@@ -1080,7 +1080,7 @@ impl<'a> Goal<'a> {
   }
 
   /// Gets the next variable to case split on using the blocking var analysis
-  fn next_scrutinee(&mut self, mut blocking_vars: HashSet<Symbol>) -> Option<Scrutinee> {
+  fn next_scrutinee(&mut self, mut blocking_vars: BTreeSet<Symbol>) -> Option<Scrutinee> {
     let blocking = self
       .scrutinees
       .iter()
@@ -1364,7 +1364,7 @@ impl<'a> Goal<'a> {
 
   /// Poorly-named helper function for extract_generalized_expr. See that
   /// function for how it works.
-  fn compute_parents(&self, class: Id, parents_map: &mut HashMap<Id, HashSet<(Id, usize)>>, seen: &mut HashSet<Id>) {
+  fn compute_parents(&self, class: Id, parents_map: &mut BTreeMap<Id, BTreeSet<(Id, usize)>>, seen: &mut BTreeSet<Id>) {
     if seen.contains(&class) {
       return;
     }
@@ -1381,7 +1381,7 @@ impl<'a> Goal<'a> {
 
   /// Poorly-named helper function for extract_generalized_expr. See that
   /// function for how it works.
-  fn all_parents(&self, start_class: Id, child_to_parent: &HashMap<Id, HashSet<(Id, usize)>>, parent_to_child_index: &mut HashMap<Id, usize>, seen: &mut HashSet<Id>) {
+  fn all_parents(&self, start_class: Id, child_to_parent: &BTreeMap<Id, BTreeSet<(Id, usize)>>, parent_to_child_index: &mut BTreeMap<Id, usize>, seen: &mut BTreeSet<Id>) {
     if seen.contains(&start_class) {
       return;
     }
@@ -1395,7 +1395,7 @@ impl<'a> Goal<'a> {
     });
   }
 
-  fn extract_generalized_expr_helper(&self, gen_class: Id, gen_fresh_sym: Symbol, extract_class: Id, parent_to_child_index: &HashMap<Id, usize>, cache: &mut HashMap<Id, Option<Expr>>) -> Expr {
+  fn extract_generalized_expr_helper(&self, gen_class: Id, gen_fresh_sym: Symbol, extract_class: Id, parent_to_child_index: &BTreeMap<Id, usize>, cache: &mut BTreeMap<Id, Option<Expr>>) -> Expr {
     // We handle cycles by using a cache. The cache contains an Option.
     match cache.get(&extract_class) {
       // If the Option is Some, that means we have successfully computed a value
@@ -1446,20 +1446,20 @@ impl<'a> Goal<'a> {
   // correspond to that class so we can generalize them.
   fn extract_generalized_expr(&self, gen_class: Id, gen_fresh_sym: Symbol, extract_class: Id) -> Expr {
     // println!("extracting generalized expr ({}) for {}", gen_class, extract_class);
-    let mut parent_map = HashMap::default();
-    let mut parents = HashSet::default();
+    let mut parent_map = BTreeMap::default();
+    let mut parents = BTreeSet::default();
     // Compute a map from each eclass to its parent enodes in the egraph rooted
     // at extract_class.
     self.compute_parents(extract_class, &mut parent_map, &mut parents);
     // println!("parent map: {:?}", parent_map);
-    let mut parent_to_child_index = HashMap::default();
+    let mut parent_to_child_index = BTreeMap::default();
 
     // Computes a map from parent eclass to the index of the enode that will
     // lead the parent to gen_class. If there are multiple indices, one (I
     // believe the largest) is chosen arbitrarily.
-    self.all_parents(gen_class, &parent_map, &mut parent_to_child_index, &mut HashSet::default());
+    self.all_parents(gen_class, &parent_map, &mut parent_to_child_index, &mut BTreeSet::default());
     // println!("parent to child index: {:?}", parent_to_child_index);
-    let mut cache = HashMap::default();
+    let mut cache = BTreeMap::default();
     cache.insert(gen_class, Some(vec!(SymbolLang::leaf(gen_fresh_sym)).into()));
     // FIXME: skip extraction if gen_class isn't contained in either the LHS and
     // RHS. I think it's fine to keep it as is for now because the generalized
@@ -1519,7 +1519,7 @@ impl<'a> Goal<'a> {
 
   /// Return generalizations of the current goal found by generalizing a
   /// blocking_expr.
-  fn find_generalized_goals(&self, blocking_exprs: &HashSet<Id>) -> Vec<Prop> {
+  fn find_generalized_goals(&self, blocking_exprs: &BTreeSet<Id>) -> Vec<Prop> {
     blocking_exprs.iter().flat_map(|blocking_expr| {
       self.make_generalized_goal(*blocking_expr).map(|(generalized_prop, _new_goal)|{
         generalized_prop
@@ -1617,13 +1617,13 @@ pub struct LemmasState {
   pub proven_lemmas: MinElements<Prop>,
   pub invalid_lemmas: MaxElements<Prop>,
   pub possible_lemmas: ChainSet<Prop>,
-  pub lemma_rewrites: HashMap<String, Rw>,
+  pub lemma_rewrites: BTreeMap<String, Rw>,
   pub cyclic_lemmas: ChainSet<Prop>,
-  pub cyclic_lemma_rewrites: HashMap<String, Rw>,
+  pub cyclic_lemma_rewrites: BTreeMap<String, Rw>,
   pub last_lemma_proven: Option<String>,
   /// What was the last lemma we had proven at the time of our last attempt to
   /// prove this lemma?
-  pub last_lemma_proven_at_last_attempt: HashMap<String, Option<String>>,
+  pub last_lemma_proven_at_last_attempt: BTreeMap<String, Option<String>>,
 }
 
 impl LemmasState {
@@ -1646,8 +1646,8 @@ impl LemmasState {
 }
 
 pub struct ProofInfo {
-  pub solved_goal_proofs: HashMap<String, ProofLeaf>,
-  pub proof: HashMap<String, ProofTerm>,
+  pub solved_goal_proofs: BTreeMap<String, ProofLeaf>,
+  pub proof: BTreeMap<String, ProofTerm>,
 }
 
 /// A proof state is a list of subgoals,
@@ -1802,7 +1802,7 @@ impl<'a> ProofState<'a> {
         // to carry forward what we've proven already.
         new_lemmas_state.possible_lemmas = ChainSet::new();
         new_lemmas_state.cyclic_lemmas = ChainSet::new();
-        new_lemmas_state.cyclic_lemma_rewrites = HashMap::new();
+        new_lemmas_state.cyclic_lemma_rewrites = BTreeMap::new();
         let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state, new_lemma_name.clone(), self.lemma_number);
         // Update the lemma number so we don't have a lemma name clash.
         self.lemma_number = ps.lemma_number;
@@ -1996,8 +1996,8 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
   let mut state = ProofState {
     goals: vec![goal].into(),
     proof_info: ProofInfo {
-      solved_goal_proofs: HashMap::default(),
-      proof: HashMap::default(),
+      solved_goal_proofs: BTreeMap::default(),
+      proof: BTreeMap::default(),
     },
     start_time: Instant::now(),
     proof_depth: depth,
@@ -2061,7 +2061,7 @@ pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_nam
     let (blocking_vars, blocking_exprs) =
       if !CONFIG.blocking_vars_analysis {
         warn!("Blocking var analysis is disabled");
-        (goal.scrutinees.iter().map(|s| s.name).collect(), HashSet::default())
+        (goal.scrutinees.iter().map(|s| s.name).collect(), BTreeSet::default())
       } else {
         let (blocking_vars, blocking_exprs) = goal.find_blocking(&state);
         if CONFIG.verbose {

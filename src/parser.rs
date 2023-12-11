@@ -1,6 +1,6 @@
 use egg::*;
 use std::char;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use symbolic_expressions::*;
 
 use crate::ast::*;
@@ -56,8 +56,8 @@ pub struct ParserState {
 impl ParserState {
   /// Return all function definitions used in exprs,
   /// including the functions transitively used in those definitions.
-  fn used_names_and_definitions(&self, exprs: &Vec<Expr>) -> (HashSet<Symbol>, Vec<Rw>) {
-    let mut used_names = HashSet::new();
+  fn used_names_and_definitions(&self, exprs: &Vec<Expr>) -> (BTreeSet<Symbol>, Vec<Rw>) {
+    let mut used_names = BTreeSet::new();
     let mut used_defs = vec![];
     let mut worklist = vec![];
     for expr in exprs {
@@ -84,7 +84,7 @@ impl ParserState {
   fn add_functions(
     &self,
     e: &PatternAst<SymbolLang>,
-    used_names: &mut HashSet<Symbol>,
+    used_names: &mut BTreeSet<Symbol>,
     worklist: &mut Vec<Symbol>,
   ) {
     for node_or_var in e.as_ref() {

@@ -2,12 +2,12 @@ use egg::*;
 use lazy_static::lazy_static;
 
 use indexmap::IndexMap;
-use std::{collections::{HashMap, HashSet}, fmt::Display, str::FromStr};
+use std::{collections::{BTreeMap, BTreeSet}, fmt::Display, str::FromStr};
 use symbolic_expressions::{Sexp, SexpError};
 
 use crate::config::CONFIG;
 
-pub type SSubst = HashMap<String, Sexp>;
+pub type SSubst = BTreeMap<String, Sexp>;
 // This is almost like egg's Subst but iterable
 pub type IdSubst = IndexMap<Symbol, Id>;
 
@@ -229,13 +229,13 @@ pub fn substitute_sexp(sexp: &Sexp, from: &Sexp, to: &Sexp) -> Sexp {
 ///
 /// Since Sexps can't be hashed we hack the set using their string
 /// representation...
-pub fn nontrivial_sexp_subexpressions_containing_vars(sexp: &Sexp) -> HashMap<String, Sexp> {
-  let mut subexprs = HashMap::default();
+pub fn nontrivial_sexp_subexpressions_containing_vars(sexp: &Sexp) -> BTreeMap<String, Sexp> {
+  let mut subexprs = BTreeMap::default();
   add_sexp_subexpressions(sexp, &mut subexprs);
   subexprs
 }
 
-fn add_sexp_subexpressions(sexp: &Sexp, subexprs: &mut HashMap<String, Sexp>) -> bool {
+fn add_sexp_subexpressions(sexp: &Sexp, subexprs: &mut BTreeMap<String, Sexp>) -> bool {
   let mut any_child_has_var = false;
   match sexp {
     Sexp::List(children) => {
@@ -324,7 +324,7 @@ where F: FnOnce(&str) -> bool + Copy {
 /// actual is assumed to be a valid instantiation of proto.
 pub fn find_instantiations<F>(proto: &Sexp, actual: &Sexp, is_var: F) -> Option<SSubst>
 where F: FnOnce(&str) -> bool + Copy {
-  let mut instantiations = HashMap::new();
+  let mut instantiations = BTreeMap::new();
   let successful_instantiation = find_instantiations_helper(&proto, &actual, is_var, &mut instantiations);
   if successful_instantiation {
     Some(instantiations)
@@ -390,9 +390,9 @@ pub fn is_var(var_name: &str) -> bool {
   var_name.chars().next().unwrap().is_lowercase()
 }
 
-pub fn get_vars(e: &Expr) -> HashSet<Symbol>
+pub fn get_vars(e: &Expr) -> BTreeSet<Symbol>
 {
-  let mut vars = HashSet::new();
+  let mut vars = BTreeSet::new();
   for n in e.as_ref() {
     if n.is_leaf() && is_var(&n.op.to_string()) {
       vars.insert(n.op);
@@ -401,13 +401,13 @@ pub fn get_vars(e: &Expr) -> HashSet<Symbol>
   vars
 }
 
-pub fn sexp_leaves(sexp: &Sexp) -> HashSet<String> {
-  let mut leaves = HashSet::default();
+pub fn sexp_leaves(sexp: &Sexp) -> BTreeSet<String> {
+  let mut leaves = BTreeSet::default();
   sexp_leaves_helper(sexp, &mut leaves);
   leaves
 }
 
-fn sexp_leaves_helper(sexp: &Sexp, leaves: &mut HashSet<String>) {
+fn sexp_leaves_helper(sexp: &Sexp, leaves: &mut BTreeSet<String>) {
   match sexp {
     Sexp::String(s) => {
       leaves.insert(s.clone());
@@ -468,13 +468,13 @@ pub fn lookup_vars<'a, I: Iterator<Item = &'a Symbol>, A: Analysis<SymbolLang>>(
 }
 
 // Environment: for now just a map from datatype names to constructor names
-pub type Env = HashMap<Symbol, (Vec<String>, Vec<Symbol>)>;
+pub type Env = BTreeMap<Symbol, (Vec<String>, Vec<Symbol>)>;
 
 // Type context
-pub type Context = HashMap<Symbol, Type>;
+pub type Context = BTreeMap<Symbol, Type>;
 
 // Function definitions
-pub type Defns = HashMap<String, Vec<(Sexp, Sexp)>>;
+pub type Defns = BTreeMap<String, Vec<(Sexp, Sexp)>>;
 
 pub fn mk_context(descr: &[(&str, &str)]) -> Context {
   let mut ctx = Context::new();
@@ -560,7 +560,7 @@ impl PartialEq for Prop {
 
 impl PartialOrd for Prop {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-      // let vars: HashSet<String> = self.params.iter().chain(other.params.iter()).map(|(var, _)| var.to_string()).collect();
+      // let vars: BTreeSet<String> = self.params.iter().chain(other.params.iter()).map(|(var, _)| var.to_string()).collect();
       let is_var = |s: &str| {
         // vars.contains(s)
         self.params.iter().chain(other.params.iter()).any(|(var, _)| s == &var.to_string())
