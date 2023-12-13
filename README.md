@@ -1,6 +1,6 @@
 # Cyclegg
 
-**Here be dragons: research code ahead!**
+**🚧 Here be dragons: research code ahead! 🚧**
 
 ## Overview
 
@@ -10,8 +10,8 @@ has two main contributions.
 1. Efficient, exhaustive search of induction hypothesis and lemma applications.
 
 <details>
-<summary>Example: `(add x y) = (add y x)`</summary>
-`cyclegg` can prove the above property (commutativity of addition) without
+<summary>Example: (add x y) = (add y x)</summary>
+It can prove the above property (commutativity of addition) without
 needing to discover any helper lemmas. It does this by applying the inductive
 hypothesis several times in somewhat unconventional ways.
 </details>
@@ -19,9 +19,8 @@ hypothesis several times in somewhat unconventional ways.
 2. Lemma discovery based on subterms which appear in the goal.
 
 <details>
-<summary>Example: `(rev (rev xs)) = xs`</summary>
-</details>
-`cyclegg` can prove that reversing a list twice gives the same list by discovering and proving the lemma `(Cons x (rev xs)) = (rev (append xs (Cons x Nil)))`.
+<summary>Example: (rev (rev xs)) = xs</summary>
+It can prove that reversing a list twice gives the same list by discovering and proving the lemma (Cons x (rev xs)) = (rev (append xs (Cons x Nil))).
 </details>
 
 `cyclegg` is fast: both of these examples run in under 50ms.
@@ -46,8 +45,8 @@ $ cargo run -- --help
 
 As of 2a6aa34, when run with a timeout of 5s.
 
-IsaPlanner: 78/86 benchmarks
-CLAM: 30/50 benchmarks
+- IsaPlanner benchmarks: 78/86
+- CLAM benchmarks: 30/50
 
 ## The name
 
