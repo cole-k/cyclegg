@@ -1,6 +1,12 @@
 use egg::*;
+use indexmap::IndexMap;
+use indexmap::IndexSet;
 use std::char;
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::vec;
 use symbolic_expressions::*;
 
 use crate::ast::*;
@@ -19,7 +25,7 @@ fn make_rewrite_for_defn(name: &str, args: &Sexp, value: &Sexp) -> Rw {
   };
   let lhs = pattern_with_name.to_string();
   let rhs = value.to_string();
-  // println!("rewrite rule: {} => {}", lhs, rhs);
+  println!("rewrite rule {} : {} => {}", name, lhs, rhs);
   let searcher: Pattern<SymbolLang> = lhs.parse().unwrap();
   let applier: Pattern<SymbolLang> = rhs.parse().unwrap();
   Rewrite::new(lhs, searcher, applier).unwrap()
@@ -210,11 +216,14 @@ fn validate_variable(variable: &str) {
 /// 2. We can now avoid a lot of cloning that happens when we create new sub-goals because several
 ///    global items that we use (such as the global context) can now be passed as references.
 ///
-/// This comes with the minor disadvantage of having to create goals in main.rs from the raw_goals,
 /// but most of the work is done ahead of time.
-pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
+pub fn parse_ceg_file(filename: &str) -> Result<ParserState, SexpError> {
   let mut state = ParserState::default();
   let sexpr = parser::parse_file(filename).unwrap();
+
+  // println!("sexpr: {:#?}", sexpr);
+
+  // return Ok(state);
 
   for decl in sexpr.list()? {
     let decl_kind = decl.list()?[0].string()?.as_str();
@@ -255,6 +264,10 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
           })
           .collect::<Result<Vec<Symbol>, SexpError>>()?;
         validate_datatype(name);
+        // println!(
+        //   "{:?}, {:?}, {:?}",
+        //   name, mangled_type_var_names, mangled_cons_symbs
+        // );
         state.env.insert(
           Symbol::from(&mangle_name(name)),
           (mangled_type_var_names, mangled_cons_symbs),
@@ -267,6 +280,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         validate_identifier(name);
         let mangled_name = Symbol::from(&mangle_name(name));
         // Mangle each of the elements in the sexp.
+        // println!("{:?}", decl.list()?[2]);
         let mangled_type = Type::new(mangle_sexp(&decl.list()?[2]));
         if let Some(rw) = ParserState::partial_application(&mangled_name, &mangled_type) {
           state.rules.push(rw);
@@ -395,4 +409,828 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
     }
   }
   Ok(state)
+}
+
+/// Parse smtlib version 2.6 files
+pub fn parse_smtlib_file(filename: &str) -> Result<ParserState, SexpError> {
+  println!("parsing smtlib file: {}", filename);
+  add_parantheses_to_file(filename).unwrap();
+
+  let mut state = parse_ceg_file("examples/defns.ceg").unwrap();
+  let sexpr = parser::parse_file(filename).unwrap();
+
+  // println!("sexpr: {:#?}", sexpr);
+  // need a set of sorts
+  let mut sort_set: IndexSet<String> = IndexSet::new();
+  let mut fixed_names: HashMap<String, String> = HashMap::new();
+
+  fixed_names.insert("true".to_string(), "True".to_string());
+  fixed_names.insert("false".to_string(), "False".to_string());
+  fixed_names.insert("not".to_string(), "not".to_string());
+  fixed_names.insert("and".to_string(), "and".to_string());
+  fixed_names.insert("or".to_string(), "or".to_string());
+  fixed_names.insert("ite".to_string(), "ite".to_string());
+
+  for decl in sexpr.list()?.clone().iter_mut() {
+    // println!("decl: {:#?}", decl);
+    let decl_kind = decl.list()?[0].string()?.as_str();
+    match decl_kind {
+      "declare-datatypes" => {
+        // This is a datatype declaration: parse name, type variables, and constructor list:
+        // println!("datatype decl");
+        let mut type_vars: HashSet<String> = HashSet::new();
+        let mut constructors: Vec<Symbol> = vec![];
+        // for some reason, the smtlib format has a lot of extra parentheses
+        // so we sometimes have to go a few levels deep to get the stuff we want
+        let index = 1;
+        let mut name_sexp = &decl.list()?[index];
+        while name_sexp.list()?.len() == 1 && name_sexp.list()?[0].is_list() {
+          name_sexp = &name_sexp.list()?[0];
+        }
+
+        let mut dt_name = name_sexp.list()?[0].string()?;
+        if !dt_name.starts_with(char::is_uppercase) {
+          fixed_names.insert(dt_name.to_string(), format!("D{}", dt_name));
+        } else {
+          fixed_names.insert(dt_name.to_string(), dt_name.to_string());
+        }
+        let tmp = fixed_names.to_owned();
+        dt_name = tmp.get(dt_name).unwrap();
+
+        // println!("!!!DT name: {}", dt_name);
+
+        // after parsing name and arity we can get the constructor list
+        // a constructor can have arity 0 or more
+        let cons_index = 2;
+        // index 2 consists entirely of constructor lists
+        let mut cons_list = &decl.list()?[cons_index];
+        // println!("cons list: {:#?}", cons_list);
+        // while cons_list.list()?.len() == 1 && cons_list.list()?[0].is_list() {
+        cons_list = &cons_list.list()?[0];
+        // }
+        // cons list is now a list of constructors
+        let conss = cons_list.list()?;
+        // println!("conss: {:#?}", conss);
+        for mut x in conss {
+          // each constructor is a list of the form (param_name <optional type> <optional type> ...). the return type is just the name of the datatype
+          // the types themselves consist of a name and a type
+          // println!("x: {}", x);
+          let x_tmp = &fix_all_names(&x, &fixed_names);
+          x = x_tmp;
+          let x_list = x.list().unwrap();
+          let mut cons_name = x_list[0].string().unwrap();
+          // add a capital X to the beginning of the name if it begins with a lowercase
+          if !cons_name.starts_with(char::is_uppercase) {
+            fixed_names.insert(cons_name.to_string(), format!("C{}", cons_name));
+          } else {
+            fixed_names.insert(cons_name.to_string(), cons_name.to_string());
+          }
+          cons_name = fixed_names.get(cons_name).unwrap();
+          constructors.push(Symbol::from(&mangle_name(cons_name)));
+
+          // everything after the first element is a type
+          for y in &x_list[1..] {
+            let y_list = y.list().unwrap();
+            let param_type = &y_list[1];
+            // println!("param name: {}", param_name);
+            // println!("param type: {}", param_type);
+
+            // TODO: if any of the param types are sorts, we need to add it to the type_vars
+
+            if sort_set.contains(param_type.string()?) {
+              // validate_variable(&param_type);
+              type_vars.insert(mangle_sexp(&param_type).to_string());
+            }
+          }
+
+          let mut dt_with_type_vars = Sexp::String(dt_name.to_string());
+          if !type_vars.is_empty() {
+            dt_with_type_vars = Sexp::List(
+              [
+                vec![Sexp::String(dt_name.to_string())],
+                type_vars
+                  .iter()
+                  .map(|s| Sexp::String(s.to_string()))
+                  .collect(),
+              ]
+              .concat(),
+            );
+          }
+          // construct the arrow type for the constructor
+          // let mut type_with_arrow = vec![Sexp::String(ARROW.to_string())];
+          let typs: Vec<Sexp> = x_list[1..]
+            .iter()
+            .map(|y| {
+              let y_tmp = fix_all_names(y, &fixed_names);
+              let y_list = y_tmp.list().unwrap();
+              let param_type = y_list[1].string().unwrap();
+              // println!("param name: {}, cons name: {}", param_type, cons_name);
+              if param_type == dt_name && !type_vars.is_empty() {
+                dt_with_type_vars.clone()
+              } else {
+                y_list[1].clone()
+              }
+            })
+            .collect();
+
+          let mut type_with_arrow: Sexp = Sexp::Empty;
+          if !typs.is_empty() {
+            let mut tmpvec = vec![Sexp::String(ARROW.to_string())];
+            tmpvec.push(Sexp::List(typs));
+            tmpvec.push(dt_with_type_vars.clone());
+            type_with_arrow = Sexp::List(tmpvec);
+          } else {
+            type_with_arrow = dt_with_type_vars.clone();
+          }
+          // type_with_arrow.push(Sexp::String(dt_name.to_string()));
+          let mangled_type = Type::new(mangle_sexp(&type_with_arrow));
+          state
+            .context
+            .insert(Symbol::from(&mangle_name(cons_name)), mangled_type);
+        }
+        // println!("{}, {:?}, {:?}", dt_name, type_vars, constructors);
+        state.env.insert(
+          Symbol::from(&mangle_name(dt_name)),
+          (type_vars.into_iter().collect(), constructors),
+        );
+      }
+      "declare-sort" => {
+        // This is a sort declaration: parse name
+        // println!("sort decl");
+        // println!("{:?}", decl);
+        let name = &decl.list()?[1].string()?;
+        // println!("name: {}", name);
+        // the arity is always zero so we don't care
+        sort_set.insert(name.to_string());
+      }
+      "declare-fun" => {
+        // this just defines an uninterepreted function
+        // println!("declare-fun");
+        // println!("{:?}", decl);
+        *decl = fix_all_names(&decl, &fixed_names);
+        // println!("{}", decl);
+
+        let name = decl.list()?[1].string()?;
+        fixed_names.insert(name.to_string(), name.to_string());
+        validate_identifier(name);
+        let mangled_name = Symbol::from(&mangle_name(name));
+        // create a new sexp with an arrow type
+        let type_with_arrow = Sexp::List(vec![
+          Sexp::String(ARROW.to_string()),
+          decl.list()?[2].clone(),
+          decl.list()?[3].clone(),
+        ]);
+        let mangled_type = Type::new(mangle_sexp(&type_with_arrow));
+        state.context.insert(mangled_name, mangled_type);
+      }
+      "declare-const" => {
+        let name = decl.list()?[1].string()?;
+        fixed_names.insert(name.to_string(), name.to_string());
+      }
+      "define-fun-rec" | "define-fun" => {
+        // println!("define-fun");
+        // this is the most challenging bit
+        // we need to parse the function name, the parameters, and the body
+        // the body could have match expressions, and we need to parse those and turn them into rewrite rules
+        // also important is that the function name could also be something like |-2| which smtlib actually allows
+        // so we need to mangle the name
+        // println!("{:#?}", decl);
+        let declc = decl.clone();
+        let name = declc.list()?[1].string()?;
+        if !name.starts_with(char::is_lowercase) {
+          fixed_names.insert(name.to_string(), format!("f{}", name));
+        } else {
+          fixed_names.insert(name.to_string(), name.to_string());
+        }
+        *decl = fix_all_names(&decl, &fixed_names);
+        // println!("function defn: {}", decl);
+        validate_identifier(fixed_names.get(name).unwrap());
+        let mangled_name = Symbol::from(mangle_name(fixed_names.get(name).unwrap()));
+
+        let mut arg_type_map = HashMap::new();
+
+        let mut args_list: Vec<Sexp> = vec![];
+        let args = decl.list()?[2].list()?;
+        let mut arg_values: IndexMap<String, Sexp> = IndexMap::new();
+        for arg in args {
+          arg_values.insert(
+            arg.list()?[0].string()?.to_string(),
+            Sexp::String("?".to_string() + &arg.list()?[0].string()?.to_string()),
+          );
+          let arg_typ_tmp = arg.list()?[1].clone();
+          let mut arg_typ = arg_typ_tmp.clone();
+          if arg_typ_tmp.is_string() {
+            // println!("arg typ: {}", arg_typ);
+            // println!("{:?}", state.env);
+            if let Some(x) = state
+              .env
+              .get(&Symbol::from(&mangle_name(&arg_typ_tmp.string()?)))
+            {
+              // if it has type stuff add it
+              if !x.0.is_empty() {
+                let mut tmp = vec![arg_typ_tmp.clone()];
+                tmp.append(&mut x.0.iter().map(|x1| Sexp::String(x1.to_string())).collect());
+                // args_list.push(Sexp::List(tmp));
+                arg_typ = Sexp::List(tmp);
+              }
+            }
+          }
+          args_list.push(arg_typ.clone());
+          arg_type_map.insert(arg.list()?[0].string()?.to_string(), arg_typ);
+        }
+
+        // println!("argvals: {:#?}", arg_values);
+
+        let mut ret = decl.list()?[3].clone();
+        if ret.is_string() {
+          if let Some(x) = state.env.get(&Symbol::from(&mangle_name(&ret.string()?))) {
+            // if it has type stuff add it
+            if !x.0.is_empty() {
+              let mut tmp = vec![ret.clone()];
+              tmp.append(&mut x.0.iter().map(|x1| Sexp::String(x1.to_string())).collect());
+              ret = Sexp::List(tmp);
+            }
+          }
+        }
+        let type_with_arrow = Sexp::List(vec![
+          Sexp::String(ARROW.to_string()),
+          Sexp::List(args_list),
+          ret,
+        ]);
+        // println!("type with arrow: {}", type_with_arrow);
+        let mangled_type = Type::new(mangle_sexp(&type_with_arrow));
+        state.context.insert(mangled_name, mangled_type);
+
+        // now we need to parse the body
+        // the body is either a match or a let
+
+        // let mut rules: Vec<Rw> = vec![];
+        let body = decl.list()?[4].list()?;
+
+        let _ = parse_func_body(
+          mangled_name.into(),
+          body,
+          &arg_type_map,
+          &fixed_names,
+          &mut arg_values,
+          &mut HashMap::new(),
+          &mut state,
+        );
+      }
+      "define-funs-rec" => {
+        // mutually recursive functions
+        // let mut declc = decl.clone();
+        *decl = fix_all_names(&decl, &fixed_names);
+        // println!("function defn: {}", decl);
+        let fn_names = decl.list()?[1].list()?;
+        // println!("fn_names: {:#?}", fn_names);
+        let fn_bodies = decl.list()?[2].list()?;
+        assert_eq!(fn_names.len(), fn_bodies.len());
+
+        //put all the names in fixed_names first since we use it for other stuff
+        for i in 0..fn_names.len() {
+          // println!("i: {}", i);
+          // let fnames = fn_names.clone();
+          let name = fn_names[i].list()?[0].string()?;
+          // println!("name: {}", name);
+          if !name.starts_with(char::is_lowercase) {
+            fixed_names.insert(name.to_string(), format!("f{}", name));
+          } else {
+            fixed_names.insert(name.to_string(), name.to_string());
+          }
+        }
+
+        for i in 0..fn_names.len() {
+          // println!("i: {}", i);
+          let fnames = fn_names.clone();
+          let fbodies = fn_bodies.clone();
+          let name = fnames[i].list()?[0].string()?;
+
+          // println!("function defn: {}", decl);
+          validate_identifier(fixed_names.get(name).unwrap());
+          let mangled_name = Symbol::from(mangle_name(fixed_names.get(name).unwrap()));
+
+          let mut arg_type_map = HashMap::new();
+
+          let mut args_list: Vec<Sexp> = vec![];
+          let args = fnames[i].list()?[1].list()?;
+          let mut arg_values: IndexMap<String, Sexp> = IndexMap::new();
+          for arg in args {
+            arg_values.insert(
+              arg.list()?[0].string()?.to_string(),
+              Sexp::String("?".to_string() + &arg.list()?[0].string()?.to_string()),
+            );
+            let arg_typ_tmp = arg.list()?[1].clone();
+            let mut arg_typ = arg_typ_tmp.clone();
+            if arg_typ_tmp.is_string() {
+              // println!("arg typ: {}", arg_typ);
+              // println!("{:?}", state.env);
+              if let Some(x) = state
+                .env
+                .get(&Symbol::from(&mangle_name(&arg_typ_tmp.string()?)))
+              {
+                // if it has type stuff add it
+                if !x.0.is_empty() {
+                  let mut tmp = vec![arg_typ_tmp.clone()];
+                  tmp.append(&mut x.0.iter().map(|x1| Sexp::String(x1.to_string())).collect());
+                  // args_list.push(Sexp::List(tmp));
+                  arg_typ = Sexp::List(tmp);
+                }
+              }
+            }
+            args_list.push(arg_typ.clone());
+            arg_type_map.insert(arg.list()?[0].string()?.to_string(), arg_typ);
+          }
+
+          // println!("argvals: {:#?}", arg_values);
+
+          let mut ret = fnames[i].list()?[2].clone();
+          if ret.is_string() {
+            if let Some(x) = state.env.get(&Symbol::from(&mangle_name(&ret.string()?))) {
+              // if it has type stuff add it
+              if !x.0.is_empty() {
+                let mut tmp = vec![ret.clone()];
+                tmp.append(&mut x.0.iter().map(|x1| Sexp::String(x1.to_string())).collect());
+                ret = Sexp::List(tmp);
+              }
+            }
+          }
+          let type_with_arrow = Sexp::List(vec![
+            Sexp::String(ARROW.to_string()),
+            Sexp::List(args_list),
+            ret,
+          ]);
+          // println!("type with arrow: {}", type_with_arrow);
+          let mangled_type = Type::new(mangle_sexp(&type_with_arrow));
+          state.context.insert(mangled_name, mangled_type);
+
+          // now we need to parse the body
+          // the body is either a match or a let
+
+          // let mut rules: Vec<Rw> = vec![];
+          let body = fbodies[i].list()?;
+
+          let _ = parse_func_body(
+            mangled_name.into(),
+            body,
+            &arg_type_map,
+            &fixed_names,
+            &mut arg_values,
+            &mut HashMap::new(),
+            &mut state,
+          );
+        }
+      }
+
+      "assert" => {
+        // println!("assert");
+        *decl = fix_all_names(&decl, &fixed_names);
+        let local_rules = vec![];
+        let mut assertion = decl.list()?[1].list()?;
+        // println!("assertion1: {:#?}", assertion);
+        if assertion[0] != Sexp::String("not".to_string()) {
+          continue;
+        }
+        assertion = assertion[1].list()?;
+        assert!(assertion[0] == Sexp::String("forall".to_string()));
+
+        // assertion[1] is the list of variables / parameters
+        let param_name_list = assertion[1].list()?;
+        let params: Vec<(Symbol, Type)> = param_name_list
+          .iter()
+          .map(|var_and_type| {
+            let v = var_and_type.list().unwrap()[0].string().unwrap();
+            let tmp_t = &var_and_type.list().unwrap()[1];
+            (
+              Symbol::from(&mangle_name(v)),
+              Type::new(mangle_sexp(&tmp_t)),
+            )
+          })
+          .collect();
+        // println!("assertion2: {:#?}", assertion[2]);
+        let mut premise: Option<RawEquation> = None;
+        let assertion_type = assertion[2].list()?[0].string()?;
+        if assertion_type == "=>" {
+          let equation: RawEquation;
+          let mut premise_sexp = assertion[2].list()?[1].clone();
+          premise_sexp = fix_all_names(&premise_sexp, &fixed_names);
+          if premise_sexp.list().unwrap()[0].string()? == "=" {
+            let lhs = mangle_sexp(&premise_sexp.list().unwrap()[1]);
+            let rhs = mangle_sexp(&premise_sexp.list().unwrap()[2]);
+            premise = Some(RawEquation { lhs, rhs });
+          } else {
+            let lhs = mangle_sexp(&premise_sexp);
+            let rhs = mangle_sexp(&Sexp::String("True".to_string()));
+            // println!("lhs: {}", lhs);
+            // println!("rhs: {}", rhs);
+            premise = Some(RawEquation { lhs, rhs });
+          }
+          let mut assertion_sexp = assertion[2].list()?[2].clone();
+          assertion_sexp = fix_all_names(&assertion_sexp, &fixed_names);
+          if assertion_sexp.list().unwrap()[0].string()? == "=" {
+            let lhs = mangle_sexp(&assertion_sexp.list().unwrap()[1]);
+            let rhs = mangle_sexp(&assertion_sexp.list().unwrap()[2]);
+            equation = RawEquation { lhs, rhs };
+          } else {
+            let lhs = mangle_sexp(&assertion_sexp);
+            let rhs = mangle_sexp(&Sexp::String("True".to_string()));
+            equation = RawEquation { lhs, rhs };
+          }
+          let raw_goal = RawGoal {
+            name: "assert".to_string(),
+            premise,
+            equation,
+            params,
+            local_rules,
+          };
+          // println!("premise: {}, equation: {}", premise, equation);
+          state.raw_goals.push(raw_goal);
+        } else if assertion_type == "=" {
+          let mut lhs = mangle_sexp(&assertion[2].list().unwrap()[1]);
+          let mut rhs = mangle_sexp(&assertion[2].list().unwrap()[2]);
+          lhs = fix_all_names(&lhs, &fixed_names);
+          rhs = fix_all_names(&rhs, &fixed_names);
+
+          let equation = RawEquation { lhs, rhs };
+          let raw_goal = RawGoal {
+            name: "assert".to_string(),
+            premise,
+            equation,
+            params,
+            local_rules,
+          };
+          state.raw_goals.push(raw_goal);
+        } else {
+          // wrap it in a = True
+          let mut lhs = mangle_sexp(&assertion[2]);
+          lhs = fix_all_names(&lhs, &fixed_names);
+          // println!("lhs: {}", lhs);
+          let rhs = mangle_sexp(&Sexp::String("True".to_string()));
+          let equation = RawEquation { lhs, rhs };
+          let raw_goal = RawGoal {
+            name: "assert".to_string(),
+            premise,
+            equation,
+            params,
+            local_rules,
+          };
+          state.raw_goals.push(raw_goal);
+        }
+      }
+      "check-sat" => {}
+      _ => panic!("unknown declaration: {}", decl),
+    }
+  }
+
+  Ok(state)
+}
+
+/// Wraps the entire contents in parentheses so that it can be read as one big Sexp
+fn add_parantheses_to_file(filename: &str) -> std::io::Result<()> {
+  let mut file = File::open(filename)?;
+  let mut contents = String::new();
+  file.read_to_string(&mut contents)?;
+
+  if contents.as_str().chars().nth(1).unwrap() == '(' {
+    // The file already has parentheses
+    return Ok(());
+  }
+
+  // Wrap the contents in parentheses
+  let modified_contents = format!("({})", contents);
+
+  let mut file = File::create(filename)?;
+  file.write_all(modified_contents.as_bytes())?;
+
+  Ok(())
+}
+
+///A recursive function to parse smtlib function definition bodies
+// The body can be either a match or a let
+// If it's a match, we parse each case, and each case gives us a rewrite rule
+fn parse_func_body(
+  name: &str,
+  body: &Vec<Sexp>,
+  type_info: &HashMap<String, Sexp>,
+  fixed_names: &HashMap<String, String>,
+  arg_values: &mut IndexMap<String, Sexp>,
+  lets: &mut HashMap<String, Sexp>,
+  state: &mut ParserState,
+) -> Result<(), SexpError> {
+  let body_kind = body[0].string()?.as_str();
+
+  // println!("parsing body: {:?}", body);
+  match body_kind {
+    "match" => {
+      let var_matched = body[1].string()?;
+      let mut matched_constructors: Vec<Symbol> = vec![];
+      let mut cases = body[2].list()?.clone();
+      let new_cases = expand_cases_in_match(cases, state, var_matched, type_info, fixed_names);
+      // each list in cases is a case
+      for case in new_cases {
+        let case_list = case.list()?;
+        let mut case_lhs = case_list[0].clone();
+        let mut case_rhs = case_list[1].clone();
+        // println!("case lhs: {:#?}", case_lhs);
+        // println!("case rhs: {:#?}", case_rhs);
+        match case_lhs {
+          Sexp::String(ref s) => {
+            // if the case lhs is a string, it's a constructor
+            // we need to fix the name
+            // case_lhs = Sexp::String(fixed_names.get(&s).unwrap_or(&s).to_string());
+            arg_values.insert(var_matched.to_string(), case_lhs.clone());
+            matched_constructors.push(Symbol::from(&mangle_name(s)));
+          }
+          Sexp::List(ref _l) => {
+            // replace each variable by ?variable
+            add_question_marks(&mut case_lhs, fixed_names);
+            arg_values.insert(var_matched.to_string(), case_lhs.clone());
+            matched_constructors.push(Symbol::from(&mangle_name(case_lhs.list()?[0].string()?)));
+          }
+          _ => panic!("unknown case lhs: {}", case_lhs),
+        }
+        // now we need to parse the rhs
+        // the rhs could be a match, a let, or just a value
+        match case_rhs {
+          Sexp::String(ref _s) => {
+            // if the rhs is a string, it's a constructor
+            // we need to fix the name
+            // println!("HERE");
+            let lhs_vec = arg_values
+              .iter()
+              .map(|(_, v)| v.clone())
+              .collect::<Vec<Sexp>>();
+
+            // reset the arg values to the original
+            for (k, v) in arg_values.iter_mut() {
+              if k == var_matched {
+                *v = Sexp::String("?".to_string() + k);
+              }
+            }
+            panic_if_native_stuff(&mut case_rhs);
+            fix_bools(&mut case_rhs);
+            replace_lets(&mut case_rhs, lets);
+            add_question_marks(&mut case_rhs, fixed_names);
+
+            state.rules.push(make_rewrite_for_defn(
+              &mangle_name(name),
+              &Sexp::List(lhs_vec),
+              &case_rhs,
+            ));
+          }
+          Sexp::List(ref l) => {
+            let hd = l[0].string()?;
+            if hd == "match" || hd == "let" {
+              let _ = parse_func_body(name, l, type_info, fixed_names, arg_values, lets, state);
+            } else {
+              // the first element should be a constructor (or function?) name, lookup the fixed name and fix it
+              let lhs_vec = arg_values
+                .iter()
+                .map(|(_, v)| v.clone())
+                .collect::<Vec<Sexp>>();
+              // reset the arg values to the original
+              for (k, v) in arg_values.iter_mut() {
+                if k == var_matched {
+                  *v = Sexp::String("?".to_string() + k);
+                }
+              }
+              panic_if_native_stuff(&mut case_rhs);
+              fix_bools(&mut case_rhs);
+              replace_lets(&mut case_rhs, lets);
+              add_question_marks(&mut case_rhs, fixed_names);
+              state.rules.push(make_rewrite_for_defn(
+                &mangle_name(name),
+                &Sexp::List(lhs_vec),
+                &case_rhs,
+              ));
+            }
+          }
+          _ => panic!("unknown case rhs: {}", case_rhs),
+        }
+      }
+      return Ok(());
+    }
+    "let" => {
+      // println!("let");
+      // println!("{:#?}", body);
+      let var_name = body[1].string()?;
+      let var_value = body[2].clone();
+      lets.insert(var_name.to_string(), var_value);
+      let _ = parse_func_body(
+        name,
+        body[3].list().unwrap(),
+        type_info,
+        fixed_names,
+        arg_values,
+        lets,
+        state,
+      );
+      return Ok(());
+    }
+    _ => {
+      // anything else is probably a function or a value
+      // if it's a function, we want to parse each argument and then apply the function
+      Ok(())
+    }
+  }
+}
+
+/// Ensures that all names are valid, i.e.
+/// - all variables and function names start with a lowercase letter
+/// - all datatypes and constructors start with an uppercase letter
+///
+fn fix_all_names(sexpr: &Sexp, fixed_names: &HashMap<String, String>) -> Sexp {
+  match sexpr {
+    Sexp::String(s) => Sexp::String(fixed_names.get(s).unwrap_or(s).to_string()),
+    Sexp::List(l) => Sexp::List(l.iter().map(|x| fix_all_names(x, fixed_names)).collect()),
+    _ => sexpr.clone(),
+  }
+}
+
+fn add_question_marks(sexp: &mut Sexp, fixed_names: &HashMap<String, String>) {
+  // println!("fixed names: {:?}", fixed_names);
+  match sexp {
+    Sexp::String(ref s) if s.starts_with(char::is_alphanumeric) => {
+      if !fixed_names.values().any(|y| y == s) {
+        *sexp = Sexp::String("?".to_string() + s);
+      } else {
+        *sexp = Sexp::String(s.to_string());
+      };
+    }
+    Sexp::List(ref mut l) => {
+      for x in l {
+        add_question_marks(x, fixed_names);
+      }
+    }
+    _ => (),
+  }
+}
+
+fn replace_lets(sexp: &mut Sexp, lets: &HashMap<String, Sexp>) {
+  match sexp {
+    Sexp::String(ref s) => {
+      if let Some(x) = lets.get(s) {
+        *sexp = x.clone();
+      }
+    }
+    Sexp::List(ref mut l) => {
+      for x in l {
+        replace_lets(x, lets);
+      }
+    }
+    _ => (),
+  }
+}
+
+fn panic_if_native_stuff(sexp: &Sexp) {
+  match sexp {
+    Sexp::String(ref s) => {
+      if !s.starts_with(char::is_alphabetic) && !s.starts_with("=") {
+        panic!("we can't use native stuff: {}", s);
+      }
+    }
+    Sexp::List(ref l) => {
+      for x in l {
+        panic_if_native_stuff(x);
+      }
+    }
+    _ => (),
+  }
+}
+
+fn fix_bools(sexp: &mut Sexp) {
+  match sexp {
+    Sexp::String(ref s) => {
+      if s == "true" {
+        *sexp = Sexp::String("True".to_string());
+      } else if s == "false" {
+        *sexp = Sexp::String("False".to_string());
+      }
+    }
+    Sexp::List(ref mut l) => {
+      for x in l {
+        fix_bools(x);
+      }
+    }
+    _ => (),
+  }
+}
+
+fn replace_all_occurrences(sexp: &mut Sexp, old: &Sexp, new: &Sexp) {
+  if sexp == old {
+    *sexp = new.clone();
+  } else {
+    match sexp {
+      Sexp::String(_) => (),
+      Sexp::List(ref mut l) => {
+        for x in l {
+          replace_all_occurrences(x, old, new);
+        }
+      }
+      _ => (),
+    }
+  }
+}
+
+fn expand_cases_in_match(
+  cases: Vec<Sexp>,
+  state: &ParserState,
+  var_matched: &String,
+  type_info: &HashMap<String, Sexp>,
+  fixed_names: &HashMap<String, String>,
+) -> Vec<Sexp> {
+  let mut new_cases: Vec<Sexp> = vec![];
+  let mut matched_constructors: Vec<Symbol> = vec![];
+  for case in cases {
+    // println!("case: {:?}", case);
+    let case_list = case.list().unwrap();
+    let mut case_lhs = case_list[0].clone();
+    let mut case_rhs = case_list[1].clone();
+
+    match case_lhs {
+      Sexp::String(ref s) => {
+        // if the case lhs is a string, it's a constructor
+        // we need to fix the name
+        // case_lhs = Sexp::String(fixed_names.get(&s).unwrap_or(&s).to_string());
+        if s != "_" {
+          new_cases.push(case.clone());
+          matched_constructors.push(Symbol::from(&mangle_name(s)));
+        } else {
+          // for each unmatched constructor we need to add a rewrite rule. add this to cases directly
+          // println!("matched constructors: {:?}", matched_constructors);
+          let mut unmatched_constructors: Vec<Symbol> = vec![];
+          // get the type of this variable first
+          let type_info = type_info.get(var_matched).unwrap();
+          // println!("type info: {}", type_info);
+          let vtype = if type_info.is_string() {
+            type_info.string().unwrap().to_string()
+          } else {
+            type_info.list().unwrap()[0].string().unwrap().to_string()
+          };
+          // println!("{}", type_info.list()?[1]);
+          if let Some(x) = state.env.get(&Symbol::from(&mangle_name(&vtype))) {
+            for c in &x.1 {
+              if !matched_constructors.contains(c) {
+                unmatched_constructors.push(c.clone());
+              }
+            }
+          }
+          // println!("unmatched constructors: {:?}", unmatched_constructors);
+          // for each unmatched constructor, we need to add a case to cases
+          for c in unmatched_constructors {
+            // get the type of this constructor from the context
+            let mut typ: Sexp;
+            let mut case_lhs_tmp: Sexp;
+            let mut case_rhs_tmp: Sexp;
+            let x = state.context.get(&c).unwrap();
+            typ = x.repr.clone();
+
+            if typ.is_string() {
+              case_lhs_tmp = Sexp::String(c.to_string());
+              case_rhs_tmp = case_rhs.clone();
+              replace_all_occurrences(
+                &mut case_rhs_tmp,
+                &Sexp::String(var_matched.to_string()),
+                &case_lhs_tmp,
+              );
+            } else {
+              // arrow type, so get the params and for each param create a fresh variable
+              let params = typ.list().unwrap()[1].list().unwrap();
+              // let mut arg_values_tmp = arg_values.clone();
+              let mut lhsvec = vec![Sexp::String(c.to_string())];
+              for i in 0..params.len() {
+                let param_name = params[i].string().unwrap();
+                let fresh_var =
+                  Sexp::String("".to_string() + &param_name.to_ascii_lowercase() + &i.to_string());
+                lhsvec.push(fresh_var.clone());
+                // arg_values.insert(param_name.to_string(), fresh_var);
+              }
+              case_lhs_tmp = Sexp::List(lhsvec);
+              case_rhs_tmp = case_rhs.clone();
+              replace_all_occurrences(
+                &mut case_rhs_tmp,
+                &Sexp::String(var_matched.to_string()),
+                &case_lhs_tmp,
+              );
+            }
+
+            // now add this case to cases
+            let case_tmp = vec![case_lhs_tmp, case_rhs_tmp];
+            new_cases.push(Sexp::List(case_tmp));
+          }
+        }
+      }
+      Sexp::List(ref _l) => {
+        // replace each variable by ?variable
+        // add_question_marks(&mut case_lhs, fixed_names);
+        // arg_values.insert(var_matched.to_string(), case_lhs.clone());
+        matched_constructors.push(Symbol::from(&mangle_name(
+          case_lhs.list().unwrap()[0].string().unwrap(),
+        )));
+        new_cases.push(case.clone());
+      }
+      _ => panic!("unknown case lhs: {}", case_lhs),
+    }
+  }
+  new_cases
 }

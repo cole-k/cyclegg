@@ -1,8 +1,26 @@
 use std::{fs::create_dir_all, path::PathBuf, sync::Mutex};
 
-use clap::Parser;
+use clap::{ArgEnum, Parser};
 use lazy_static::lazy_static;
 use log::Level;
+
+#[derive(Debug, Copy, Clone, PartialEq, ArgEnum)]
+pub enum FileType {
+  Ceg,
+  Smtlib,
+}
+
+// impl FromStr for FileType {
+//   type Err = String;
+
+//   fn from_str(s: &str) -> Result<Self, Self::Err> {
+//     match s {
+//       "ceg" => Ok(FileType::Ceg),
+//       "smtlib" => Ok(FileType::Smtlib),
+//       _ => Err(format!("Unknown file type: {}", s)),
+//     }
+//   }
+// }
 
 #[derive(Parser)]
 pub struct Args {
@@ -96,6 +114,7 @@ pub struct Config {
   pub mangle_names: bool,
   pub proof_comments: bool,
   pub blocking_vars_analysis: bool,
+  pub filetype: FileType,
 }
 
 impl Config {
@@ -138,6 +157,13 @@ impl Config {
       proof_comments: !args.no_proof_comments,
       prop: args.prop.clone(),
       blocking_vars_analysis: !args.no_blocking_analysis,
+      filetype: if args.filename.ends_with(".ceg") {
+        FileType::Ceg
+      } else if args.filename.ends_with(".smt2") {
+        FileType::Smtlib
+      } else {
+        panic!("Unknown file type: {}", args.filename)
+      },
     }
   }
 

@@ -474,12 +474,21 @@ impl<'a> Goal<'a> {
     reductions: &'a Vec<Rw>,
     defns: &'a Defns,
   ) -> Self {
+    // print all the components for debug
+
     let mut egraph: Eg = EGraph::default().with_explanations_enabled();
     let eq = Equation::new(eq, &mut egraph, false);
     let premise = premise
       .as_ref()
       .map(|eq| Equation::new(eq, &mut egraph, true));
     let var_classes = lookup_vars(&egraph, params.iter().map(|(x, _)| x));
+
+    // println!("GOAL: {}", name);
+    // println!("Equation: {:?}", eq);
+    // println!("Premise: {:?}", premise);
+    // println!("Params: {:?}", params);
+    // println!("Reductions: {:?}", reductions);
+    // println!("Definitions: {:?}", defns);
 
     let mut res = Self {
       name: name.to_string(),
@@ -727,10 +736,15 @@ impl<'a> Goal<'a> {
   /// Add var as a scrutinee if its type `ty` is a datatype;
   /// if depth bound is exceeded, add a sentinel symbol instead
   fn add_scrutinee(&mut self, var: Symbol, ty: &Type, depth: usize) {
+    // println!("adding scrutinee {} of type {} at depth {}", var, ty, depth);
     if let Ok(dt) = ty.datatype() {
+      // println!("OK {}", dt);
+      // println!("ENV {:#?}", self.env);
       if self.env.contains_key(&Symbol::from(dt)) {
+        // println!("OK2");
         // Only add new variable to scrutinees if its depth doesn't exceed the bound
         if depth < CONFIG.max_split_depth {
+          // println!("CAN ADD");
           self.scrutinees.push_back(var);
         } else {
           self.scrutinees.push_back(Symbol::from(BOUND_EXCEEDED));
@@ -812,8 +826,12 @@ impl<'a> Goal<'a> {
       new_goal.name = format!("{}:", self.name);
       new_goal.lemmas = new_lemmas.clone();
 
+      // println!("CON: {}", con);
+      // println!("GLOBC {:#?}", self.global_context);
+
       // Get the types of constructor arguments
       let con_ty = self.global_context.get(&con).unwrap();
+      println!("CON TY: {}", con_ty);
       let con_args = Goal::instantiate_constructor(con_ty, ty);
       // For each argument: create a fresh variable and add it to the context and to scrutinees
       let mut fresh_vars = vec![];
@@ -879,6 +897,7 @@ impl<'a> Goal<'a> {
 
       // Add the subgoal to the proof state
       state.goals.push(new_goal);
+      // println!("goals: {:?}", state.goals.len());
     }
     // We split on var into the various instantiated constructors and subgoals.
     //
@@ -1266,6 +1285,8 @@ pub fn prove(mut goal: Goal) -> (Outcome, ProofState) {
     warn!("PROOF STATE: {}", pretty_state(&state));
     // Pop the first subgoal
     goal = state.goals.pop().unwrap();
+
+    // println!("GOAL SCRUTINEES: {:#?}", goal.scrutinees);
     // Saturate the goal
     goal = goal.saturate();
     if CONFIG.save_graphs {

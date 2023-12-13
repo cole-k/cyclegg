@@ -200,6 +200,8 @@ pub fn contains_function(sexp: &Sexp) -> bool {
 }
 
 fn find_instantiations_helper(proto: &Sexp, actual: &Sexp, instantiations_map: &mut SSubst) {
+  // println!("proto: {}", proto);
+  // println!("actual: {}", actual);
   match (proto, actual) {
     (Sexp::Empty, _) | (_, Sexp::Empty) => unreachable!(),
     (Sexp::String(proto_str), actual_sexp) => {

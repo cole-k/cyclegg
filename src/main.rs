@@ -11,7 +11,7 @@ pub mod goal;
 pub mod parser;
 pub mod utils;
 
-use config::{ARGS, CONFIG};
+use config::{FileType, ARGS, CONFIG};
 use explain::explain_top;
 use goal::*;
 use parser::*;
@@ -21,7 +21,11 @@ use crate::{explain::goal_name_to_filename, goal::Goal};
 fn main() -> Result<()> {
   simple_logger::init_with_level(CONFIG.log_level).unwrap();
 
-  let parser_state = parse_file(&ARGS.filename).unwrap();
+  let parser_state = if CONFIG.filetype == FileType::Ceg {
+    parse_ceg_file(&ARGS.filename).unwrap()
+  } else {
+    parse_smtlib_file(&ARGS.filename).unwrap()
+  };
 
   let mut result_file = if CONFIG.save_results {
     Some(File::create(CONFIG.output_directory.join("results.csv"))?)
@@ -45,6 +49,7 @@ fn main() -> Result<()> {
       &reductions,
       &defns,
     );
+
     if let Some(prop_name) = &CONFIG.prop {
       if &goal.name != prop_name {
         continue;

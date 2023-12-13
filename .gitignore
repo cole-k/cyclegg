@@ -5,3 +5,4 @@
 .auctex-auto
 /cvc4-comparison/ind/**
 /cvc4-comparison/cvc4
+logs/
