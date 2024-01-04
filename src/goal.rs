@@ -331,12 +331,16 @@ impl ETermEquation {
 pub struct LemmaRewrite {
   pub lhs_to_rhs: Option<(String, Rw)>,
   pub rhs_to_lhs: Option<(String, Rw)>,
-  pub lemma_name: String,
+  pub lemma_number: usize,
   pub lemma_prop: Prop,
 }
 
 impl LemmaRewrite {
-  pub fn new(lhs_to_rhs: Option<(String, Rw)>, rhs_to_lhs: Option<(String, Rw)>, lemma_name: String, lemma_prop: Prop) -> Self { Self { lhs_to_rhs, rhs_to_lhs, lemma_name, lemma_prop } }
+  pub fn new(lhs_to_rhs: Option<(String, Rw)>, rhs_to_lhs: Option<(String, Rw)>, lemma_number: usize, lemma_prop: Prop) -> Self { Self { lhs_to_rhs, rhs_to_lhs, lemma_number, lemma_prop } }
+
+  pub fn lemma_name(&self) -> String {
+    format!("lemma_{}", self.lemma_number)
+  }
 
   pub fn names_and_rewrites(&self) -> Vec<(String, Rw)> {
     self.lhs_to_rhs.iter().chain(self.rhs_to_lhs.iter()).cloned().collect()
@@ -609,7 +613,7 @@ impl<'a> Goal<'a> {
   /// add_termination_check is true, otherwise they will not.
   ///
   /// The rewrites will each be named lemma_n.
-  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, state: &mut ProofState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
+  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, state: &ProofState, lemmas_state: &mut LemmasState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
     let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
     let is_var = |v| self.local_context.contains_key(v);
     let mut rewrites = self.lemmas.clone();
@@ -623,9 +627,9 @@ impl<'a> Goal<'a> {
         if state.timeout() {
           return (rewrites, lemma_rws);
         }
-        let lemma_name = state.fresh_lemma_name();
+        let lemma_number = lemmas_state.fresh_lemma();
 
-        if let Some(lemma_rw) = self.make_lemma_rewrite(lhs_expr, rhs_expr, &premises, add_termination_check, lemma_name) {
+        if let Some(lemma_rw) = self.make_lemma_rewrite(lhs_expr, rhs_expr, &premises, add_termination_check, lemma_number) {
           // Add the rewrites (if lemma_rw is some at least one is guaranteed to exist).
           lemma_rw.add_to_rewrites(&mut rewrites);
           lemma_rws.push(lemma_rw);
@@ -636,7 +640,7 @@ impl<'a> Goal<'a> {
     (rewrites, lemma_rws)
   }
 
-  fn make_lemma_rewrite(&self, lhs_expr: &Expr, rhs_expr: &Expr, premises: &Vec<ETermEquation>, add_termination_check: bool, lemma_name: String)
+  fn make_lemma_rewrite(&self, lhs_expr: &Expr, rhs_expr: &Expr, premises: &Vec<ETermEquation>, add_termination_check: bool, lemma_number: usize)
                         -> Option<LemmaRewrite> {
     let is_var = |v| self.local_context.contains_key(v);
 
@@ -696,12 +700,13 @@ impl<'a> Goal<'a> {
     let mut lemma_rw = LemmaRewrite {
       lhs_to_rhs: None,
       rhs_to_lhs: None,
-      lemma_name: lemma_name.clone(),
+      lemma_number,
       lemma_prop: Prop {
         eq: rewrite_eq,
         params: params.clone(),
       }
     };
+    let lemma_name = lemma_rw.lemma_name();
     if rhs_vars.is_subset(&lhs_vars) {
       // if rhs has no extra wildcards, create a lemma lhs => rhs
       let lhs_to_rhs = Goal::make_rewrite(lhs.clone(), rhs.clone(), condition.clone(), lemma_name.clone(), add_termination_check);
@@ -742,7 +747,7 @@ impl<'a> Goal<'a> {
   /// Create a rewrite `lhs => rhs` which will serve as the lemma ("induction hypothesis") for a cycle in the proof;
   /// here lhs and rhs are patterns, created by replacing all scrutinees with wildcards;
   /// soundness requires that the pattern only apply to variable tuples smaller than the current scrutinee tuple.
-  fn add_lemma_rewrites(&self, state: &mut ProofState) -> BTreeMap<String, Rw> {
+  fn add_lemma_rewrites(&self, state: &ProofState, lemmas_state: &mut LemmasState, ih_lemma_number: usize) -> BTreeMap<String, Rw> {
     // Special case: the first time we add lemmas (i.e. when there are no
     // previous lemmas), we will make lemma rewrites out of the lhs and rhs only
     // and we will use the special IH name.
@@ -751,13 +756,13 @@ impl<'a> Goal<'a> {
       let mut rewrites = self.lemmas.clone();
       // In the non-cyclic case, only use the original LHS and RHS
       // and only if no other lemmas have been added yet
-      let lemma_rw = self.make_lemma_rewrite(&self.eq.lhs.expr, &self.eq.rhs.expr, &premises, true, state.ih_lemma_name.clone()).unwrap();
+      let lemma_rw = self.make_lemma_rewrite(&self.eq.lhs.expr, &self.eq.rhs.expr, &premises, true, ih_lemma_number).unwrap();
       lemma_rw.add_to_rewrites(&mut rewrites);
       return rewrites;
     }
     // Otherwise, we only create lemmas when we are operating in the cyclic mode
     if CONFIG.is_cyclic() {
-      self.make_cyclic_lemma_rewrites(state, true).0
+      self.make_cyclic_lemma_rewrites(state, lemmas_state, true).0
     } else {
       self.lemmas.clone()
     }
@@ -765,12 +770,12 @@ impl<'a> Goal<'a> {
   }
 
   /// Creates cyclic lemmas from the current goal.
-  fn make_cyclic_lemma_rewrites(&self, state: &mut ProofState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
+  fn make_cyclic_lemma_rewrites(&self, state: &ProofState, lemmas_state: &mut LemmasState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
     let premises = self.update_premises();
-    self.make_lemma_rewrites_from_all_exprs(lhs_id, rhs_id, premises, state, add_termination_check)
+    self.make_lemma_rewrites_from_all_exprs(lhs_id, rhs_id, premises, state, lemmas_state, add_termination_check)
   }
 
   /// Add a rewrite `lhs => rhs` to `rewrites` if not already present
@@ -858,8 +863,8 @@ impl<'a> Goal<'a> {
   }
 
   /// Consume this goal and add its case splits to the proof state
-  fn case_split(self, scrutinee: Scrutinee, state: &mut ProofState<'a>) {
-    let new_lemmas = self.add_lemma_rewrites(state);
+  fn case_split(self, scrutinee: Scrutinee, state: &ProofState, lemmas_state: &mut LemmasState, lemma_proof_state: &LemmaProofState) -> (ProofTerm, Vec<Goal<'a>>) {
+    let new_lemmas = self.add_lemma_rewrites(state, lemmas_state, lemma_proof_state.ih_lemma_number);
 
     let var_str = scrutinee.name.to_string();
     warn!("case-split on {}", scrutinee.name);
@@ -876,6 +881,8 @@ impl<'a> Goal<'a> {
     let (_, cons) = self.global_search_state.env.get(&dt).unwrap();
     // We will add this to state.proof to describe the case split.
     let mut instantiated_cons_and_goals: Vec<(String, String)> = vec![];
+    // These are the new goals generated from the case split
+    let mut goals = vec![];
 
     // Create a new goal for each constructor we can case split to and add it to
     // the proof state.
@@ -959,33 +966,28 @@ impl<'a> Goal<'a> {
       }
 
       // Add the subgoal to the proof state
-      state.goals.push_back(new_goal);
+      goals.push(new_goal);
     }
     // We split on var into the various instantiated constructors and subgoals.
     //
     // If the var is an ITE split, we will add the condition that was split on
     // to our proof term. This is necessary because for ITE splits we introduce
     // a new variable that we bind an expression to.
-    match scrutinee.scrutinee_type {
+    let proof_term = match scrutinee.scrutinee_type {
       ScrutineeType::Guard => {
         // There should only be two cases.
         assert_eq!(instantiated_cons_and_goals.len(), 2);
-        state.proof_info.proof.insert(
-          self.name,
-          ProofTerm::ITESplit(
-            var_str.clone(),
-            self.guard_exprs[&var_str].to_string(),
-            instantiated_cons_and_goals,
-          ),
-        );
+        ProofTerm::ITESplit(
+          var_str.clone(),
+          self.guard_exprs[&var_str].to_string(),
+          instantiated_cons_and_goals,
+        )
       }
       ScrutineeType::Var => {
-        state.proof_info.proof.insert(
-          self.name,
-          ProofTerm::CaseSplit(var_str, instantiated_cons_and_goals),
-        );
+        ProofTerm::CaseSplit(var_str, instantiated_cons_and_goals)
       }
     };
+    (proof_term, goals)
   }
 
   fn find_blocking(&self, state: &ProofState) -> (BTreeSet<Symbol>, BTreeSet<Id>) {
@@ -1248,7 +1250,7 @@ impl<'a> Goal<'a> {
   ///
   /// These are lemmas we propose from subterms in the e-graph that our concrete
   /// analysis deems equal on some set of random terms.
-  fn search_for_cc_lemmas(&mut self, state: &mut ProofState) -> Vec<Prop> {
+  fn search_for_cc_lemmas(&mut self, state: &ProofState) -> Vec<Prop> {
     let mut lemmas = vec!();
     self.egraph.analysis.cvec_analysis.saturate();
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
@@ -1526,6 +1528,36 @@ impl<'a> Goal<'a> {
       })
     }).collect()
   }
+
+  /// Debug function to search for a pair of patterns in the e-graph
+  fn debug_search_for_patterns_in_egraph(&self) {
+    self.global_search_state.searchers.iter().for_each(|searcher: &ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>| {
+      let results = searcher.search(&self.egraph);
+      let extractor = Extractor::new(&self.egraph, AstSize);
+      if results.len() > 0 {
+        println!("Found search result for {} =?> {}", searcher.searcher, searcher.condition);
+        for result in results {
+          println!("Result eclass: {}", result.eclass);
+          result.substs.iter().for_each(|subst|{
+            for var in searcher.searcher.vars().iter() {
+              let exp = extractor.find_best(subst[*var]).1;
+              println!("Var {} = {}", var, exp);
+            }
+          });
+          let result_cvec = &self.egraph[result.eclass].data.cvec_data;
+          for eclass in self.egraph.classes() {
+            if eclass.id == result.eclass {
+              continue;
+            }
+            if let Some(true) = cvecs_equal(&self.egraph.analysis.cvec_analysis, result_cvec, &self.egraph[eclass.id].data.cvec_data) {
+              let exp = extractor.find_best(eclass.id).1;
+              println!("Matching eclass via cvec analysis: {} (id {})", exp, eclass.id);
+            }
+          }
+        }
+      };
+    });
+  }
 }
 
 impl<'a> Display for Goal<'a> {
@@ -1612,74 +1644,235 @@ impl std::fmt::Display for ProofLeaf {
   }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct LemmasState {
   pub proven_lemmas: MinElements<Prop>,
   pub invalid_lemmas: MaxElements<Prop>,
-  pub possible_lemmas: ChainSet<Prop>,
   pub lemma_rewrites: BTreeMap<String, Rw>,
-  pub cyclic_lemmas: ChainSet<Prop>,
-  pub cyclic_lemma_rewrites: BTreeMap<String, Rw>,
-  pub last_lemma_proven: Option<String>,
-  /// What was the last lemma we had proven at the time of our last attempt to
-  /// prove this lemma?
-  pub last_lemma_proven_at_last_attempt: BTreeMap<String, Option<String>>,
+  // When we make a new state, this gets initialized to 0
+  pub lemma_number: usize,
+  pub all_lemmas: Vec<(usize, Prop)>,
 }
 
 impl LemmasState {
-  pub fn add_possible_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I) {
-    // Ignore the lemma if we already have a lemma that subsumes it
-    self.possible_lemmas.extend(iter.into_iter().filter(|lemma| {
-      let is_proven = self.proven_lemmas.contains_leq(&lemma);
-      let is_cyclic = self.cyclic_lemmas.contains_leq(&lemma);
-      let is_invalid = self.invalid_lemmas.contains_geq(&lemma);
-      let is_too_big = CONFIG.max_lemma_size > 0
-        && sexp_size(&lemma.eq.lhs) + sexp_size(&lemma.eq.rhs) > CONFIG.max_lemma_size;
-      // if is_proven {
-      //   println!("skipping lemma {}={}", lemma.eq.lhs, lemma.eq.rhs);
-      // } else {
-      //   println!("adding lemma {}={}", lemma.eq.lhs, lemma.eq.rhs);
-      // }
-      !is_proven && !is_invalid && !is_too_big && !is_cyclic
-    }));
+  pub fn is_valid_new_prop(&mut self, prop: &Prop) -> bool {
+    let is_proven = self.proven_lemmas.contains_leq(&prop);
+    let is_invalid = self.invalid_lemmas.contains_geq(&prop);
+    let is_too_big = CONFIG.max_lemma_size > 0
+      && sexp_size(&prop.eq.lhs) + sexp_size(&prop.eq.rhs) > CONFIG.max_lemma_size;
+    !is_proven && !is_invalid && !is_too_big
   }
+
+  /// This is slow: a change of data structure might be appropriate here. We
+  /// might consider normalizing the props somehow so that we don't have to do a
+  /// slow comparison to determine equality.
+  pub fn find_or_make_fresh_lemma(&mut self, prop: &Prop) -> usize {
+    self.all_lemmas.iter().find_map(|(lemma_number, p)| {
+      if p == prop {
+        Some(*lemma_number)
+      } else {
+        None
+      }
+    })
+                          .unwrap_or_else(||self.fresh_lemma())
+  }
+
+  pub fn fresh_lemma(&mut self) -> usize {
+    let number = self.lemma_number;
+    self.lemma_number += 1;
+    number
+  }
+
 }
 
+#[derive(Default)]
 pub struct ProofInfo {
   pub solved_goal_proofs: BTreeMap<String, ProofLeaf>,
   pub proof: BTreeMap<String, ProofTerm>,
 }
 
-/// A proof state is a list of subgoals,
-/// all of which have to be discharged
 pub struct ProofState<'a> {
-  pub goals: VecDeque<Goal<'a>>,
-  pub proof_info: ProofInfo,
   pub start_time: Instant,
-  pub proof_depth: usize,
   pub lemmas_state: LemmasState,
+  pub lemma_proofs: BTreeMap<usize, LemmaProofState<'a>>,
+}
+
+pub struct LemmaProofState<'a> {
+  pub goals: VecDeque<Goal<'a>>,
+  pub lemma_proof: ProofInfo,
+  pub outcome: Option<Outcome>,
+  pub proof_depth: usize,
   pub case_split_depth: usize,
-  pub lemma_proofs: Vec<(String, Prop, ProofInfo)>,
-  pub ih_lemma_name: String,
-  pub lemma_number: usize,
-  // pub cc_lemmas: HashMap<String, Rw>,
+  pub ih_lemma_number: usize,
+  pub theorized_lemmas: ChainSet<Prop>,
+}
+
+impl<'a> LemmaProofState<'a> {
+  pub fn new(lemma_number: usize, prop: Prop, premise: &Option<Equation>, global_search_state: GlobalSearchState<'a>, proof_depth: usize) -> Self {
+    let goal = Goal::top(&format!("lemma_{}", lemma_number), &prop, premise, global_search_state);
+    Self {
+      goals: [goal].into(),
+      lemma_proof: ProofInfo::default(),
+      outcome: None,
+      proof_depth,
+      case_split_depth: 0,
+      ih_lemma_number: lemma_number,
+      theorized_lemmas: ChainSet::default(),
+    }
+  }
+
+  pub fn add_possible_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I, lemmas_state: &LemmasState) {
+    self.theorized_lemmas.extend(iter.into_iter().filter(|lemma| {
+      lemmas_state.is_valid_new_prop(lemma)
+    }));
+  }
+
+  pub fn try_next_goal(&mut self, state: &ProofState<'a>, lemmas_state: &mut LemmasState) {
+    // TODO: This should be info! but I don't know how to suppress all the info output from egg
+    warn!("PROOF STATE: {}", pretty_state(&state));
+    // Pop the first subgoal
+    let goal = self.goals.pop_front().unwrap();
+    // FIXME: need to run the analysis properly here
+    // if goal.cvecs_valid() == Some(false) {
+    //   // FIXME: add cvec counterexample to proof
+    //   if CONFIG.verbose {
+    //     println!("proved goal via cvec counterexample");
+    //   }
+    //   continue;
+    // }
+    // Saturate the goal
+    goal.saturate(&lemmas_state.lemma_rewrites);
+    if CONFIG.save_graphs {
+      goal.save_egraph();
+    }
+    if let Some(proof_leaf) = goal.find_proof() {
+      // println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
+      self.process_goal_explanation(proof_leaf, goal);
+      return;
+
+    }
+    if CONFIG.verbose {
+      explain_goal_failure(&goal);
+    }
+    warn!("goal scrutinees before split: {:?}", goal.scrutinees);
+    goal.split_ite();
+    warn!("goal scrutinees after split: {:?}", goal.scrutinees);
+    if goal.scrutinees.is_empty() {
+      // This goal has no more variables to case-split on,
+      // so this goal, and hence the whole conjecture, is invalid
+      if CONFIG.verbose {
+        for remaining_goal in &self.goals {
+          println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
+        }
+      }
+      self.outcome = Some(Outcome::Invalid);
+      return;
+    }
+    let (blocking_vars, blocking_exprs) =
+      if !CONFIG.blocking_vars_analysis {
+        warn!("Blocking var analysis is disabled");
+        (goal.scrutinees.iter().map(|s| s.name).collect(), BTreeSet::default())
+      } else {
+        let (blocking_vars, blocking_exprs) = goal.find_blocking(&state);
+        if CONFIG.verbose {
+          println!("blocking vars: {:?}", blocking_vars);
+        }
+        (blocking_vars, blocking_exprs)
+      };
+
+    if CONFIG.generalization {
+      // TODO: now that we generalize in the cc lemma search, do we need this?
+      self.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs), lemmas_state);
+    }
+    if CONFIG.cc_lemmas {
+      let possible_lemmas = goal.search_for_cc_lemmas(&state);
+      self.add_possible_lemmas(possible_lemmas, lemmas_state);
+    }
+    // This ends up being really slow so we'll just take the lemma duplication for now
+    // It's unclear that it lets us prove that much more anyway.
+    // state.add_cyclic_lemmas(&goal);
+
+    goal.debug_search_for_patterns_in_egraph();
+
+    if let Some(scrutinee) = goal.next_scrutinee(blocking_vars) {
+      // let d = depth.max(depth_at_front);
+      if scrutinee.depth > self.case_split_depth {
+        // println!("depth {} is greater than current depth, increasing.", depth);
+        self.case_split_depth = scrutinee.depth;
+      }
+      if self.case_split_depth >= CONFIG.max_split_depth {
+        // println!("Bailing because depth is too high");
+        // This goal could be further split, but we have reached the maximum depth,
+        // we cannot prove or disprove the conjecture
+        self.outcome = Some(Outcome::Unknown);
+        return;
+      }
+      if CONFIG.verbose {
+        println!(
+          "{}: {}",
+          "Case splitting and continuing".purple(),
+          scrutinee.name.to_string().purple()
+        );
+      }
+      let (proof_term, goals) = goal.case_split(scrutinee, &state);
+      // This goal is now an internal node in the proof tree.
+      self.lemma_proof.proof.insert(goal.name, proof_term);
+      // Add the new goals to the back of the VecDeque.
+      self.goals.extend(goals);
+    } else {
+      if CONFIG.verbose {
+        println!("{}", "Cannot case split: no blocking variables found".red());
+        for remaining_goal in &self.goals {
+          println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
+        }
+      }
+      // We cannot guarantee that the lemma is invalid if there are still
+      // non-blocking variables of a higher case split depth than we will
+      // consider.
+      //
+      // FIXME: Why?
+      if goal.scrutinees.iter().any(|s| s.depth >= CONFIG.max_split_depth) {
+        self.outcome = Some(Outcome::Unknown);
+      } else {
+        self.outcome = Some(Outcome::Invalid);
+      }
+    }
+  }
+
+  fn process_goal_explanation(&mut self, proof_leaf: ProofLeaf, goal: Goal) {
+    // This goal has been discharged, proceed to the next goal
+    if CONFIG.verbose {
+      println!("{} {} by {}", "Proved case".bright_blue(), goal.name, proof_leaf.name());
+      println!("{}", proof_leaf);
+    }
+    self
+      .lemma_proof
+      .solved_goal_proofs
+      .insert(goal.name, proof_leaf);
+    self.outcome = Some(Outcome::Valid);
+  }
+
+  /// Keep attempting goals until we encounter a goal with a hitherto unseen
+  /// case split depth.
+  pub fn try_goals_until_next_depth(&mut self) {
+    let curr_depth = self.case_split_depth;
+    while self.outcome.is_none() && self.case_split_depth == curr_depth {
+      self.try_next_goal();
+    }
+  }
 }
 
 impl<'a> ProofState<'a> {
-  // Has timeout been reached?
+  /// Has timeout been reached?
   pub fn timeout(&self) -> bool {
-    CONFIG.timeout.is_some()
-      && self.start_time.elapsed() > Duration::new(CONFIG.timeout.unwrap(), 0)
-  }
-
-  pub fn fresh_lemma_name(&mut self) -> String {
-    let name = format!("lemma_{}", self.lemma_number);
-    self.lemma_number += 1;
-    name
+    CONFIG
+      .timeout
+      .map_or(false,
+              |timeout| self.start_time.elapsed() > Duration::new(timeout, 0))
   }
 
   /// Try to prove all of the lemmas we've collected so far.
-  pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> Option<ProofLeaf> {
+   pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> Option<ProofLeaf> {
     if self.proof_depth == CONFIG.proof_depth {
       return None;
     }
@@ -1855,15 +2048,6 @@ impl<'a> ProofState<'a> {
     let (rws, lemma_rws) = goal.make_cyclic_lemma_rewrites(self, false);
     self.lemmas_state.cyclic_lemmas.extend(lemma_rws.into_iter().map(|lemma_rw| lemma_rw.lemma_prop));
     self.lemmas_state.cyclic_lemma_rewrites.extend(rws);
-  }
-
-  pub fn update_depth(&mut self, depth: usize) -> bool {
-    if depth > self.case_split_depth {
-      self.case_split_depth = depth;
-      true
-    } else {
-      false
-    }
   }
 
   pub fn process_goal_explanation(&mut self, proof_leaf: ProofLeaf, goal: Goal) {
