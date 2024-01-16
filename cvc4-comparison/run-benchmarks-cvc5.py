@@ -9,19 +9,19 @@ DEFAULT_TIME_LIMIT_MS = 30000
 # Assumed UTF-8
 SHELL_ENCODING = 'utf-8'
 
-def make_cvc4_i_args(time_limit):
+def make_cvc5_i_args(time_limit):
     # --stats and --tlimit required for timing and file info
     # All other required for running in inductive theorem proving mode
     # (see https://lara.epfl.ch/~reynolds/VMCAI2015-ind/)
-    return ['--quant-ind', '--quant-cf', '--full-saturate-quant', '--stats', '--tlimit', str(time_limit)]
+    return ['--quant-ind', '--full-saturate-quant', '--stats', '--tlimit', str(time_limit)]
 
-def make_cvc4_ig_args(time_limit):
+def make_cvc5_ig_args(time_limit):
     # --stats required for timing and file info
     # All other required for running in theory exploration theorem proving mode
     # (see https://lara.epfl.ch/~reynolds/VMCAI2015-ind/)
-    return ['--quant-ind',  '--quant-cf', '--conjecture-gen', '--conjecture-gen-per-round=3', '--full-saturate-quant', '--stats', '--tlimit', str(time_limit)]
+    return ['--quant-ind',  '--conjecture-gen', '--conjecture-gen-per-round=3', '--full-saturate-quant', '--stats', '--tlimit', str(time_limit)]
 
-def run_file(cvc4_binary, filename, cvc4_args, quiet=False):
+def run_file(cvc5_binary, filename, cvc5_args, quiet=False):
     '''
     Runs an SMT2 file containing a theorem and returns whether it was proven
     successfully and the time taken
@@ -30,38 +30,44 @@ def run_file(cvc4_binary, filename, cvc4_args, quiet=False):
         if not quiet:
             print(f'File not SMT2, skipping: {filename}')
         return None
-    res = subprocess.run([cvc4_binary.absolute(), *cvc4_args, filename.absolute()],
+    res = subprocess.run([cvc5_binary.absolute(), *cvc5_args, filename.absolute()],
                          capture_output=True)
+    stdout = res.stdout.decode(SHELL_ENCODING)
     stderr = res.stderr.decode(SHELL_ENCODING)
-    last_two_lines = stderr.split('\n')[-3:-1]
-    # The last two lines look like
-    #
-    #     driver::sat/unsat, unknown (TIMEOUT)
-    #     driver::totalTime, 0.629364114
-    #
-    # so we can extract the result we want by taking the second item
-    # after splitting on spaces.
-    [result, time] = [item.split(' ')[1] for item in last_two_lines]
-    time_ms = 1000 * float(time)
-    # Due to the encoding, 'unsat' means that the theorem was proven,
-    # so we translate it to not be confusing.
-    return ('success' if result == 'unsat' else result, f'{time_ms:.2f} ms')
+    stderr_lines = stderr.split('\n')
+    # The first line either says unsat or interrupted by timeout
+    success = stdout.startswith('unsat')
+    time = find_time(stderr_lines)
+    return ('success' if success else stderr_lines[0], time)
+
+def find_time(stdout_lines):
+    '''
+    When --stats is enabled, time is output as
+
+    global::totalTime = TIME_WITH_UNITS
+
+    Extract this line from the output
+    '''
+    for line in stdout_lines:
+        if line.startswith('global::totalTime'):
+            [lhs, rhs] = line.split(' = ')
+            return rhs
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        prog='CVC4 Inductive Benchmark Runner',
-        description='Runs CVC4 inductive benchmarks, collecting the results.',
+        prog='CVC5 Inductive Benchmark Runner',
+        description='Runs CVC5 inductive benchmarks, collecting the results.',
         )
 
-    parser.add_argument('cvc4_binary', type=pathlib.Path,
-                        help='CVC4 binary (v1.5 recommended)',
+    parser.add_argument('cvc5_binary', type=pathlib.Path,
+                        help='CVC5 binary (v1.5 recommended)',
                         )
     parser.add_argument('target', type=pathlib.Path,
-                        help='SMT2 file or directory containing SMT2 files to run CVC4 on.',
+                        help='SMT2 file or directory containing SMT2 files to run CVC5 on.',
                         )
     parser.add_argument('-t', '--timeout', type=int,
                         default=DEFAULT_TIME_LIMIT_MS,
-                        help='Time limit for each CVC4 run.',
+                        help='Time limit for each CVC5 run.',
                         )
     parser.add_argument('-o', '--output', type=pathlib.Path,
                         help='Write the results as a CSV to',
@@ -70,23 +76,23 @@ if __name__ == '__main__':
                         help='Suppress output.',
                         )
     parser.add_argument('-g', '--theory-exploration', action='store_true',
-                        help='Runs CVC4 in theory exploration mode (defaults to inductive mode).',
+                        help='Runs CVC5 in theory exploration mode (defaults to inductive mode).',
                         )
 
     args = parser.parse_args()
-    cvc4_binary = args.cvc4_binary
+    cvc5_binary = args.cvc5_binary
     timeout = args.timeout
     target = args.target
     output = args.output
     quiet = args.quiet
 
-    assert(cvc4_binary.is_file())
+    assert(cvc5_binary.is_file())
     assert(target.is_dir() or target.is_file())
 
     if not quiet:
-        print(f'Running CVC4 in {"theory exploration" if args.theory_exploration else "inductive"} mode')
+        print(f'Running CVC5 in {"theory exploration" if args.theory_exploration else "inductive"} mode')
 
-    cvc4_args = make_cvc4_ig_args(timeout) if args.theory_exploration else make_cvc4_i_args(timeout)
+    cvc5_args = make_cvc5_ig_args(timeout) if args.theory_exploration else make_cvc5_i_args(timeout)
 
     filenames = []
     if target.is_file():
@@ -96,7 +102,7 @@ if __name__ == '__main__':
 
     results = []
     for filename in filenames:
-        run_result = run_file(cvc4_binary, filename, cvc4_args, quiet)
+        run_result = run_file(cvc5_binary, filename, cvc5_args, quiet)
         if run_result:
             result, time = run_result
             if not quiet:
@@ -111,7 +117,7 @@ if __name__ == '__main__':
                 #     ; G85
                 #
                 # where 85 is replaced by whatever number goal the file is.
-                prop = smt_file.readlines()[-3].strip()
+                prop = smt_file.readlines()[-4].strip()
             results.append({'name': filename.name, 'result': result, 'time': time, 'prop': prop})
     if output:
         with open(output, 'w', newline='') as csvfile:
