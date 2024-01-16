@@ -940,7 +940,7 @@ impl<'a> Goal<'a> {
       );
       let con_app: Expr = con_app_string.parse().unwrap();
 
-      new_goal.name = format!("{}{}={}", new_goal.name, scrutinee.name, con_app);
+      new_goal.name = format!("{}_{}={}", new_goal.name, scrutinee.name, con_app);
       // This is tracked for proof emission.
       instantiated_cons_and_goals.push((con_app_string, new_goal.name.clone()));
 
@@ -1737,7 +1737,9 @@ pub struct LemmaProofState<'a> {
   pub case_split_depth: usize,
   pub ih_lemma_number: usize,
   pub theorized_lemmas: ChainSet<Prop>,
-  pub rw: LemmaRewrite,
+  // FIXME: Should not be an option - if we can't get any rewrites from a lemma
+  // we shouldn't try to prove it
+  pub rw: Option<LemmaRewrite>,
 }
 
 impl<'a> LemmaProofState<'a> {
@@ -1746,10 +1748,12 @@ impl<'a> LemmaProofState<'a> {
     let mut goal = Goal::top(&lemma_name, &prop, premise, global_search_state);
     let lemma_rw_opt = goal.make_lemma_rewrite(&goal.eq.lhs.expr, &goal.eq.rhs.expr, &goal.premises, false, lemma_number);
     let outcome = goal.cvecs_valid().and_then(|is_valid| {
-      if is_valid {
-        None
-      } else {
+      // FIXME: Handle premises in cvecs so that we can reject invalid props
+      // with preconditions
+      if premise.is_none() && !is_valid {
         Some(Outcome::Invalid)
+      } else {
+        None
       }
     });
     // FIXME: add the option to do more cvec checks like we do in the old try_prove_lemmas
@@ -1762,9 +1766,7 @@ impl<'a> LemmaProofState<'a> {
       case_split_depth: 0,
       ih_lemma_number: lemma_number,
       theorized_lemmas: ChainSet::default(),
-      // FIXME: Probably shouldn't be an unwrap - should we just skip lemmas
-      // that don't contribute useful rewrites?
-      rw: lemma_rw_opt.unwrap(),
+      rw: lemma_rw_opt,
     }
   }
 
@@ -1782,7 +1784,7 @@ impl<'a> LemmaProofState<'a> {
     // TODO: This should be info! but I don't know how to suppress all the info output from egg
     warn!("PROOF STATE: {}", pretty_state(&self));
     // Pop the first subgoal
-    let mut goal: Goal<'a> = self.goals.pop_front().unwrap();
+    let mut goal = self.goals.pop_front().unwrap();
     // FIXME: need to run the analysis properly here
     // if goal.cvecs_valid() == Some(false) {
     //   // FIXME: add cvec counterexample to proof
@@ -1901,7 +1903,6 @@ impl<'a> LemmaProofState<'a> {
       .lemma_proof
       .solved_goal_proofs
       .insert(goal.name, proof_leaf);
-    self.outcome = Some(Outcome::Valid);
   }
 
   /// Keep attempting goals until we encounter a goal with a hitherto unseen
@@ -1926,7 +1927,7 @@ impl<'a> ProofState<'a> {
         let outcome = lemma_proof_state.outcome.as_ref().unwrap().clone();
         if outcome == Outcome::Valid {
           self.lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
-          lemma_proof_state.rw.add_to_rewrites(&mut self.lemmas_state.lemma_rewrites);
+          lemma_proof_state.rw.as_ref().map(|rw| rw.add_to_rewrites(&mut self.lemmas_state.lemma_rewrites));
         }
         if outcome == Outcome::Invalid {
           self.lemmas_state.invalid_lemmas.insert(lemma_proof_state.prop.clone());
@@ -1940,7 +1941,9 @@ impl<'a> ProofState<'a> {
       self.try_prove_lemmas(&lemma_proof_state.theorized_lemmas, next_goal, lemma_proof_state.proof_depth);
     }
 
-    lemma_proof_state.outcome.unwrap()
+    let outcome = lemma_proof_state.outcome.as_ref().unwrap().clone();
+    self.lemma_proofs.insert(lemma_number, lemma_proof_state);
+    outcome
 
   }
 
@@ -1956,7 +1959,7 @@ impl<'a> ProofState<'a> {
           let lemma_proof_state = self.lemma_proofs.entry(lemma_number).or_insert_with(|| {
           LemmaProofState::new(lemma_number, lemma_prop.clone(), &None, self.global_search_state, proof_depth + 1)
           });
-          (lemma_proof_state.outcome.clone(), lemma_proof_state.rw.rewrites())
+          (lemma_proof_state.outcome.clone(), lemma_proof_state.rw.as_ref().map(|rw| rw.rewrites()).unwrap_or(vec!()))
         };
         // If we already know the result, don't bother trying to prove it
         if lemma_outcome == Some(Outcome::Invalid) || lemma_outcome == Some(Outcome::Valid) {
@@ -1984,8 +1987,7 @@ impl<'a> ProofState<'a> {
         // // This is because sometimes you need more than one lemma to prove a goal.
         if i > 0 {
           let goal_egraph_copy = goal.egraph.clone();
-          let new_lemma_rws = lemma_rws;
-          let rewrites = goal.global_search_state.reductions.iter().chain(goal.lemmas.values()).chain(new_lemma_rws.iter()).chain(self.lemmas_state.lemma_rewrites.values());
+          let rewrites = goal.global_search_state.reductions.iter().chain(goal.lemmas.values()).chain(lemma_rws.iter()).chain(self.lemmas_state.lemma_rewrites.values());
           let runner = Runner::default()
             // .with_explanations_enabled()
             .with_egraph(goal_egraph_copy)
