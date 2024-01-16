@@ -613,7 +613,7 @@ impl<'a> Goal<'a> {
   /// add_termination_check is true, otherwise they will not.
   ///
   /// The rewrites will each be named lemma_n.
-  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, state: &ProofState, lemmas_state: &mut LemmasState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
+  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, timer: &Timer, lemmas_state: &mut LemmasState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
     let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
     let is_var = |v| self.local_context.contains_key(v);
     let mut rewrites = self.lemmas.clone();
@@ -624,7 +624,7 @@ impl<'a> Goal<'a> {
         continue;
       }
       for rhs_expr in exprs.get(&rhs_id).unwrap() {
-        if state.timeout() {
+        if timer.timeout() {
           return (rewrites, lemma_rws);
         }
         let lemma_number = lemmas_state.fresh_lemma();
@@ -747,7 +747,7 @@ impl<'a> Goal<'a> {
   /// Create a rewrite `lhs => rhs` which will serve as the lemma ("induction hypothesis") for a cycle in the proof;
   /// here lhs and rhs are patterns, created by replacing all scrutinees with wildcards;
   /// soundness requires that the pattern only apply to variable tuples smaller than the current scrutinee tuple.
-  fn add_lemma_rewrites(&self, state: &ProofState, lemmas_state: &mut LemmasState, ih_lemma_number: usize) -> BTreeMap<String, Rw> {
+  fn add_lemma_rewrites(&self, timer: &Timer, lemmas_state: &mut LemmasState, ih_lemma_number: usize) -> BTreeMap<String, Rw> {
     // Special case: the first time we add lemmas (i.e. when there are no
     // previous lemmas), we will make lemma rewrites out of the lhs and rhs only
     // and we will use the special IH name.
@@ -762,7 +762,7 @@ impl<'a> Goal<'a> {
     }
     // Otherwise, we only create lemmas when we are operating in the cyclic mode
     if CONFIG.is_cyclic() {
-      self.make_cyclic_lemma_rewrites(state, lemmas_state, true).0
+      self.make_cyclic_lemma_rewrites(timer, lemmas_state, true).0
     } else {
       self.lemmas.clone()
     }
@@ -770,12 +770,12 @@ impl<'a> Goal<'a> {
   }
 
   /// Creates cyclic lemmas from the current goal.
-  fn make_cyclic_lemma_rewrites(&self, state: &ProofState, lemmas_state: &mut LemmasState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
+  fn make_cyclic_lemma_rewrites(&self, timer: &Timer, lemmas_state: &mut LemmasState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
     let premises = self.update_premises();
-    self.make_lemma_rewrites_from_all_exprs(lhs_id, rhs_id, premises, state, lemmas_state, add_termination_check)
+    self.make_lemma_rewrites_from_all_exprs(lhs_id, rhs_id, premises, timer, lemmas_state, add_termination_check)
   }
 
   /// Add a rewrite `lhs => rhs` to `rewrites` if not already present
@@ -863,8 +863,8 @@ impl<'a> Goal<'a> {
   }
 
   /// Consume this goal and add its case splits to the proof state
-  fn case_split(self, scrutinee: Scrutinee, state: &ProofState, lemmas_state: &mut LemmasState, lemma_proof_state: &LemmaProofState) -> (ProofTerm, Vec<Goal<'a>>) {
-    let new_lemmas = self.add_lemma_rewrites(state, lemmas_state, lemma_proof_state.ih_lemma_number);
+  fn case_split(self, scrutinee: Scrutinee, timer: &Timer, lemmas_state: &mut LemmasState, ih_lemma_number: usize) -> (ProofTerm, Vec<Goal<'a>>) {
+    let new_lemmas = self.add_lemma_rewrites(timer, lemmas_state, ih_lemma_number);
 
     let var_str = scrutinee.name.to_string();
     warn!("case-split on {}", scrutinee.name);
@@ -990,7 +990,7 @@ impl<'a> Goal<'a> {
     (proof_term, goals)
   }
 
-  fn find_blocking(&self, state: &ProofState) -> (BTreeSet<Symbol>, BTreeSet<Id>) {
+  fn find_blocking(&self, timer: &Timer) -> (BTreeSet<Symbol>, BTreeSet<Id>) {
     let mut blocking_vars: BTreeSet<_> = BTreeSet::default();
     let mut blocking_exprs: BTreeSet<Id> = BTreeSet::default();
 
@@ -1020,7 +1020,7 @@ impl<'a> Goal<'a> {
 
       // use these patterns to search over the egraph
       for new_sexp in new_sexps {
-        if state.timeout() {
+        if timer.timeout() {
           return (blocking_vars, blocking_exprs);
         }
         let mod_searcher: Pattern<SymbolLang> = new_sexp.to_string().parse().unwrap();
@@ -1250,7 +1250,7 @@ impl<'a> Goal<'a> {
   ///
   /// These are lemmas we propose from subterms in the e-graph that our concrete
   /// analysis deems equal on some set of random terms.
-  fn search_for_cc_lemmas(&mut self, state: &ProofState) -> Vec<Prop> {
+  fn search_for_cc_lemmas(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) -> Vec<Prop> {
     let mut lemmas = vec!();
     self.egraph.analysis.cvec_analysis.saturate();
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
@@ -1258,7 +1258,7 @@ impl<'a> Goal<'a> {
     let class_ids: Vec<Id> = self.egraph.classes().map(|c| c.id).collect();
     for class_1_id in &class_ids {
       for class_2_id in &class_ids {
-        if state.timeout() {
+        if timer.timeout() {
           return lemmas;
         }
         // Resolve the ids because as we union things, we might make more
@@ -1313,7 +1313,7 @@ impl<'a> Goal<'a> {
             }
             _ => {}
           }
-          let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), state, false);
+          let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), timer, lemmas_state, false);
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
           // We used to check the egraph to see if the lemma helped us, but now
           // we just throw it into our list. We do that check in try_prove_lemmas.
@@ -1655,7 +1655,7 @@ pub struct LemmasState {
 }
 
 impl LemmasState {
-  pub fn is_valid_new_prop(&mut self, prop: &Prop) -> bool {
+  pub fn is_valid_new_prop(&self, prop: &Prop) -> bool {
     let is_proven = self.proven_lemmas.contains_leq(&prop);
     let is_invalid = self.invalid_lemmas.contains_geq(&prop);
     let is_too_big = CONFIG.max_lemma_size > 0
@@ -1674,13 +1674,27 @@ impl LemmasState {
         None
       }
     })
-                          .unwrap_or_else(||self.fresh_lemma())
+                          .unwrap_or_else(|| {
+                            let lemma_number = self.fresh_lemma();
+                            self.all_lemmas.push((lemma_number, prop.clone()));
+                            lemma_number
+                          })
   }
 
   pub fn fresh_lemma(&mut self) -> usize {
     let number = self.lemma_number;
     self.lemma_number += 1;
     number
+  }
+
+  pub fn lookup_lemma(&self, n: usize) -> &Prop {
+    self.all_lemmas.iter().find_map(|(lemma_number, p)|{
+      if n == *lemma_number {
+        Some(p)
+      } else {
+        None
+      }
+    }).unwrap()
   }
 
 }
@@ -1691,13 +1705,31 @@ pub struct ProofInfo {
   pub proof: BTreeMap<String, ProofTerm>,
 }
 
-pub struct ProofState<'a> {
+pub struct Timer {
   pub start_time: Instant,
+}
+
+impl Timer {
+    fn new(start_time: Instant) -> Self { Self { start_time } }
+
+  /// Has timeout been reached?
+  pub fn timeout(&self) -> bool {
+    CONFIG
+      .timeout
+      .map_or(false,
+              |timeout| self.start_time.elapsed() > Duration::new(timeout, 0))
+  }
+}
+
+pub struct ProofState<'a> {
+  pub timer: Timer,
   pub lemmas_state: LemmasState,
   pub lemma_proofs: BTreeMap<usize, LemmaProofState<'a>>,
+  pub global_search_state: GlobalSearchState<'a>,
 }
 
 pub struct LemmaProofState<'a> {
+  pub prop: Prop,
   pub goals: VecDeque<Goal<'a>>,
   pub lemma_proof: ProofInfo,
   pub outcome: Option<Outcome>,
@@ -1705,19 +1737,34 @@ pub struct LemmaProofState<'a> {
   pub case_split_depth: usize,
   pub ih_lemma_number: usize,
   pub theorized_lemmas: ChainSet<Prop>,
+  pub rw: LemmaRewrite,
 }
 
 impl<'a> LemmaProofState<'a> {
   pub fn new(lemma_number: usize, prop: Prop, premise: &Option<Equation>, global_search_state: GlobalSearchState<'a>, proof_depth: usize) -> Self {
-    let goal = Goal::top(&format!("lemma_{}", lemma_number), &prop, premise, global_search_state);
+    let lemma_name = format!("lemma_{}", lemma_number);
+    let mut goal = Goal::top(&lemma_name, &prop, premise, global_search_state);
+    let lemma_rw_opt = goal.make_lemma_rewrite(&goal.eq.lhs.expr, &goal.eq.rhs.expr, &goal.premises, false, lemma_number);
+    let outcome = goal.cvecs_valid().and_then(|is_valid| {
+      if is_valid {
+        None
+      } else {
+        Some(Outcome::Invalid)
+      }
+    });
+    // FIXME: add the option to do more cvec checks like we do in the old try_prove_lemmas
     Self {
+      prop,
       goals: [goal].into(),
       lemma_proof: ProofInfo::default(),
-      outcome: None,
+      outcome,
       proof_depth,
       case_split_depth: 0,
       ih_lemma_number: lemma_number,
       theorized_lemmas: ChainSet::default(),
+      // FIXME: Probably shouldn't be an unwrap - should we just skip lemmas
+      // that don't contribute useful rewrites?
+      rw: lemma_rw_opt.unwrap(),
     }
   }
 
@@ -1727,11 +1774,15 @@ impl<'a> LemmaProofState<'a> {
     }));
   }
 
-  pub fn try_next_goal(&mut self, state: &ProofState<'a>, lemmas_state: &mut LemmasState) {
+  pub fn try_next_goal(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
+    if self.goals.is_empty() {
+      self.outcome = Some(Outcome::Valid);
+      return;
+    }
     // TODO: This should be info! but I don't know how to suppress all the info output from egg
-    warn!("PROOF STATE: {}", pretty_state(&state));
+    warn!("PROOF STATE: {}", pretty_state(&self));
     // Pop the first subgoal
-    let goal = self.goals.pop_front().unwrap();
+    let mut goal: Goal<'a> = self.goals.pop_front().unwrap();
     // FIXME: need to run the analysis properly here
     // if goal.cvecs_valid() == Some(false) {
     //   // FIXME: add cvec counterexample to proof
@@ -1773,7 +1824,7 @@ impl<'a> LemmaProofState<'a> {
         warn!("Blocking var analysis is disabled");
         (goal.scrutinees.iter().map(|s| s.name).collect(), BTreeSet::default())
       } else {
-        let (blocking_vars, blocking_exprs) = goal.find_blocking(&state);
+        let (blocking_vars, blocking_exprs) = goal.find_blocking(&timer);
         if CONFIG.verbose {
           println!("blocking vars: {:?}", blocking_vars);
         }
@@ -1785,7 +1836,7 @@ impl<'a> LemmaProofState<'a> {
       self.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs), lemmas_state);
     }
     if CONFIG.cc_lemmas {
-      let possible_lemmas = goal.search_for_cc_lemmas(&state);
+      let possible_lemmas = goal.search_for_cc_lemmas(&timer, lemmas_state);
       self.add_possible_lemmas(possible_lemmas, lemmas_state);
     }
     // This ends up being really slow so we'll just take the lemma duplication for now
@@ -1814,9 +1865,10 @@ impl<'a> LemmaProofState<'a> {
           scrutinee.name.to_string().purple()
         );
       }
-      let (proof_term, goals) = goal.case_split(scrutinee, &state);
+      let goal_name = goal.name.clone();
+      let (proof_term, goals) = goal.case_split(scrutinee, &timer, lemmas_state, self.ih_lemma_number);
       // This goal is now an internal node in the proof tree.
-      self.lemma_proof.proof.insert(goal.name, proof_term);
+      self.lemma_proof.proof.insert(goal_name, proof_term);
       // Add the new goals to the back of the VecDeque.
       self.goals.extend(goals);
     } else {
@@ -1854,103 +1906,62 @@ impl<'a> LemmaProofState<'a> {
 
   /// Keep attempting goals until we encounter a goal with a hitherto unseen
   /// case split depth.
-  pub fn try_goals_until_next_depth(&mut self) {
+  pub fn try_goals_until_next_depth(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
     let curr_depth = self.case_split_depth;
     while self.outcome.is_none() && self.case_split_depth == curr_depth {
-      self.try_next_goal();
+      self.try_next_goal(timer, lemmas_state);
     }
   }
 }
 
 impl<'a> ProofState<'a> {
-  /// Has timeout been reached?
-  pub fn timeout(&self) -> bool {
-    CONFIG
-      .timeout
-      .map_or(false,
-              |timeout| self.start_time.elapsed() > Duration::new(timeout, 0))
+
+  pub fn prove_lemma(&mut self, lemma_number: usize) -> Outcome {
+    let mut lemma_proof_state = self.lemma_proofs.remove(&lemma_number).unwrap();
+
+    while lemma_proof_state.outcome.is_none() {
+      lemma_proof_state.try_goals_until_next_depth(&self.timer, &mut self.lemmas_state);
+
+      if lemma_proof_state.outcome.is_some() {
+        let outcome = lemma_proof_state.outcome.as_ref().unwrap().clone();
+        if outcome == Outcome::Valid {
+          self.lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
+          lemma_proof_state.rw.add_to_rewrites(&mut self.lemmas_state.lemma_rewrites);
+        }
+        if outcome == Outcome::Invalid {
+          self.lemmas_state.invalid_lemmas.insert(lemma_proof_state.prop.clone());
+        }
+        self.lemma_proofs.insert(lemma_number, lemma_proof_state);
+        return outcome.clone();
+      }
+
+      let next_goal = lemma_proof_state.goals.front_mut().unwrap();
+
+      self.try_prove_lemmas(&lemma_proof_state.theorized_lemmas, next_goal, lemma_proof_state.proof_depth);
+    }
+
+    lemma_proof_state.outcome.unwrap()
+
   }
 
-  /// Try to prove all of the lemmas we've collected so far.
-   pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> Option<ProofLeaf> {
-    if self.proof_depth == CONFIG.proof_depth {
-      return None;
-    }
-    // println!("Try prove lemmas for goal {}", goal.name);
-    // self.lemmas_state.possible_lemmas.chains.iter().for_each(|chain| chain.chain.iter().for_each(|lem| println!("lemma: {} = {}", lem.eq.lhs, lem.eq.rhs)));
-
-    // Need to copy so we can mutably borrow self later
-    let lemma_chains = self.lemmas_state.possible_lemmas.chains.clone();
+  fn try_prove_lemmas(&mut self, lemmas: &ChainSet<Prop>, goal: &mut Goal, proof_depth: usize) {
+    let lemma_chains = lemmas.chains.clone();
     for chain in lemma_chains.iter() {
       for (i, lemma_prop) in chain.chain.iter().enumerate() {
-        if self.timeout() {
-          return None;
+        if self.timer.timeout() {
+          return;
         }
-        // Is the lemma already proven or subsumed by a cyclic lemma?
-        if self.lemmas_state.proven_lemmas.contains_leq(&lemma_prop) || self.lemmas_state.cyclic_lemmas.contains_leq(&lemma_prop) {
-          continue;
-        }
-        // Is the lemma invalid?
-        // if self.lemmas_state.invalid_lemmas.contains_geq(&lemma_prop) {
-        //   continue;
-        // }
-        let goal_name = format!("lemma-{}={}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
-        let mut new_goal = Goal::top(&goal_name,
-                                 &lemma_prop,
-                                 &None,
-                                 goal.global_search_state,
-        );
-        let try1 = new_goal.cvecs_valid() == Some(true);
-        let mut new_goal_2 = Goal::top(&goal_name,
-                                 &lemma_prop,
-                                 &None,
-                                 goal.global_search_state,
-        );
-        let try2 = new_goal_2.cvecs_valid() == Some(true);
-        if try1 && !try2 {
-          // println!("Second try helped");
-          // println!("Invalidated lemma {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
-        }
-        if !try1 || !try2 {
-          warn!("Invalidated lemma {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
-          self.lemmas_state.invalid_lemmas.insert(lemma_prop.clone());
-          continue;
-        } else {
-          println!("Possible lemma to prove: {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
-          // println!("proven lemmas so far: {}", self.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
-          // print_cvec(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec)
-        }
-
-        // FIXME: Use a proper name scheme for indexing lemmas instead of using
-        // their serialized lhs = rhs (we can use the lemma numbering for this).
-        // We should also normalize lemmas so that they have the same names
-        // regardless of the names of their variables. Maybe this means
-        // converting to a locally nameless form.
-        //
-        // NOTE: This doesn't actually skip that many lemmas because we don't
-        // carry old lemmas around with us. Maybe we should and see if this is
-        // useful or maybe we should
-        let lemma_prop_name = format!("{} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
-        // NOTE: Having None in the hashmap is meaningfully different from
-        // having no entry in the hashmap. We always try and prove if there is
-        // no entry.
-        if let Some(last_lemma_proven_at_last_attempt) = self.lemmas_state.last_lemma_proven_at_last_attempt.get(&lemma_prop_name) {
-          if last_lemma_proven_at_last_attempt == &self.lemmas_state.last_lemma_proven {
-            println!("Skipping lemma because nothing has changed");
-            continue;
-          } else {
-            println!("New lemma proven since last attempt");
-          }
-        }
-        self.lemmas_state.last_lemma_proven_at_last_attempt.insert(lemma_prop_name, self.lemmas_state.last_lemma_proven.clone());
-
-        let new_lemma_name = self.fresh_lemma_name();
-        let lemma_rw_opt = new_goal.make_lemma_rewrite(&new_goal.eq.lhs.expr, &new_goal.eq.rhs.expr, &new_goal.premises, false, new_lemma_name.clone());
-        // If we can't make a rewrite out of this lemma, it's not useful to us, so we'll just keep going.
-        let lemma_rw = match lemma_rw_opt {
-          None => continue,
-          Some(lemma_rw) => lemma_rw,
+        let lemma_number = self.lemmas_state.find_or_make_fresh_lemma(lemma_prop);
+        let (lemma_outcome, lemma_rws) = {
+          let lemma_proof_state = self.lemma_proofs.entry(lemma_number).or_insert_with(|| {
+          LemmaProofState::new(lemma_number, lemma_prop.clone(), &None, self.global_search_state, proof_depth + 1)
+          });
+          (lemma_proof_state.outcome.clone(), lemma_proof_state.rw.rewrites())
         };
+        // If we already know the result, don't bother trying to prove it
+        if lemma_outcome == Some(Outcome::Invalid) || lemma_outcome == Some(Outcome::Valid) {
+          break;
+        }
         // NOTE CK: This used to be necessary for speed, but with some patches to efficiency, we
         // no longer need it. Perhaps if we allowed a greater proof depth we would need it.
         // // HACK: Optimization to proving lemmas
@@ -1973,7 +1984,7 @@ impl<'a> ProofState<'a> {
         // // This is because sometimes you need more than one lemma to prove a goal.
         if i > 0 {
           let goal_egraph_copy = goal.egraph.clone();
-          let new_lemma_rws = lemma_rw.rewrites();
+          let new_lemma_rws = lemma_rws;
           let rewrites = goal.global_search_state.reductions.iter().chain(goal.lemmas.values()).chain(new_lemma_rws.iter()).chain(self.lemmas_state.lemma_rewrites.values());
           let runner = Runner::default()
             // .with_explanations_enabled()
@@ -1985,86 +1996,204 @@ impl<'a> ProofState<'a> {
         }
         println!("Trying to prove lemma: forall {}. {} = {}", lemma_prop.params.iter().map(|(v, t)| format!("{}: {}", v, t)).join(" "), lemma_prop.eq.lhs, lemma_prop.eq.rhs);
 
-        let new_lemma_eq = &lemma_rw.lemma_prop;
-        // Give the new goal the new lemma's name so that we can match its proof.
-        // Actually this isn't necessary for anything other than prettying the output,
-        // but having the name be ugly is better for debugging.
-        new_goal.name = new_lemma_name.clone();
-        let mut new_lemmas_state = self.lemmas_state.clone();
-        // Zero out the possible lemmas and cyclic lemmas, we only want
-        // to carry forward what we've proven already.
-        new_lemmas_state.possible_lemmas = ChainSet::new();
-        new_lemmas_state.cyclic_lemmas = ChainSet::new();
-        new_lemmas_state.cyclic_lemma_rewrites = BTreeMap::new();
-        let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state, new_lemma_name.clone(), self.lemma_number);
-        // Update the lemma number so we don't have a lemma name clash.
-        self.lemma_number = ps.lemma_number;
-        // Steal the lemmas we got from the recursive proving, as well as any
-        // other info we learned from the lemmas state.
-        self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
-        self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
-        self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
-        self.lemmas_state.last_lemma_proven = ps.lemmas_state.last_lemma_proven;
-        self.lemmas_state.last_lemma_proven_at_last_attempt.extend(ps.lemmas_state.last_lemma_proven_at_last_attempt);
-        self.lemma_proofs.extend(ps.lemma_proofs);
-        if outcome == Outcome::Valid {
+        self.prove_lemma(lemma_number);
+        let lemma_outcome = &self.lemma_proofs.get(&lemma_number).unwrap().outcome;
+        if lemma_outcome == &Some(Outcome::Valid) {
           println!("proved {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
-          // TODO: This comes for free in the proven lemmas we get, so we
-          // probably don't need to insert it.
-          self.lemmas_state.proven_lemmas.insert(lemma_prop.clone());
-          self.lemmas_state.lemma_rewrites.extend(lemma_rw.names_and_rewrites());
-          // Add any cyclic lemmas we proved too
-          self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
-          self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
-          // Add its proof
-          self.lemma_proofs.push((new_lemma_name.clone(), new_lemma_eq.clone(), ps.proof_info));
-          // This is now the last lemma we've proven
-          self.lemmas_state.last_lemma_proven = Some(new_lemma_name);
           goal.saturate(&self.lemmas_state.lemma_rewrites);
-          let proof = goal.find_proof();
-          if proof.is_some() {
-            return proof;
+          if goal.find_proof().is_some() {
+            return;
           }
           break;
         }
-        // TODO: We want to record that all of the previous lemmas including
-        // this are invalid, but for now we won't record anything.
-        if outcome == Outcome::Invalid {
-          self.lemmas_state.invalid_lemmas.insert(lemma_prop.clone());
-        } else {
-          // NOTE: We will try to prove a lemma twice
-          // self.lemmas_state.proven_lemmas.insert(lemma_prop.clone());
-        }
       }
     }
-    None
+
   }
 
-  pub fn add_cyclic_lemmas(&mut self, goal: &Goal) {
-    // FIXME: add premises properly
-    if !goal.premises.is_empty() {
-      return;
-    }
-    let (rws, lemma_rws) = goal.make_cyclic_lemma_rewrites(self, false);
-    self.lemmas_state.cyclic_lemmas.extend(lemma_rws.into_iter().map(|lemma_rw| lemma_rw.lemma_prop));
-    self.lemmas_state.cyclic_lemma_rewrites.extend(rws);
-  }
+  // /// Try to prove all of the lemmas we've collected so far.
+  //  pub fn try_prove_lemmas(&mut self, goal: &mut Goal) -> Option<ProofLeaf> {
+  //   if self.proof_depth == CONFIG.proof_depth {
+  //     return None;
+  //   }
+  //   // println!("Try prove lemmas for goal {}", goal.name);
+  //   // self.lemmas_state.possible_lemmas.chains.iter().for_each(|chain| chain.chain.iter().for_each(|lem| println!("lemma: {} = {}", lem.eq.lhs, lem.eq.rhs)));
 
-  pub fn process_goal_explanation(&mut self, proof_leaf: ProofLeaf, goal: Goal) {
-    // This goal has been discharged, proceed to the next goal
-    if CONFIG.verbose {
-      println!("{} {} by {}", "Proved case".bright_blue(), goal.name, proof_leaf.name());
-      println!("{}", proof_leaf);
-    }
-    self
-      .proof_info
-      .solved_goal_proofs
-      .insert(goal.name, proof_leaf);
-  }
+  //   // Need to copy so we can mutably borrow self later
+  //   let lemma_chains = self.lemmas_state.possible_lemmas.chains.clone();
+  //   for chain in lemma_chains.iter() {
+  //     for (i, lemma_prop) in chain.chain.iter().enumerate() {
+  //       if self.timeout() {
+  //         return None;
+  //       }
+  //       // Is the lemma already proven or subsumed by a cyclic lemma?
+  //       if self.lemmas_state.proven_lemmas.contains_leq(&lemma_prop) || self.lemmas_state.cyclic_lemmas.contains_leq(&lemma_prop) {
+  //         continue;
+  //       }
+  //       // Is the lemma invalid?
+  //       // if self.lemmas_state.invalid_lemmas.contains_geq(&lemma_prop) {
+  //       //   continue;
+  //       // }
+  //       let goal_name = format!("lemma-{}={}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
+  //       let mut new_goal = Goal::top(&goal_name,
+  //                                &lemma_prop,
+  //                                &None,
+  //                                goal.global_search_state,
+  //       );
+  //       let try1 = new_goal.cvecs_valid() == Some(true);
+  //       let mut new_goal_2 = Goal::top(&goal_name,
+  //                                &lemma_prop,
+  //                                &None,
+  //                                goal.global_search_state,
+  //       );
+  //       let try2 = new_goal_2.cvecs_valid() == Some(true);
+  //       if try1 && !try2 {
+  //         // println!("Second try helped");
+  //         // println!("Invalidated lemma {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
+  //       }
+  //       if !try1 || !try2 {
+  //         warn!("Invalidated lemma {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
+  //         self.lemmas_state.invalid_lemmas.insert(lemma_prop.clone());
+  //         continue;
+  //       } else {
+  //         println!("Possible lemma to prove: {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
+  //         // println!("proven lemmas so far: {}", self.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
+  //         // print_cvec(&new_goal.egraph.analysis.cvec_analysis, new_goal_lhs_cvec)
+  //       }
+
+  //       // FIXME: Use a proper name scheme for indexing lemmas instead of using
+  //       // their serialized lhs = rhs (we can use the lemma numbering for this).
+  //       // We should also normalize lemmas so that they have the same names
+  //       // regardless of the names of their variables. Maybe this means
+  //       // converting to a locally nameless form.
+  //       //
+  //       // NOTE: This doesn't actually skip that many lemmas because we don't
+  //       // carry old lemmas around with us. Maybe we should and see if this is
+  //       // useful or maybe we should
+  //       let lemma_prop_name = format!("{} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
+  //       // NOTE: Having None in the hashmap is meaningfully different from
+  //       // having no entry in the hashmap. We always try and prove if there is
+  //       // no entry.
+  //       if let Some(last_lemma_proven_at_last_attempt) = self.lemmas_state.last_lemma_proven_at_last_attempt.get(&lemma_prop_name) {
+  //         if last_lemma_proven_at_last_attempt == &self.lemmas_state.last_lemma_proven {
+  //           println!("Skipping lemma because nothing has changed");
+  //           continue;
+  //         } else {
+  //           println!("New lemma proven since last attempt");
+  //         }
+  //       }
+  //       self.lemmas_state.last_lemma_proven_at_last_attempt.insert(lemma_prop_name, self.lemmas_state.last_lemma_proven.clone());
+
+  //       let new_lemma_name = self.fresh_lemma_name();
+  //       let lemma_rw_opt = new_goal.make_lemma_rewrite(&new_goal.eq.lhs.expr, &new_goal.eq.rhs.expr, &new_goal.premises, false, new_lemma_name.clone());
+  //       // If we can't make a rewrite out of this lemma, it's not useful to us, so we'll just keep going.
+  //       let lemma_rw = match lemma_rw_opt {
+  //         None => continue,
+  //         Some(lemma_rw) => lemma_rw,
+  //       };
+  //       // NOTE CK: This used to be necessary for speed, but with some patches to efficiency, we
+  //       // no longer need it. Perhaps if we allowed a greater proof depth we would need it.
+  //       // // HACK: Optimization to proving lemmas
+  //       // // We will always try to prove the most general lemma we've theorized so far, but thereafter
+  //       // // we require that the lemma be actually useful to us if we are going to try and prove it.
+  //       // //
+  //       // // This eliminates us spending time trying to prove a junk lemma like
+  //       // // (mult (S n) Z) = (plus (mult (S n) Z) Z)
+  //       // // when we already failed to prove the more general lemma
+  //       // // (mult n Z) = (plus (mult n Z) Z)
+  //       // //
+  //       // // Really we should have more sophisticated lemma filtering - the junk
+  //       // // lemma in this case is really no easier to prove than the first lemma
+  //       // // (since we will try to prove it eventually when we case split the first),
+  //       // // so we shouldn't consider it in the first place.
+  //       // //
+  //       // // Hence why I consider this optimization a hack, even though it
+  //       // // probably avoids some lemmas which are junky in a more complicated
+  //       // // way. I imagine it might rarely pass on interesting and useful lemmas.
+  //       // // This is because sometimes you need more than one lemma to prove a goal.
+  //       if i > 0 {
+  //         let goal_egraph_copy = goal.egraph.clone();
+  //         let new_lemma_rws = lemma_rw.rewrites();
+  //         let rewrites = goal.global_search_state.reductions.iter().chain(goal.lemmas.values()).chain(new_lemma_rws.iter()).chain(self.lemmas_state.lemma_rewrites.values());
+  //         let runner = Runner::default()
+  //           // .with_explanations_enabled()
+  //           .with_egraph(goal_egraph_copy)
+  //           .run(rewrites);
+  //         if runner.egraph.find(goal.eq.lhs.id) != runner.egraph.find(goal.eq.rhs.id) {
+  //           break;
+  //         }
+  //       }
+  //       println!("Trying to prove lemma: forall {}. {} = {}", lemma_prop.params.iter().map(|(v, t)| format!("{}: {}", v, t)).join(" "), lemma_prop.eq.lhs, lemma_prop.eq.rhs);
+
+  //       let new_lemma_eq = &lemma_rw.lemma_prop;
+  //       // Give the new goal the new lemma's name so that we can match its proof.
+  //       // Actually this isn't necessary for anything other than prettying the output,
+  //       // but having the name be ugly is better for debugging.
+  //       new_goal.name = new_lemma_name.clone();
+  //       let mut new_lemmas_state = self.lemmas_state.clone();
+  //       // Zero out the possible lemmas and cyclic lemmas, we only want
+  //       // to carry forward what we've proven already.
+  //       new_lemmas_state.possible_lemmas = ChainSet::new();
+  //       new_lemmas_state.cyclic_lemmas = ChainSet::new();
+  //       new_lemmas_state.cyclic_lemma_rewrites = BTreeMap::new();
+  //       let (outcome, ps) = prove(new_goal, self.proof_depth + 1, new_lemmas_state, new_lemma_name.clone(), self.lemma_number);
+  //       // Update the lemma number so we don't have a lemma name clash.
+  //       self.lemma_number = ps.lemma_number;
+  //       // Steal the lemmas we got from the recursive proving, as well as any
+  //       // other info we learned from the lemmas state.
+  //       self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.proven_lemmas.elems);
+  //       self.lemmas_state.invalid_lemmas.extend(ps.lemmas_state.invalid_lemmas.elems);
+  //       self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.lemma_rewrites);
+  //       self.lemmas_state.last_lemma_proven = ps.lemmas_state.last_lemma_proven;
+  //       self.lemmas_state.last_lemma_proven_at_last_attempt.extend(ps.lemmas_state.last_lemma_proven_at_last_attempt);
+  //       self.lemma_proofs.extend(ps.lemma_proofs);
+  //       if outcome == Outcome::Valid {
+  //         println!("proved {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
+  //         // TODO: This comes for free in the proven lemmas we get, so we
+  //         // probably don't need to insert it.
+  //         self.lemmas_state.proven_lemmas.insert(lemma_prop.clone());
+  //         self.lemmas_state.lemma_rewrites.extend(lemma_rw.names_and_rewrites());
+  //         // Add any cyclic lemmas we proved too
+  //         self.lemmas_state.proven_lemmas.extend(ps.lemmas_state.cyclic_lemmas.chains.into_iter().flat_map(|chain| chain.chain.into_iter()));
+  //         self.lemmas_state.lemma_rewrites.extend(ps.lemmas_state.cyclic_lemma_rewrites);
+  //         // Add its proof
+  //         self.lemma_proofs.push((new_lemma_name.clone(), new_lemma_eq.clone(), ps.proof_info));
+  //         // This is now the last lemma we've proven
+  //         self.lemmas_state.last_lemma_proven = Some(new_lemma_name);
+  //         goal.saturate(&self.lemmas_state.lemma_rewrites);
+  //         let proof = goal.find_proof();
+  //         if proof.is_some() {
+  //           return proof;
+  //         }
+  //         break;
+  //       }
+  //       // TODO: We want to record that all of the previous lemmas including
+  //       // this are invalid, but for now we won't record anything.
+  //       if outcome == Outcome::Invalid {
+  //         self.lemmas_state.invalid_lemmas.insert(lemma_prop.clone());
+  //       } else {
+  //         // NOTE: We will try to prove a lemma twice
+  //         // self.lemmas_state.proven_lemmas.insert(lemma_prop.clone());
+  //       }
+  //     }
+  //   }
+  //   None
+  // }
+
+  // pub fn add_cyclic_lemmas(&mut self, goal: &Goal) {
+  //   // FIXME: add premises properly
+  //   if !goal.premises.is_empty() {
+  //     return;
+  //   }
+  //   let (rws, lemma_rws) = goal.make_cyclic_lemma_rewrites(self, false);
+  //   self.lemmas_state.cyclic_lemmas.extend(lemma_rws.into_iter().map(|lemma_rw| lemma_rw.lemma_prop));
+  //   self.lemmas_state.cyclic_lemma_rewrites.extend(rws);
+  // }
+
 }
 
 /// Pretty-printed proof state
-pub fn pretty_state(state: &ProofState) -> String {
+pub fn pretty_state(state: &LemmaProofState) -> String {
   format!(
     "[{}]",
     state
@@ -2077,7 +2206,7 @@ pub fn pretty_state(state: &ProofState) -> String {
 }
 
 /// Outcome of a proof attempt
-#[derive(Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone)]
 pub enum Outcome {
   Valid,
   Invalid,
@@ -2169,177 +2298,33 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
 
 }
 
-
-/// Top-level interface to the theorem prover.
-pub fn prove(mut goal: Goal, depth: usize, mut lemmas_state: LemmasState, ih_name: String, lemma_number: usize) -> (Outcome, ProofState) {
-  // let goal_name = goal.name.clone();
-  let goal_eq = Equation::new(goal.eq.lhs.sexp.clone(), goal.eq.rhs.sexp.clone());
-  let goal_prop = Prop::new(goal_eq, goal.top_level_params.iter().cloned().map(|param| (param, goal.local_context.get(&param).unwrap().clone())).collect());
-  // We won't attempt to prove the goal again (it isn't actually proven).
-  lemmas_state.proven_lemmas.insert(goal_prop);
-  let mut state = ProofState {
-    goals: vec![goal].into(),
-    proof_info: ProofInfo {
-      solved_goal_proofs: BTreeMap::default(),
-      proof: BTreeMap::default(),
-    },
-    start_time: Instant::now(),
-    proof_depth: depth,
-    lemmas_state,
-    case_split_depth: 0,
-    lemma_proofs: vec!(),
-    // FIXME: should use an option
-    ih_lemma_name: ih_name,
-    lemma_number,
+pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_search_state: GlobalSearchState<'a>) -> (Outcome, ProofState) {
+  let mut proof_state = ProofState {
+    timer: Timer::new(Instant::now()),
+    lemmas_state: LemmasState::default(),
+    lemma_proofs: BTreeMap::default(),
+    global_search_state,
   };
-  // FIXME: put in config
-  if state.proof_depth > CONFIG.proof_depth {
-    return (Outcome::Unknown, state);
-  }
-  while !state.goals.is_empty() {
-    // println!("Taking next step for goal {}", goal_name);
-    // println!("proven lemmas: {}", state.lemmas_state.proven_lemmas.elems.iter().map(|e| format!("{} = {}", e.eq.lhs, e.eq.rhs)).join(","));
-    if state.timeout() {
-      return (Outcome::Timeout, state);
-    }
 
-    // TODO: This should be info! but I don't know how to suppress all the info output from egg
-    warn!("PROOF STATE: {}", pretty_state(&state));
-    // Pop the first subgoal
-    goal = state.goals.pop_front().unwrap();
-    // FIXME: need to run the analysis properly here
-    // if goal.cvecs_valid() == Some(false) {
-    //   // FIXME: add cvec counterexample to proof
-    //   if CONFIG.verbose {
-    //     println!("proved goal via cvec counterexample");
-    //   }
-    //   continue;
-    // }
-    // Saturate the goal
-    goal.saturate(&state.lemmas_state.lemma_rewrites);
-    if CONFIG.save_graphs {
-      goal.save_egraph();
-    }
-    if let Some(proof_leaf) = goal.find_proof() {
-      // println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
-      state.process_goal_explanation(proof_leaf, goal);
-      continue;
+  let top_goal_lemma_number = proof_state.lemmas_state.fresh_lemma();
+  let top_goal_lemma_proof = LemmaProofState::new(top_goal_lemma_number, goal_prop, &goal_premise, global_search_state, 0);
+  proof_state.lemma_proofs.insert(top_goal_lemma_number, top_goal_lemma_proof);
 
-    }
-    if CONFIG.verbose {
-      explain_goal_failure(&goal);
-    }
-    warn!("goal scrutinees before split: {:?}", goal.scrutinees);
-    goal.split_ite();
-    warn!("goal scrutinees after split: {:?}", goal.scrutinees);
-    if goal.scrutinees.is_empty() {
-      // This goal has no more variables to case-split on,
-      // so this goal, and hence the whole conjecture, is invalid
-      if CONFIG.verbose {
-        for remaining_goal in &state.goals {
-          println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
-        }
-      }
-      return (Outcome::Invalid, state);
-    }
-    let (blocking_vars, blocking_exprs) =
-      if !CONFIG.blocking_vars_analysis {
-        warn!("Blocking var analysis is disabled");
-        (goal.scrutinees.iter().map(|s| s.name).collect(), BTreeSet::default())
-      } else {
-        let (blocking_vars, blocking_exprs) = goal.find_blocking(&state);
-        if CONFIG.verbose {
-          println!("blocking vars: {:?}", blocking_vars);
-        }
-        (blocking_vars, blocking_exprs)
-      };
+  let outcome = proof_state.prove_lemma(top_goal_lemma_number);
 
-    if CONFIG.generalization {
-      // TODO: now that we generalize in the cc lemma search, do we need this?
-      state.lemmas_state.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs));
-    }
-    if CONFIG.cc_lemmas {
-      let possible_lemmas = goal.search_for_cc_lemmas(&mut state);
-      state.lemmas_state.add_possible_lemmas(possible_lemmas);
-    }
-    // This ends up being really slow so we'll just take the lemma duplication for now
-    // It's unclear that it lets us prove that much more anyway.
-    // state.add_cyclic_lemmas(&goal);
+  (outcome, proof_state)
 
-    goal.global_search_state.searchers.iter().for_each(|searcher: &ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>| {
-      let results = searcher.search(&goal.egraph);
-      let extractor = Extractor::new(&goal.egraph, AstSize);
-      if results.len() > 0 {
-        println!("Found search result for {} =?> {}", searcher.searcher, searcher.condition);
-        for result in results {
-          println!("Result eclass: {}", result.eclass);
-          result.substs.iter().for_each(|subst|{
-            for var in searcher.searcher.vars().iter() {
-              let exp = extractor.find_best(subst[*var]).1;
-              println!("Var {} = {}", var, exp);
-            }
-          });
-          let result_cvec = &goal.egraph[result.eclass].data.cvec_data;
-          for eclass in goal.egraph.classes() {
-            if eclass.id == result.eclass {
-              continue;
-            }
-            if let Some(true) = cvecs_equal(&goal.egraph.analysis.cvec_analysis, result_cvec, &goal.egraph[eclass.id].data.cvec_data) {
-              let exp = extractor.find_best(eclass.id).1;
-              println!("Matching eclass via cvec analysis: {} (id {})", exp, eclass.id);
-            }
-          }
-        }
-      };
-    });
+  // let top_goal_state = proof_state.lemma_proofs.get_mut(&top_goal_lemma_number).unwrap();
+  // while top_goal_state.outcome.is_none() {
+  //   top_goal_state.try_goals_until_next_depth(&proof_state, &mut proof_state.lemmas_state);
 
-    if let Some(scrutinee) = goal.next_scrutinee(blocking_vars) {
-      // let d = depth.max(depth_at_front);
-      if scrutinee.depth > state.case_split_depth {
-        // println!("depth {} is greater than current depth, increasing.", depth);
-        state.case_split_depth = depth;
-        if let Some(proof_leaf) = state.try_prove_lemmas(&mut goal) {
-          state.process_goal_explanation(proof_leaf, goal);
-          continue;
-        }
-      }
-      if state.case_split_depth >= CONFIG.max_split_depth {
-        // println!("Bailing because depth is too high");
-        // This goal could be further split, but we have reached the maximum depth,
-        // we cannot prove or disprove the conjecture
-        // state.goals.push_back(goal);
-        // continue;
-        return (Outcome::Unknown, state);
-      }
-      if CONFIG.verbose {
-        println!(
-          "{}: {}",
-          "Case splitting and continuing".purple(),
-          scrutinee.name.to_string().purple()
-        );
-      }
-      goal.case_split(scrutinee, &mut state);
-    } else {
-      if CONFIG.verbose {
-        println!("{}", "Cannot case split: no blocking variables found".red());
-        for remaining_goal in &state.goals {
-          println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
-        }
-      }
-      if goal.scrutinees.iter().any(|s| s.depth >= CONFIG.max_split_depth) {
-        if let Some(proof_leaf) = state.try_prove_lemmas(&mut goal) {
-          state.process_goal_explanation(proof_leaf, goal);
-          continue;
-        }
+  //   if proof_state.timeout() {
+  //     return (Outcome::Timeout, proof_state);
+  //   }
 
-        // state.goals.push_back(goal);
-        // continue;
-        return (Outcome::Unknown, state);
-      } else {
-        return (Outcome::Invalid, state);
-      }
-    }
-  }
-  // All goals have been discharged, so the conjecture is valid:
-  (Outcome::Valid, state)
+  //   // proof_state.try_prove_lemmas(top_goal_state.theorized_lemmas);
+
+  // }
+
+  // return (outcome, proof_state);
 }

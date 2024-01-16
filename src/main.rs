@@ -1,3 +1,4 @@
+use ast::{Equation, Prop};
 use colored::Colorize;
 use std::fs::*;
 use std::io::{Result, Write};
@@ -57,13 +58,13 @@ fn main() -> Result<()> {
     );
 
     let (result, duration) = if ARGS.do_uncyclic() {
-      prove_goal(&goal, false)?
+      prove_goal(goal.clone(), raw_goal.prop.clone(), raw_goal.premise.clone(), global_search_state, false)?
     } else {
       (Outcome::Unknown, Duration::from_secs(0))
     };
     let (result_cyclic, duration_cyclic) = if ARGS.do_cyclic() {
       goal.name = format!("{}_cyclic", goal.name);
-      prove_goal(&goal, true)?
+      prove_goal(goal.clone(), raw_goal.prop.clone(), raw_goal.premise.clone(), global_search_state, true)?
     } else {
       (Outcome::Unknown, Duration::from_secs(0))
     };
@@ -139,10 +140,10 @@ fn main() -> Result<()> {
 
 /// Prove a goal using either cyclic or uncyclic mode;
 /// record the duration and emit the proof.
-fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
+fn prove_goal<'a>(goal: Goal<'a>, goal_prop: Prop, goal_premise: Option<Equation>, global_search_state: GlobalSearchState<'a>, cyclic: bool) -> Result<(Outcome, Duration)> {
   CONFIG.set_cyclic(cyclic);
   let start_time = Instant::now();
-  let (result, mut proof_state) = goal::prove(goal.clone(), 0, LemmasState::default(), goal.name.clone(), 0);
+  let (result, mut proof_state) = goal::prove_top(goal_prop, goal_premise, global_search_state);
   let duration = start_time.elapsed();
   if CONFIG.emit_proofs {
     if let Outcome::Valid = result {
@@ -151,6 +152,9 @@ fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
         &filename,
         &goal.name,
         &mut proof_state,
+        // FIXME: remove magic number
+        // (the first lemma - i.e. the main theorem - should be lemma 0)
+        0,
         &goal.eq,
         &goal.top_level_params,
         &goal.local_context,
@@ -160,14 +164,14 @@ fn prove_goal(goal: &Goal, cyclic: bool) -> Result<(Outcome, Duration)> {
       file.write_all(explanation.as_bytes())?;
     }
   }
-  if result == Outcome::Timeout || result == Outcome::Unknown {
-    for (i, chain) in proof_state.lemmas_state.possible_lemmas.chains.iter().enumerate() {
-      println!("Chain {}", i);
-      for elem in chain.chain.iter() {
-        println!("Possible lemma: {} === {}", elem.eq.lhs, elem.eq.rhs);
-      }
-    }
-  }
+  // if result == Outcome::Timeout || result == Outcome::Unknown {
+  //   for (i, chain) in proof_state.lemmas_state.possible_lemmas.chains.iter().enumerate() {
+  //     println!("Chain {}", i);
+  //     for elem in chain.chain.iter() {
+  //       println!("Possible lemma: {} === {}", elem.eq.lhs, elem.eq.rhs);
+  //     }
+  //   }
+  // }
   // for (i, chain) in proof_state.lemmas_state.proven_lemmas.chains.iter().enumerate() {
   //   println!("Chain {}", i);
   //   for elem in chain.chain.iter() {

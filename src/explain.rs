@@ -6,7 +6,7 @@ use symbolic_expressions::Sexp;
 
 use crate::ast::{map_sexp, Context, Defns, Env, Type, find_instantiations};
 use crate::config::CONFIG;
-use crate::goal::{ETermEquation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, ProofInfo, ProofLeaf, GlobalSearchState};
+use crate::goal::{ETermEquation, ProofState, ProofTerm, IH_EQUALITY_PREFIX, ProofInfo, ProofLeaf, GlobalSearchState, Outcome};
 
 /// Constants from (Liquid)Haskell
 const EQUALS: &str = "=";
@@ -173,6 +173,7 @@ pub fn explain_top(
   filename: &str,
   goal: &str,
   state: &mut ProofState,
+  ih_lemma_number: usize,
   eq: &ETermEquation,
   params: &[Symbol],
   top_level_vars: &BTreeMap<Symbol, Type>,
@@ -198,40 +199,49 @@ pub fn explain_top(
   let mut lemma_map = BTreeMap::new();
   // let pat_lhs: Pattern<SymbolLang> = to_pattern(&eq.lhs.expr, |v| top_level_vars.contains_key(v));
   // let pat_rhs: Pattern<SymbolLang> = to_pattern(&eq.rhs.expr, |v| top_level_vars.contains_key(v));
-  let lemma_info = LemmaInfo {
-    name: state.ih_lemma_name.clone(),
-    params: params
-      .iter()
-      .map(|param| {
-        let param_type = top_level_vars.get(param).unwrap();
-        (param.to_string(), param_type.to_string())
-      })
-      .collect(),
-    // lhs: symbolic_expressions::parser::parse_str(&pat_lhs.to_string()).unwrap(),
-    // rhs: symbolic_expressions::parser::parse_str(&pat_rhs.to_string()).unwrap(),
-  };
-  lemma_map.insert(state.ih_lemma_name.clone(), lemma_info);
 
-  for (lemma_name, lemma_eq, _) in state.lemma_proofs.iter() {
+  // let ih_lemma_name = format!("lemma_{}", ih_lemma_number);
+  // let lemma_info = LemmaInfo {
+  //   name: ih_lemma_name.clone(),
+  //   params: params
+  //     .iter()
+  //     .map(|param| {
+  //       let param_type = top_level_vars.get(param).unwrap();
+  //       (param.to_string(), param_type.to_string())
+  //     })
+  //     .collect(),
+  //   // lhs: symbolic_expressions::parser::parse_str(&pat_lhs.to_string()).unwrap(),
+  //   // rhs: symbolic_expressions::parser::parse_str(&pat_rhs.to_string()).unwrap(),
+  // };
+  // lemma_map.insert(ih_lemma_name.clone(), lemma_info);
+
+  for (lemma_number, lemma_proof) in state.lemma_proofs.iter() {
+    if lemma_proof.outcome != Some(Outcome::Valid) {
+      continue;
+    }
     let lemma_info = LemmaInfo {
-      name: lemma_name.clone(),
-      params: lemma_eq.params.iter().map(|(param, ty)| {
+      name: format!("lemma_{}", ih_lemma_number),
+      params: lemma_proof.prop.params.iter().map(|(param, ty)| {
         (param.to_string(), convert_ty(&ty.repr))
       }).collect(),
     };
-    lemma_map.insert(lemma_name.clone(), lemma_info);
+    lemma_map.insert(lemma_info.name.clone(), lemma_info);
   }
 
-  let body_exp = explain_body(goal, &mut state.proof_info, &eq.lhs.sexp, &eq.rhs.sexp, &args, &mut lemma_map);
-  str_explanation.push_str(&body_exp);
-  str_explanation.push('\n');
+  // let body_exp = explain_body(goal, &mut state.proof_info, &eq.lhs.sexp, &eq.rhs.sexp, &args, &mut lemma_map);
+  // str_explanation.push_str(&body_exp);
+  // str_explanation.push('\n');
 
-  for (lemma_name, lemma_eq, lemma_proof_info) in state.lemma_proofs.iter_mut() {
-    if lemma_name == &state.ih_lemma_name {
-      // This is the top-level IH, we don't need to add it.
+  for (lemma_number, lemma_proof) in state.lemma_proofs.iter_mut() {
+    if lemma_proof.outcome != Some(Outcome::Valid) {
       continue;
     }
-    let lemma_exp = explain_body(&lemma_name, lemma_proof_info, &lemma_eq.eq.lhs, &lemma_eq.eq.rhs, &lemma_eq.params, &mut lemma_map);
+    // TODO: Perform reachability analysis from the main theorem to figure out
+    // which proofs we actually need to emit.
+    //
+    // Right now this dumps all valid proofs.
+    let lemma_name = format!("lemma_{}", lemma_number);
+    let lemma_exp = explain_body(&lemma_name, &mut lemma_proof.lemma_proof, &lemma_proof.prop.eq.lhs, &lemma_proof.prop.eq.rhs, &lemma_proof.prop.params, &mut lemma_map);
     str_explanation.push_str(&lemma_exp);
     str_explanation.push('\n');
   }
