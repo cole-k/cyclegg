@@ -390,7 +390,8 @@ pub fn is_var(var_name: &str) -> bool {
   var_name.chars().next().unwrap().is_lowercase()
 }
 
-pub fn get_vars(e: &Expr) -> BTreeSet<Symbol>
+pub fn get_vars<F>(e: &Expr, f: F) -> BTreeSet<Symbol>
+where F: FnOnce(&str) -> bool + Copy
 {
   let mut vars = BTreeSet::new();
   for n in e.as_ref() {

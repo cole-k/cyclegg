@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::iter::zip;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 use symbolic_expressions::{parser, Sexp};
 
@@ -534,6 +535,7 @@ impl<'a> Goal<'a> {
     for (var_id, ty) in var_tys {
       self.add_cvec_for_class(var_id, &ty);
     }
+    self.egraph.analysis.cvec_analysis.saturate();
     self.egraph.rebuild();
   }
 
@@ -559,6 +561,8 @@ impl<'a> Goal<'a> {
     self.egraph.analysis.cvec_analysis.saturate();
     let lhs_cvec = &self.egraph[self.eq.lhs.id].data.cvec_data;
     let rhs_cvec = &self.egraph[self.eq.rhs.id].data.cvec_data;
+    println!("lhs_cvec = {:?}", lhs_cvec);
+    println!("rhs_cvec = {:?}", rhs_cvec);
     cvecs_equal(&self.egraph.analysis.cvec_analysis, lhs_cvec, rhs_cvec)
   }
 
@@ -668,6 +672,7 @@ impl<'a> Goal<'a> {
     let lhs_vars = var_set(&lhs);
     let rhs_vars = var_set(&rhs);
     let lemma_vars = lhs_vars.union(&rhs_vars).cloned().collect();
+    println!("trying to make lemma rewrite forall {:?}. {} = {}", lemma_vars, lhs, rhs);
 
     // If any of my premises contain variables that are not present in lhs or rhs,
     // skip because we don't know how to check such a premise
@@ -1483,13 +1488,15 @@ impl<'a> Goal<'a> {
     let fresh_var = format!("fresh_{}", self.egraph.total_size());
     let fresh_symb = Symbol::from(&fresh_var);
     let lhs_id = self.egraph.find(self.eq.lhs.id);
-    let rhs_id = self.egraph.find(self.eq.rhs.id)
-;
+    let rhs_id = self.egraph.find(self.eq.rhs.id);
+
+    let is_var = |v: &str| self.local_context.contains_key(&Symbol::from_str(v).unwrap());
+
     // println!("starting generalization {} {} {}", lhs_id, rhs_id, class);
     let lhs_expr = self.extract_generalized_expr(class, fresh_symb, lhs_id);
     let rhs_expr = self.extract_generalized_expr(class, fresh_symb, rhs_id);
     // println!("generalizing {} === {}", lhs_expr, rhs_expr);
-    let params: Vec<(Symbol, Type)> = get_vars(&lhs_expr).union(&get_vars(&rhs_expr)).into_iter().flat_map(|var| {
+    let params: Vec<(Symbol, Type)> = get_vars(&lhs_expr, is_var).union(&get_vars(&rhs_expr, is_var)).into_iter().flat_map(|var| {
       let var_ty_opt = if var == &fresh_symb {
         Some(class_ty.clone())
       } else if self.local_context.contains_key(var) {
@@ -1687,14 +1694,14 @@ impl LemmasState {
     number
   }
 
-  pub fn lookup_lemma(&self, n: usize) -> &Prop {
+  pub fn lookup_lemma(&self, n: usize) -> Option<&Prop> {
     self.all_lemmas.iter().find_map(|(lemma_number, p)|{
       if n == *lemma_number {
         Some(p)
       } else {
         None
       }
-    }).unwrap()
+    })
   }
 
 }
@@ -1748,6 +1755,7 @@ impl<'a> LemmaProofState<'a> {
     let mut goal = Goal::top(&lemma_name, &prop, premise, global_search_state);
     let lemma_rw_opt = goal.make_lemma_rewrite(&goal.eq.lhs.expr, &goal.eq.rhs.expr, &goal.premises, false, lemma_number);
     let outcome = goal.cvecs_valid().and_then(|is_valid| {
+      println!("{} cvec is valid = {}", lemma_name, is_valid);
       // FIXME: Handle premises in cvecs so that we can reject invalid props
       // with preconditions
       if premise.is_none() && !is_valid {
@@ -1756,6 +1764,7 @@ impl<'a> LemmaProofState<'a> {
         None
       }
     });
+    println!("{} {:?} ({} == {}) has initial outcome {:?}", lemma_name, prop.params, prop.eq.lhs, prop.eq.rhs, outcome);
     // FIXME: add the option to do more cvec checks like we do in the old try_prove_lemmas
     Self {
       prop,
@@ -1772,7 +1781,11 @@ impl<'a> LemmaProofState<'a> {
 
   pub fn add_possible_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I, lemmas_state: &LemmasState) {
     self.theorized_lemmas.extend(iter.into_iter().filter(|lemma| {
-      lemmas_state.is_valid_new_prop(lemma)
+      let is_valid = lemmas_state.is_valid_new_prop(lemma);
+      if is_valid {
+        println!("adding lemma: forall {:?} {} == {}" , lemma.params, lemma.eq.lhs, lemma.eq.rhs);
+      }
+      is_valid
     }));
   }
 
@@ -1833,10 +1846,12 @@ impl<'a> LemmaProofState<'a> {
         (blocking_vars, blocking_exprs)
       };
 
+    println!("searching for generalized lemmas");
     if CONFIG.generalization {
       // TODO: now that we generalize in the cc lemma search, do we need this?
       self.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs), lemmas_state);
     }
+    println!("searching for cc lemmas");
     if CONFIG.cc_lemmas {
       let possible_lemmas = goal.search_for_cc_lemmas(&timer, lemmas_state);
       self.add_possible_lemmas(possible_lemmas, lemmas_state);
@@ -1888,7 +1903,8 @@ impl<'a> LemmaProofState<'a> {
       if goal.scrutinees.iter().any(|s| s.depth >= CONFIG.max_split_depth) {
         self.outcome = Some(Outcome::Unknown);
       } else {
-        self.outcome = Some(Outcome::Invalid);
+        // FIXME: This used to be Invalid but that seems wrong?
+        self.outcome = Some(Outcome::Unknown);
       }
     }
   }
@@ -1909,7 +1925,7 @@ impl<'a> LemmaProofState<'a> {
   /// case split depth.
   pub fn try_goals_until_next_depth(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
     let curr_depth = self.case_split_depth;
-    while self.outcome.is_none() && self.case_split_depth == curr_depth {
+    while self.outcome.is_none() && self.case_split_depth == curr_depth && !timer.timeout() {
       self.try_next_goal(timer, lemmas_state);
     }
   }
@@ -2011,6 +2027,52 @@ impl<'a> ProofState<'a> {
       }
     }
 
+  }
+
+  pub fn prove_breadth_first(&mut self, top_level_lemma_number: usize) -> Outcome {
+    let mut i = 0;
+    loop {
+      i += 1;
+      println!("Lemma proving loop iteration {}", i);
+      let mut new_lemmas = vec!();
+      for (lemma_number, lemma_proof_state) in self.lemma_proofs.iter_mut() {
+        if self.timer.timeout() {
+          return Outcome::Timeout;
+        }
+        if lemma_proof_state.outcome.is_some() {
+          if *lemma_number == top_level_lemma_number {
+            return lemma_proof_state.outcome.as_ref().unwrap().clone();
+          }
+          continue;
+        }
+        println!("Trying to prove {} = {}", lemma_proof_state.prop.eq.lhs, lemma_proof_state.prop.eq.rhs);
+        lemma_proof_state.try_goals_until_next_depth(&self.timer, &mut self.lemmas_state);
+        if lemma_proof_state.outcome == Some(Outcome::Valid) {
+          self.lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
+          lemma_proof_state.rw.as_ref().map(|rw| rw.add_to_rewrites(&mut self.lemmas_state.lemma_rewrites));
+        }
+        if lemma_proof_state.outcome == Some(Outcome::Invalid) {
+          self.lemmas_state.invalid_lemmas.insert(lemma_proof_state.prop.clone());
+        }
+        for lemma_chain in &lemma_proof_state.theorized_lemmas.chains {
+          for lemma in lemma_chain.chain.iter() {
+            new_lemmas.push((lemma.clone(), lemma_proof_state.proof_depth + 1));
+          }
+        }
+      }
+      for (new_lemma, new_lemma_proof_depth) in new_lemmas {
+        if self.timer.timeout() {
+          return Outcome::Timeout;
+        }
+        if new_lemma_proof_depth > CONFIG.proof_depth {
+          continue;
+        }
+        let new_lemma_number = self.lemmas_state.find_or_make_fresh_lemma(&new_lemma);
+        self.lemma_proofs.entry(new_lemma_number).or_insert_with(|| {
+          LemmaProofState::new(new_lemma_number, new_lemma, &None, self.global_search_state, new_lemma_proof_depth)
+        });
+      }
+    }
   }
 
   // /// Try to prove all of the lemmas we've collected so far.
@@ -2312,7 +2374,8 @@ pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_sea
   let top_goal_lemma_proof = LemmaProofState::new(top_goal_lemma_number, goal_prop, &goal_premise, global_search_state, 0);
   proof_state.lemma_proofs.insert(top_goal_lemma_number, top_goal_lemma_proof);
 
-  let outcome = proof_state.prove_lemma(top_goal_lemma_number);
+  // let outcome = proof_state.prove_lemma(top_goal_lemma_number);
+  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number);
 
   (outcome, proof_state)
 
