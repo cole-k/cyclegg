@@ -10,7 +10,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 use symbolic_expressions::{parser, Sexp};
 
-use crate::analysis::{CycleggAnalysis, CanonicalFormAnalysis, CanonicalForm, cvecs_equal};
+use crate::analysis::{CycleggAnalysis, CanonicalFormAnalysis, CanonicalForm, cvecs_equal, print_cvec};
 use crate::ast::*;
 use crate::config::*;
 use crate::egraph::*;
@@ -288,13 +288,14 @@ fn find_generalizations_prop(prop: &Prop, global_context: &Context, fresh_name: 
       let generalized_var = Sexp::String(fresh_name.clone());
       let new_lhs = substitute_sexp(&prop.eq.lhs, subexpr, &generalized_var);
       let new_rhs = substitute_sexp(&prop.eq.rhs, subexpr, &generalized_var);
+      // FIXME: hacky way to find variables
       let lhs_vars = sexp_leaves(&new_lhs);
-      let rhs_vars = sexp_leaves(&new_lhs);
+      let rhs_vars = sexp_leaves(&new_rhs);
       let mut new_params = prop.params.clone();
       // Only keep the vars that remain after substituting.
       new_params.retain(|(var, _ty)| lhs_vars.contains(&var.to_string()) || rhs_vars.contains(&var.to_string()));
       new_params.push((var_symb, ty));
-      // println!("Genearlization candidate: {} = {}", new_lhs, new_rhs);
+      // println!("Generalization candidate: {} = {}", new_lhs, new_rhs);
       output.push(Prop::new(Equation::new(new_lhs, new_rhs), new_params));
     }
   }
@@ -561,8 +562,8 @@ impl<'a> Goal<'a> {
     self.egraph.analysis.cvec_analysis.saturate();
     let lhs_cvec = &self.egraph[self.eq.lhs.id].data.cvec_data;
     let rhs_cvec = &self.egraph[self.eq.rhs.id].data.cvec_data;
-    println!("lhs_cvec = {:?}", lhs_cvec);
-    println!("rhs_cvec = {:?}", rhs_cvec);
+    // print_cvec(&self.egraph.analysis.cvec_analysis, lhs_cvec);
+    // print_cvec(&self.egraph.analysis.cvec_analysis, rhs_cvec);
     cvecs_equal(&self.egraph.analysis.cvec_analysis, lhs_cvec, rhs_cvec)
   }
 
@@ -672,7 +673,7 @@ impl<'a> Goal<'a> {
     let lhs_vars = var_set(&lhs);
     let rhs_vars = var_set(&rhs);
     let lemma_vars = lhs_vars.union(&rhs_vars).cloned().collect();
-    println!("trying to make lemma rewrite forall {:?}. {} = {}", lemma_vars, lhs, rhs);
+    // println!("trying to make lemma rewrite forall {:?}. {} = {}", lemma_vars, lhs, rhs);
 
     // If any of my premises contain variables that are not present in lhs or rhs,
     // skip because we don't know how to check such a premise
@@ -1328,9 +1329,12 @@ impl<'a> Goal<'a> {
 
           if CONFIG.cc_lemmas_generalization {
             let fresh_name = format!("fresh_{}", self.egraph.total_size());
-            let generalized_eqs = new_rewrite_eqs.iter().flat_map(|new_rewrite_eq| find_generalizations_prop(&new_rewrite_eq, self.global_search_state.context, fresh_name.clone()));
-
-            lemmas.extend(generalized_eqs);
+            for new_rewrite_eq in new_rewrite_eqs.iter() {
+              if timer.timeout() {
+                return lemmas;
+              }
+              lemmas.extend(find_generalizations_prop(&new_rewrite_eq, self.global_search_state.context, fresh_name.clone()));
+            }
           }
 
           // Optimization: skip adding any lemmas that would be subsumed by a cyclic lemma
@@ -1755,7 +1759,7 @@ impl<'a> LemmaProofState<'a> {
     let mut goal = Goal::top(&lemma_name, &prop, premise, global_search_state);
     let lemma_rw_opt = goal.make_lemma_rewrite(&goal.eq.lhs.expr, &goal.eq.rhs.expr, &goal.premises, false, lemma_number);
     let outcome = goal.cvecs_valid().and_then(|is_valid| {
-      println!("{} cvec is valid = {}", lemma_name, is_valid);
+      // println!("{} cvec is valid = {}", lemma_name, is_valid);
       // FIXME: Handle premises in cvecs so that we can reject invalid props
       // with preconditions
       if premise.is_none() && !is_valid {
@@ -1764,7 +1768,7 @@ impl<'a> LemmaProofState<'a> {
         None
       }
     });
-    println!("{} {:?} ({} == {}) has initial outcome {:?}", lemma_name, prop.params, prop.eq.lhs, prop.eq.rhs, outcome);
+    // println!("{} {:?} ({} == {}) has initial outcome {:?}", lemma_name, prop.params, prop.eq.lhs, prop.eq.rhs, outcome);
     // FIXME: add the option to do more cvec checks like we do in the old try_prove_lemmas
     Self {
       prop,
@@ -1783,7 +1787,7 @@ impl<'a> LemmaProofState<'a> {
     self.theorized_lemmas.extend(iter.into_iter().filter(|lemma| {
       let is_valid = lemmas_state.is_valid_new_prop(lemma);
       if is_valid {
-        println!("adding lemma: forall {:?} {} == {}" , lemma.params, lemma.eq.lhs, lemma.eq.rhs);
+        // println!("adding lemma: forall {:?} {} == {}" , lemma.params, lemma.eq.lhs, lemma.eq.rhs);
       }
       is_valid
     }));
@@ -1846,16 +1850,17 @@ impl<'a> LemmaProofState<'a> {
         (blocking_vars, blocking_exprs)
       };
 
-    println!("searching for generalized lemmas");
+    // println!("searching for generalized lemmas");
     if CONFIG.generalization {
       // TODO: now that we generalize in the cc lemma search, do we need this?
       self.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs), lemmas_state);
     }
-    println!("searching for cc lemmas");
+    // println!("searching for cc lemmas");
     if CONFIG.cc_lemmas {
       let possible_lemmas = goal.search_for_cc_lemmas(&timer, lemmas_state);
       self.add_possible_lemmas(possible_lemmas, lemmas_state);
     }
+    // println!("done searching for cc lemmas");
     // This ends up being really slow so we'll just take the lemma duplication for now
     // It's unclear that it lets us prove that much more anyway.
     // state.add_cyclic_lemmas(&goal);
@@ -2033,7 +2038,7 @@ impl<'a> ProofState<'a> {
     let mut i = 0;
     loop {
       i += 1;
-      println!("Lemma proving loop iteration {}", i);
+      // println!("Lemma proving loop iteration {}", i);
       let mut new_lemmas = vec!();
       for (lemma_number, lemma_proof_state) in self.lemma_proofs.iter_mut() {
         if self.timer.timeout() {
@@ -2045,7 +2050,7 @@ impl<'a> ProofState<'a> {
           }
           continue;
         }
-        println!("Trying to prove {} = {}", lemma_proof_state.prop.eq.lhs, lemma_proof_state.prop.eq.rhs);
+        // println!("Trying to prove {} = {}", lemma_proof_state.prop.eq.lhs, lemma_proof_state.prop.eq.rhs);
         lemma_proof_state.try_goals_until_next_depth(&self.timer, &mut self.lemmas_state);
         if lemma_proof_state.outcome == Some(Outcome::Valid) {
           self.lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
