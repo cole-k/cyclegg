@@ -237,7 +237,7 @@ impl CvecAnalysis {
 
   pub fn make_int_cvec(&self) -> Cvec {
     let mut rng = thread_rng();
-    let icv = (&mut rng).sample_iter(Uniform::new_inclusive(0, 255)).take(self.cvec_size).collect();
+    let icv = (&mut rng).sample_iter(Uniform::new_inclusive(-255, 255)).take(self.cvec_size).collect();
     Cvec::IntCvec(icv)
   }
 
