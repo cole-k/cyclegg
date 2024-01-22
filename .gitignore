@@ -1,6 +1,7 @@
 /target
 .liquid
 .DS_Store
+.idea
 .stack-work
 .auctex-auto
 /cvc4-comparison/ind/**
