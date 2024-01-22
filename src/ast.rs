@@ -42,12 +42,14 @@ impl Type {
   /// Split a type into arguments and return value
   /// (arguments are empty if the type is not an arrow)
   pub fn args_ret(&self) -> (Vec<Type>, Type) {
+    // println!("{:?}", self.repr);
     match &self.repr {
       Sexp::String(_) => (vec![], self.clone()), // This type is a D
       Sexp::List(xs) => {
         // This is a type constructor application
         match xs[0].string().unwrap().as_str() {
           ARROW => {
+            // println!("{:?}", xs);
             let args = xs[1]
               .list()
               .unwrap()

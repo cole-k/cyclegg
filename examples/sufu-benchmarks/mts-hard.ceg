@@ -1,0 +1,51 @@
+(
+
+(data Int ())
+(:: Zero Int)
+(:: Inf Int)
+(:: plus (-> (Int Int) Int))
+(let plus (x y) (plus y x))
+(let plus (x (plus y z)) (plus (plus x y) z))
+
+(:: max (-> (Int Int) Int))
+(let max (x y) (max y x))
+
+(data List (a) (Nil Cons))
+(:: Nil  (List a))
+(:: Cons (-> (a (List a)) (List a)))
+
+(:: tails (-> ((List a)) (List (List a))))
+(let tails (Nil)      (Cons Nil Nil)             )
+(let tails (Cons h t) (Cons (Cons h t) (tails t)))
+
+(:: sum (-> ((List Int)) Int))
+(let sum (Nil)      Zero            )
+(let sum (Cons h t) (plus h (sum t)))
+
+(:: map (-> ((-> (a) b) (List a)) (List b)))
+(let map (?f Nil          ) Nil                          )
+(let map (?f (Cons ?x ?xs)) (Cons ($ ?f ?x) (map ?f ?xs)))
+
+(:: maximum (-> ((List Int)) Int))
+(let maximum (Nil)      Inf                )
+(let maximum (Cons h t) (max h (maximum t)))
+
+(data Pair (a b) (MakePair))
+(:: MakePair (-> (a b) (Pair a b)))
+(:: fst (-> ((Pair a b)) a))
+(let fst (Pair x y) x)
+(:: snd (-> ((Pair a b)) a))
+(let snd (Pair x y) y)
+
+(:: mts (-> ((List Int)) (Pair Int Int)))
+(let mts (Nil)      (MakePair Zero Zero)          )
+(let mts (Cons h t) (MakePair
+    (max (fst (mts t)) (plus h (second (mts t))))
+    (plus h (second (mts t)))
+))
+
+(=== mts_optimize (xs) ((List Int))
+    (maximum (map sum (tails xs))) (fst (mts xs))
+)
+
+)

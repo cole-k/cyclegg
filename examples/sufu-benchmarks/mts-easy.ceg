@@ -1,0 +1,41 @@
+(
+
+(data Int ())
+(:: Zero Int)
+(:: Inf Int)
+(:: plus (-> (Int Int) Int))
+(let plus (x y) (plus y x))
+(let plus (x (plus y z)) (plus (plus x y) z))
+
+(:: max (-> (Int Int) Int))
+(let max (x y) (max y x))
+
+(data List (a) (Nil Cons))
+(:: Nil  (List a))
+(:: Cons (-> (a (List a)) (List a)))
+
+(:: tails (-> ((List a)) (List (List a))))
+(let tails (Nil)      (Cons Nil Nil)             )
+(let tails (Cons h t) (Cons (Cons h t) (tails t)))
+
+(:: sum (-> ((List Int)) Int))
+(let sum (Nil)      Zero            )
+(let sum (Cons h t) (plus h (sum t)))
+
+(:: map (-> ((-> (a) b) (List a)) (List b)))
+(let map (?f Nil          ) Nil                          )
+(let map (?f (Cons ?x ?xs)) (Cons ($ ?f ?x) (map ?f ?xs)))
+
+(:: maximum (-> ((List Int)) Int))
+(let maximum (Nil)      Inf                )
+(let maximum (Cons h t) (max h (maximum t)))
+
+(:: mts (-> ((List Int)) Int))
+(let mts (Nil)      Zero                          )
+(let mts (Cons h t) (max (mts t) (plus h (sum t))))
+
+(=== mts_optimize (xs) ((List Int))
+    (maximum (map sum (tails xs))) (mts xs)
+)
+
+)
