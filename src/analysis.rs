@@ -5,7 +5,7 @@ use itertools::{repeat_n, Itertools};
 use rand::{thread_rng, Rng};
 use rand::distributions::uniform::SampleUniform;
 use rand::distributions::weighted::WeightedIndex;
-use rand::distributions::Distribution;
+use rand::distributions::{Distribution, Uniform};
 use rand::seq::SliceRandom;
 use std::cell::RefCell;
 use std::{collections::{BTreeMap, BTreeSet}, iter::zip, str::FromStr};
@@ -223,11 +223,22 @@ impl CvecAnalysis {
   /// Makes a cvec by picking randomly without repetition from the vector of
   /// random term ids generated for its type.
   pub fn make_cvec_for_type(&mut self, ty: &Type, env: &Env, ctx: &Context) -> Cvec {
+    let (dt_name, _arg_types) = ty.datatype().unwrap();
+    // HACK: We have an escape hatch for integers where we generate them natively.
+    if dt_name == "Int" {
+      return self.make_int_cvec()
+    }
     let random_terms = self.lookup_ty(ty).unwrap_or_else(|| self.initialize_ty(ty, env, ctx));
     let mut rng = thread_rng();
     let cvec = random_terms.choose_multiple(&mut rng, self.cvec_size).map(|id| *id).collect();
     Cvec::Cvec(cvec)
 
+  }
+
+  pub fn make_int_cvec(&self) -> Cvec {
+    let mut rng = thread_rng();
+    let icv = (&mut rng).sample_iter(Uniform::new_inclusive(0, 255)).take(self.cvec_size).collect();
+    Cvec::IntCvec(icv)
   }
 
   pub fn saturate(&mut self) {
@@ -243,6 +254,8 @@ impl CvecAnalysis {
 
 /// Returns None for incomparable types (contradictions)
 pub fn cvecs_equal(cvec_analysis: &CvecAnalysis, cvec_1: &Cvec, cvec_2: &Cvec) -> Option<bool> {
+  // print_cvec(cvec_analysis, cvec_1);
+  // print_cvec(cvec_analysis, cvec_2);
   match (cvec_1, cvec_2) {
     (Cvec::Cvec(cv1), Cvec::Cvec(cv2)) => {
       Some(zip(cv1.iter(), cv2.iter()).all(|(id1, id2)| {
@@ -250,6 +263,9 @@ pub fn cvecs_equal(cvec_analysis: &CvecAnalysis, cvec_1: &Cvec, cvec_2: &Cvec) -
         let resolved_id2 = cvec_analysis.cvec_egraph.borrow_mut().find(*id2);
         resolved_id1 == resolved_id2
       }))
+    }
+    (Cvec::IntCvec(icv1), Cvec::IntCvec(icv2)) => {
+      Some(zip(icv1.iter(), icv2.iter()).all(|(i1, i2)| i1 == i2))
     }
     _ => None,
   }
@@ -266,9 +282,53 @@ pub fn print_cvec(cvec_analysis: &CvecAnalysis, cvec: &Cvec) {
       }).join(",");
       println!("cvec: {}", terms);
     }
+    Cvec::IntCvec(cv) => {
+      println!("int cvec: {}", cv.iter().map(|i| i.to_string()).join(","));
+    }
     Cvec::Stuck => {
       println!("Stuck");
     }
+  }
+}
+
+/// Returns whether b should be merged into a
+fn should_merge_cvecs(a: &Vec<Id>, b: &Vec<Id>, a_timestamp: usize, b_timestamp: usize, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> bool {
+  let different = zip(a.iter(), b.iter()).any(|(id1, id2)|{
+    let resolved_id1 = egraph.borrow_mut().find(*id1);
+    let resolved_id2 = egraph.borrow_mut().find(*id2);
+    if resolved_id1 != resolved_id2 {
+      // let borrowed_egraph = &egraph.borrow();
+      // let extractor = Extractor::new(borrowed_egraph, AstSize);
+      // let expr1 = extractor.find_best(resolved_id1).1;
+      // let expr2 = extractor.find_best(resolved_id2).1;
+      // println!("differing cvecs: {} {}", expr1, expr2);
+    }
+    resolved_id1 != resolved_id2
+  });
+  if different && a_timestamp < b_timestamp {
+    // println!("taking {:?}", b);
+    true
+  } else {
+    // println!("keeping {:?}", self);
+    false
+  }
+}
+
+fn int_cvec_to_cvec(icv: &Vec<i32>, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> Vec<Id> {
+  icv.iter().map(|i| {
+    egraph.borrow_mut().add(SymbolLang::leaf(i.to_string()))
+  }).collect()
+}
+
+fn eval_int_function(op: Symbol, children: Vec<i32>) -> i32 {
+  match op.as_str() {
+    "iplus" => {
+      children[0] + children[1]
+    },
+    "imul" => {
+      children[0] * children[1]
+    },
+    _ => unreachable!()
   }
 }
 
@@ -281,6 +341,7 @@ pub enum Cvec {
   /// two distinct values), but once we construct Cvecs recursively there
   /// is no guarantee of distinct valuations.
   Cvec(Vec<Id>),
+  IntCvec(Vec<i32>),
   /// We don't know how to evaluate this cvec yet (possibly because we haven't
   /// given information about it)
   Stuck,
@@ -331,10 +392,41 @@ impl Cvec {
 
   /// Calls get on Cvecs.
   /// Always fails for stuck or contradictory cvecs.
-  pub fn get_at_index(&self, index: usize) -> Option<&Id> {
+  pub fn get_id_at_index(&self, index: usize) -> Option<&Id> {
     match self {
       Cvec::Cvec(cv) => cv.get(index),
       _ => None,
+    }
+  }
+
+  fn make_int_cvec(egraph: &EGraph<SymbolLang, CycleggAnalysis>, enode: &SymbolLang) -> (Self, usize) {
+    let mut max_child_timestamp = egraph.analysis.cvec_analysis.current_timestamp;
+    let child_int_cvecs_opt: Option<Vec<Vec<i32>>> = enode.children().iter().map(|child| {
+      max_child_timestamp = std::cmp::max(max_child_timestamp, egraph[*child].data.timestamp);
+      match &egraph[*child].data.cvec_data {
+        Cvec::Stuck => None,
+        Cvec::Cvec(cv) => None,
+        Cvec::IntCvec(icv) => Some(icv.clone()),
+      }
+    }).collect();
+    match child_int_cvecs_opt {
+      // Some child is not an integer cvec
+      // NOTE: we don't update the timestamp because we don't use its children from which it would've
+      // gotten a fresher timestamp
+      None => (Cvec::Stuck, egraph.analysis.cvec_analysis.current_timestamp),
+      Some(child_int_cvecs) => {
+        let mut new_cvec = Vec::new();
+        // The max size of a Cvec should be this
+        for i in 0..egraph.analysis.cvec_analysis.cvec_size {
+          // Get the ith element of each cvec.
+          let cvec_children = child_int_cvecs.iter().map(|cvec| {
+            cvec[i]
+          }).collect();
+          let new_val = eval_int_function(enode.op, cvec_children);
+          new_cvec.push(new_val);
+        }
+        (Cvec::IntCvec(new_cvec), max_child_timestamp)
+      }
     }
   }
 
@@ -356,27 +448,47 @@ impl Cvec {
 
     let op = enode.op;
 
-    let mut new_cvec = Vec::new();
-    // The max size of a Cvec should be this
-    for i in 0..egraph.analysis.cvec_analysis.cvec_size {
-      // Get the ith element of each cvec.
-      let opt_children = enode.children().iter().map(|child| {
-        max_child_timestamp = std::cmp::max(max_child_timestamp, egraph[*child].data.timestamp);
-        egraph[*child].data.cvec_data.get_at_index(i).map(|id| *id)
-      }).collect();
-      match opt_children {
-        // If it's stuck, then propagate that it's stuck
-        // NOTE: we don't update the timestamp because we don't use its children from which it would've
-        // gotten a fresher timestamp
-        None => return (Cvec::Stuck, egraph.analysis.cvec_analysis.current_timestamp),
-        Some(cvec_children) => {
+    match op.as_str() {
+      "iplus" | "imul" => {
+        return Self::make_int_cvec(egraph, enode);
+      }
+      _ => {}
+    }
+
+    // We will convert all IntCvecs into regular Cvecs to make the next part easier.
+    // If we ever encounter a Stuck, we short circuit and just return that this node is stuck.
+    //
+    // TODO: This is inefficient (a bunch of unnecessary cloning), we can surely do better.
+    let resolved_children_cvecs: Option<Vec<Vec<Id>>> = enode.children().iter().map(|child| {
+      max_child_timestamp = std::cmp::max(max_child_timestamp, egraph[*child].data.timestamp);
+      match &egraph[*child].data.cvec_data {
+        Cvec::Stuck => None,
+        Cvec::Cvec(cv) => Some(cv.clone()),
+        Cvec::IntCvec(icv) => Some(int_cvec_to_cvec(icv, &egraph.analysis.cvec_analysis.cvec_egraph)),
+      }
+    }).collect();
+
+    match resolved_children_cvecs {
+      // If it's stuck, then propagate that it's stuck
+      // NOTE: we don't update the timestamp because we don't use its children from which it would've
+      // gotten a fresher timestamp
+      None => (Cvec::Stuck, egraph.analysis.cvec_analysis.current_timestamp),
+      Some(cvecs) => {
+        let mut new_cvec = Vec::new();
+        // The max size of a Cvec should be this
+        for i in 0..egraph.analysis.cvec_analysis.cvec_size {
+          // Get the ith element of each cvec.
+          let cvec_children = cvecs.iter().map(|cvec| {
+            cvec[i]
+          }).collect();
           let new_enode = SymbolLang::new(op, cvec_children);
           let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(new_enode);
           new_cvec.push(id);
         }
+        (Cvec::Cvec(new_cvec), max_child_timestamp)
       }
     }
-    (Cvec::Cvec(new_cvec), max_child_timestamp)
+
   }
 
   fn merge(&mut self, a_timestamp: usize, b: Self, b_timestamp: usize, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> DidMerge {
@@ -385,23 +497,45 @@ impl Cvec {
     // *self = b;
     // return DidMerge(false, false);
     match (&self, &b) {
-      (Cvec::Stuck, Cvec::Cvec(_)) => {
+      (Cvec::Stuck, Cvec::Cvec(_) | Cvec::IntCvec(_)) => {
         // println!("taking {:?}", b);
         *self = b;
         DidMerge(true, false)
       }
+      // All the below four cases are basically identical, maybe there is some
+      // better way to avoid code duplication...
       (Cvec::Cvec(cv1), Cvec::Cvec(cv2)) => {
-        let different = zip(cv1.iter(), cv2.iter()).any(|(id1, id2)|{
-          let resolved_id1 = egraph.borrow_mut().find(*id1);
-          let resolved_id2 = egraph.borrow_mut().find(*id2);
-          if resolved_id1 != resolved_id2 {
-            // let borrowed_egraph = &egraph.borrow();
-            // let extractor = Extractor::new(borrowed_egraph, AstSize);
-            // let expr1 = extractor.find_best(resolved_id1).1;
-            // let expr2 = extractor.find_best(resolved_id2).1;
-            // println!("differing cvecs: {} {}", expr1, expr2);
-          }
-          resolved_id1 != resolved_id2
+        let should_merge = should_merge_cvecs(cv1, cv2, a_timestamp, b_timestamp, egraph);
+        if should_merge {
+          *self = b;
+          DidMerge(true, false)
+        } else {
+          DidMerge(false, true)
+        }
+      }
+      (Cvec::Cvec(cv1), Cvec::IntCvec(icv2)) => {
+        let should_merge = should_merge_cvecs(cv1, &int_cvec_to_cvec(icv2, egraph), a_timestamp, b_timestamp, egraph);
+        if should_merge {
+          *self = b;
+          DidMerge(true, false)
+        } else {
+          DidMerge(false, true)
+        }
+      }
+      (Cvec::IntCvec(icv1), Cvec::Cvec(cv2)) => {
+        let should_merge = should_merge_cvecs(&int_cvec_to_cvec(&icv1, egraph), cv2, a_timestamp, b_timestamp, egraph);
+        if should_merge {
+          *self = b;
+          DidMerge(true, false)
+        } else {
+          DidMerge(false, true)
+        }
+      }
+      // Same deal as merge_cvecs but we don't need to convert the IntCvec into
+      // a regular Cvec.
+      (Cvec::IntCvec(cv1), Cvec::IntCvec(cv2)) => {
+        let different = zip(cv1.iter(), cv2.iter()).any(|(i1, i2)|{
+          i1 != i2
         });
         if different && a_timestamp < b_timestamp {
           // println!("taking {:?}", b);
@@ -412,7 +546,7 @@ impl Cvec {
           DidMerge(false, true)
         }
       }
-      (Cvec::Cvec(_), Cvec::Stuck) => {
+      (Cvec::Cvec(_) | Cvec::IntCvec(_), Cvec::Stuck) => {
         // println!("keeping {:?}", self);
         DidMerge(false, true)
       }
