@@ -1817,7 +1817,7 @@ impl<'a> LemmaProofState<'a> {
     }
     if let Some(proof_leaf) = goal.find_proof() {
       // println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
-      self.process_goal_explanation(proof_leaf, goal);
+      self.process_goal_explanation(proof_leaf, &goal.name);
       return;
 
     }
@@ -1914,16 +1914,16 @@ impl<'a> LemmaProofState<'a> {
     }
   }
 
-  fn process_goal_explanation(&mut self, proof_leaf: ProofLeaf, goal: Goal) {
+  fn process_goal_explanation(&mut self, proof_leaf: ProofLeaf, goal_name: &str) {
     // This goal has been discharged, proceed to the next goal
     if CONFIG.verbose {
-      println!("{} {} by {}", "Proved case".bright_blue(), goal.name, proof_leaf.name());
+      println!("{} {} by {}", "Proved case".bright_blue(), goal_name, proof_leaf.name());
       println!("{}", proof_leaf);
     }
     self
       .lemma_proof
       .solved_goal_proofs
-      .insert(goal.name, proof_leaf);
+      .insert(goal_name.to_string(), proof_leaf);
   }
 
   /// Keep attempting goals until we encounter a goal with a hitherto unseen
@@ -1932,6 +1932,36 @@ impl<'a> LemmaProofState<'a> {
     let curr_depth = self.case_split_depth;
     while self.outcome.is_none() && self.case_split_depth == curr_depth && !timer.timeout() {
       self.try_next_goal(timer, lemmas_state);
+    }
+  }
+
+  /// Iterate over all remaining goals, running them to saturation to see if any
+  /// new lemmas solve them. If all of them are solved, the outcome is set to
+  /// Some(Outcome::Valid).
+  // TODO: Cleanup the code here.
+  //
+  // I've struggled with the borrow checker due to the definition of
+  // `process_goal_explanation`. Realistically this should only require one or
+  // two iterations and it shouldn't need all too many clones or additional data
+  // structures. But this probably isn't too critical because there shouldn't be
+  // too many goals in the list ever.
+  pub fn try_finish_goals(&mut self, lemmas_state: &LemmasState) {
+    let proofs: Vec<(usize, ProofLeaf)> = self.goals.iter_mut().enumerate().flat_map(|(i, goal)| {
+      goal.saturate(&lemmas_state.lemma_rewrites);
+      goal.find_proof().map(|proof_leaf| (i, proof_leaf))
+    }).collect();
+    let indices_to_remove: Vec<usize> = proofs.iter().map(|(i, _)| *i).collect();
+    for (i, proof_leaf) in proofs {
+      self.process_goal_explanation(proof_leaf, &self.goals[i].name.clone());
+    }
+    let mut i = 0;
+    self.goals.retain(|_| {
+      let keep = !indices_to_remove.contains(&i);
+      i += 1;
+      keep
+    });
+    if self.goals.is_empty() {
+      self.outcome = Some(Outcome::Valid);
     }
   }
 }
@@ -2045,8 +2075,17 @@ impl<'a> ProofState<'a> {
           return Outcome::Timeout;
         }
         if lemma_proof_state.outcome.is_some() {
-          if *lemma_number == top_level_lemma_number {
+          // If we have an actual outcome on the lemma we care about it, return it
+          if *lemma_number == top_level_lemma_number && lemma_proof_state.outcome != Some(Outcome::Unknown) {
             return lemma_proof_state.outcome.as_ref().unwrap().clone();
+          // If we ran out of gas trying to prove this lemma, we can still try
+          // to finish it
+          } else if lemma_proof_state.outcome == Some(Outcome::Unknown) {
+            lemma_proof_state.try_finish_goals(&self.lemmas_state);
+            // If there was a change, try returning the now solved goal.
+            if lemma_proof_state.outcome != Some(Outcome::Unknown) {
+              return lemma_proof_state.outcome.as_ref().unwrap().clone();
+            }
           }
           continue;
         }
