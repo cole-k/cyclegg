@@ -1,0 +1,31 @@
+(
+
+(data Bool (True False))
+(:: True Bool)
+(:: False Bool)
+
+(data Int ())
+(:: zero Int)
+(:: inf Int)
+(:: plus (-> (Int Int) Int))
+(let plus (?x ?y) (plus ?y ?x))
+(let plus (?x zero) ?x)
+(let plus (?x (plus ?y ?z)) (plus (plus ?x ?y) ?z))
+
+(data List (a) (Nil Cons))
+(:: Nil  (List a))
+(:: Cons (-> (Int (List a)) (List a)))
+
+(:: sum (-> ((List a)) Int))
+(let sum (Nil)      zero            )
+(let sum ((Cons ?h ?t)) (plus ?h (sum ?t)))
+
+(:: sumrev (-> ((List a)) Int))
+(let sumrev (Nil)      zero               )
+(let sumrev ((Cons ?h ?t)) (plus (sumrev ?t) ?h))
+
+(=== sum_equal (xs) ((List a))
+    (sum xs) (sumrev xs)
+)
+
+)

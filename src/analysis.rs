@@ -9,7 +9,12 @@ use rand::distributions::{Distribution, Uniform};
 use rand::seq::SliceRandom;
 use std::cell::RefCell;
 use std::{collections::{BTreeMap, BTreeSet}, iter::zip, str::FromStr};
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::fmt::{Display, Formatter};
 use symbolic_expressions::Sexp;
+use crate::analysis::ENodeOrInt::ENode;
+use crate::utils::print_expressions_in_eclass;
 
 // We use an analysis inspired by cvecs from Ruler (https://github.com/uwplse/ruler)
 // to help us guess equalities between separate e-classes as lemmas. Because our
@@ -17,13 +22,98 @@ use symbolic_expressions::Sexp;
 // evaluation code and use an e-graph to evaluate the terms. This allows us to
 // store them compactly, too.
 
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Ord, PartialOrd)]
+pub enum ENodeOrInt {
+  ENode(SymbolLang),
+  Int(i32)
+}
+
+impl FromOp for ENodeOrInt {
+  type Error = Infallible;
+  fn from_op(op: &str, children: Vec<Id>) -> Result<Self, Self::Error> {
+    match op.parse::<i32>(){
+      Ok(val) => Ok(ENodeOrInt::Int(val)),
+      Err(_) => Ok(ENodeOrInt::ENode(SymbolLang::from_op(op, children)?))
+    }
+  }
+}
+
+impl ENodeOrInt {
+  fn is_int(&self) -> bool {
+    match self {
+      ENodeOrInt::Int(_) => true,
+      ENodeOrInt::ENode(_) => false
+    }
+  }
+  fn get_op(&self) -> Option<Symbol> {
+    match self {
+      ENodeOrInt::ENode(term) => Some(term.op),
+      ENodeOrInt::Int(v) => None
+    }
+  }
+}
+
+impl Display for ENodeOrInt {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    match self {
+      ENodeOrInt::ENode(term) => Display::fmt(&term, f),
+      ENodeOrInt::Int(val) => Display::fmt(&val, f)
+    }
+  }
+}
+impl Language for ENodeOrInt {
+  fn matches(&self, other: &Self) -> bool {
+    match (self, other) {
+      (ENodeOrInt::Int(x), ENodeOrInt::Int(y)) => x == y,
+      (ENodeOrInt::ENode(x), ENodeOrInt::ENode(y)) => x.matches(y),
+      _ => false
+    }
+  }
+
+  fn children(&self) -> &[Id] {
+    match self {
+      ENodeOrInt::ENode(n) => n.children(),
+      ENodeOrInt::Int(_) => &[]
+    }
+  }
+
+  fn children_mut(&mut self) -> &mut [Id] {
+    match self {
+      ENodeOrInt::ENode(n) => n.children_mut(),
+      ENodeOrInt::Int(_) => &mut []
+    }
+  }
+}
+
+
 pub fn random_term_from_type(
   ty: &Type,
   env: &Env,
   ctx: &Context,
   max_depth: usize,
-) -> Sexp {
-  random_term_from_type_with_weight::<usize>(ty, env, ctx, max_depth, &BTreeMap::default())
+) -> RecExpr<ENodeOrInt> {
+  let res = random_term_from_type_with_weight::<usize>(ty, env, ctx, max_depth, &BTreeMap::default());
+  //println!("generate {} {}", ty, res);
+  res
+}
+
+fn merge_rec_expr(
+  children: &Vec<RecExpr<ENodeOrInt>>,
+  op: Symbol
+) -> RecExpr<ENodeOrInt> {
+  let mut res = RecExpr::from(vec![]);
+  let mut children_indices = Vec::new();
+  for child in children.iter() {
+    let mut index_map = HashMap::new();
+    for (node_id, node) in child.as_ref().iter().enumerate() {
+      let new_node = node.clone().map_children(|child| {index_map[&child]});
+      index_map.insert(Id::from(node_id), res.add(new_node));
+    }
+    let last_id = index_map[&Id::from(child.as_ref().len() - 1)];
+    children_indices.push(last_id);
+  }
+  res.add(ENodeOrInt::ENode(SymbolLang::new(op, children_indices)));
+  res
 }
 
 /// Generates random terms that are up to `max_depth` deep. Constructors are depth 0.
@@ -38,23 +128,32 @@ pub fn random_term_from_type(
 /// terms with depth bigger than `max_depth`, but I suspect that this will not be
 /// much of an issue. If it is, then we will need to precompute the `has_base_case`
 /// check for all types and figure out the minimum depth for each type.
+///
+
 pub fn random_term_from_type_with_weight<W>(
   ty: &Type,
   env: &Env,
   ctx: &Context,
   max_depth: usize,
   constructor_weights: &BTreeMap<String, WeightedIndex<W>>,
-) -> Sexp
+) -> RecExpr<ENodeOrInt>
 where
   W: SampleUniform + PartialOrd,
 {
   let (dt_name, arg_types) = ty.datatype().unwrap();
+  // println!("{} {:?} {:?}", dt_name, Symbol::from_str(dt_name), env);
   let (vars, cons) = env.get(&Symbol::from_str(dt_name).unwrap()).or_else(|| {
     // this should be a type variable we can't look up
     assert!(dt_name.starts_with(char::is_lowercase));
     env.get(&Symbol::from_str(&mangle_name("Bool")).unwrap())
   }).unwrap();
   let type_var_map: SSubst = zip(vars.iter().cloned(), arg_types.iter().map(|arg_type| arg_type.repr.clone())).collect();
+
+  let mut rng = thread_rng();
+  if ty.repr.is_string() && ty.repr.string().unwrap() == "Int" {
+      let value = rng.sample(Uniform::new_inclusive(-10, 10));
+      return RecExpr::from(vec![ENodeOrInt::Int(value)]);
+  }
 
   // Has any base cases (depth 0 terms)? This could be precomputed to speed
   // things up.
@@ -64,7 +163,6 @@ where
     args.is_empty()
   });
 
-  let mut rng = thread_rng();
   let weights_opt = constructor_weights.get(dt_name);
 
   loop {
@@ -81,7 +179,7 @@ where
       continue;
     }
 
-    let mut children: Vec<Sexp> = args.iter().map(|arg| {
+    let mut children: Vec<RecExpr<ENodeOrInt>> = args.iter().map(|arg| {
       // Substitute over the type. This could be more efficient if we skipped
       // when the type_var_map is empty.
       let resolved_arg = Type::new(resolve_sexp(&arg.repr, &type_var_map));
@@ -91,8 +189,7 @@ where
       random_term_from_type_with_weight(&resolved_arg, env, ctx, max_depth.saturating_sub(1), constructor_weights)
     }).collect();
 
-    children.insert(0, Sexp::String(con.to_string()));
-    return Sexp::List(children);
+    return merge_rec_expr(&children, con);
   }
 }
 
@@ -111,7 +208,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct CvecAnalysis {
-  pub cvec_egraph: RefCell<EGraph<SymbolLang, ()>>,
+  pub cvec_egraph: RefCell<EGraph<ENodeOrInt, ()>>,
   // NOTE: It would help if we could somehow cache the random terms we
   // generate for each type and reuse them when making other types.
   //
@@ -138,7 +235,7 @@ pub struct CvecAnalysis {
   num_rolls: usize,
   /// How many random terms will we generate per type?
   num_random_terms_per_type: usize,
-  pub reductions: Vec<Rewrite<SymbolLang, ()>>,
+  pub reductions: Vec<Rewrite<ENodeOrInt, ()>>,
   /// This is necessary to avoid infinitely looping when we rebuild the e-graph
   /// analysis for cycles. We will update analyses that have older timestamps, but
   /// break the loop when we try to merge analyses with the same timestamp.
@@ -169,7 +266,92 @@ impl Default for CvecAnalysis {
   }
 }
 
+fn is_int(var_list: Vec<Var>) -> impl Fn(&mut EGraph<ENodeOrInt, ()>, Id, &Subst) -> bool {
+  move |egraph, _, subst| -> bool {
+    var_list.iter().all(
+      |var| {
+        let res = egraph[subst[*var]].nodes.iter().any(
+          |node| {node.is_int()}
+        );
+        // println!("check node {:?} => {}", egraph[subst[*var]].nodes, res);
+        res
+      }
+    )
+  }
+}
+
+fn get_int(egraph: &mut EGraph<ENodeOrInt, ()>, subst: &Subst, var: &Var) -> Option<i32> {
+  for node in egraph[subst[*var]].nodes.iter() {
+    if let ENodeOrInt::Int(val) = node {
+      return Some(*val)
+    }
+  }
+  None
+}
+
+struct IntApplier {
+  func: Box<dyn Fn(&Vec<i32>) -> i32 + Sync + Send>,
+  var_list: Vec<Var>
+}
+
+impl Applier<ENodeOrInt, ()> for IntApplier {
+  fn apply_one(&self, egraph: &mut EGraph<ENodeOrInt, ()>, eclass: Id, subst: &Subst, searcher_ast: Option<&PatternAst<ENodeOrInt>>, rule_name: Symbol) -> Vec<Id> {
+    let params: Vec<_> = self.var_list.iter().map(
+      |var| {get_int(egraph, subst, var).unwrap()}
+    ).collect();
+    let res_id = egraph.add(ENodeOrInt::Int((self.func)(&params)));
+    if egraph.union(eclass, res_id) {
+      vec![res_id]
+    } else {vec![]}
+  }
+}
+
+fn to_var(x: &str) -> Var {
+  Var::from_str(x).unwrap()
+}
+
+fn builtin_reductions() -> Vec<Rewrite<ENodeOrInt, ()>> {
+  vec![
+    rewrite!("zero-eval"; "zero" => { IntApplier {
+      func: Box::new(|params| {0}),
+      var_list: Vec::new()
+    }}),
+    rewrite!("inf-eval"; "inf" => { IntApplier {
+      func: Box::new(|params| {i32::MAX}),
+      var_list: Vec::new()
+    }}),
+    rewrite!("plus-eval"; "(plus ?x ?y)" => { IntApplier {
+      func: Box::new(|params: &Vec<i32>| {params[0].saturating_add(params[1])}),
+      var_list: vec![to_var("?x"), to_var("?y")]
+    }} if is_int(vec![to_var("?x"), to_var("?y")])),
+    rewrite!("max-eval"; "(max ?x ?y)" => { IntApplier {
+      func: Box::new(|params: &Vec<i32>| {std::cmp::max(params[0], params[1])}),
+      var_list: vec![Var::from_str("?x").unwrap(), Var::from_str("?y").unwrap()]
+    }} if is_int(vec![to_var("?x"), to_var("?y")]))
+  ]
+}
+
+fn lift_reduction(reduction: &Vec<Rewrite<SymbolLang, ()>>) -> Vec<Rewrite<ENodeOrInt, ()>> {
+  let mut new_reductions: Vec<Rewrite<ENodeOrInt, ()>> = builtin_reductions();
+  for rule in reduction {
+    let searcher = rule.searcher.get_pattern_ast();
+    let applier = rule.applier.get_pattern_ast();
+    if searcher.is_none() || applier.is_none() {
+      continue;
+    }
+    let searcher: Pattern<ENodeOrInt> = searcher.unwrap().to_string().parse().unwrap();
+    let applier: Pattern<ENodeOrInt> = applier.unwrap().to_string().parse().unwrap();
+    new_reductions.push(
+      Rewrite::new(rule.name, searcher, applier).unwrap()
+    );
+  }
+  new_reductions
+}
+
 impl CvecAnalysis {
+  pub fn set_reductions(&mut self, reductions: &Vec<Rewrite<SymbolLang, ()>>) {
+    self.reductions = lift_reduction(reductions);
+  }
   pub fn new(cvec_size: usize, term_max_depth: usize, max_tries_to_make_distinct_term: usize, num_random_terms_per_type: usize, reductions: Vec<Rewrite<SymbolLang, ()>>) -> Self {
     assert!(cvec_size < num_random_terms_per_type, "num_random_terms_per_type must be greater than cvec_size");
     Self {
@@ -179,7 +361,7 @@ impl CvecAnalysis {
       term_max_depth,
       num_rolls: max_tries_to_make_distinct_term,
       num_random_terms_per_type,
-      reductions,
+      reductions: lift_reduction(&reductions),
       current_timestamp: 0,
     }
   }
@@ -204,8 +386,8 @@ impl CvecAnalysis {
       loop {
         try_number += 1;
         // For now, we don't pass weights in
-        let new_sexp = random_term_from_type(ty, env, ctx, self.term_max_depth);
-        let new_term = new_sexp.to_string().parse().unwrap();
+        let new_term = random_term_from_type(ty, env, ctx, self.term_max_depth);
+        // println!("{}", new_term);
         let new_id = self.cvec_egraph.borrow_mut().add_expr(&new_term);
         // If we haven't generated this already or we're out of tries,
         // add the term and break.
@@ -224,10 +406,6 @@ impl CvecAnalysis {
   /// random term ids generated for its type.
   pub fn make_cvec_for_type(&mut self, ty: &Type, env: &Env, ctx: &Context) -> Cvec {
     let (dt_name, _arg_types) = ty.datatype().unwrap();
-    // HACK: We have an escape hatch for integers where we generate them natively.
-    if dt_name == "Int" {
-      return self.make_int_cvec()
-    }
     let random_terms = self.lookup_ty(ty).unwrap_or_else(|| self.initialize_ty(ty, env, ctx));
     let mut rng = thread_rng();
     let cvec = random_terms.choose_multiple(&mut rng, self.cvec_size).map(|id| *id).collect();
@@ -235,11 +413,6 @@ impl CvecAnalysis {
 
   }
 
-  pub fn make_int_cvec(&self) -> Cvec {
-    let mut rng = thread_rng();
-    let icv = (&mut rng).sample_iter(Uniform::new_inclusive(-255, 255)).take(self.cvec_size).collect();
-    Cvec::IntCvec(icv)
-  }
 
   pub fn saturate(&mut self) {
     self.cvec_egraph.replace_with(|egraph|{
@@ -248,6 +421,11 @@ impl CvecAnalysis {
         .run(&self.reductions);
       runner.egraph
     });
+    /*println!("current cvec egraph");
+    for eclass in self.cvec_egraph.borrow().classes() {
+      print!("  class: {} ", eclass.id);
+      print_expressions_in_eclass(&self.cvec_egraph.borrow(), eclass.id);
+    }*/
   }
 
 }
@@ -264,9 +442,6 @@ pub fn cvecs_equal(cvec_analysis: &CvecAnalysis, cvec_1: &Cvec, cvec_2: &Cvec) -
         resolved_id1 == resolved_id2
       }))
     }
-    (Cvec::IntCvec(icv1), Cvec::IntCvec(icv2)) => {
-      Some(zip(icv1.iter(), icv2.iter()).all(|(i1, i2)| i1 == i2))
-    }
     _ => None,
   }
 
@@ -282,9 +457,6 @@ pub fn print_cvec(cvec_analysis: &CvecAnalysis, cvec: &Cvec) {
       }).join(",");
       println!("cvec: {}", terms);
     }
-    Cvec::IntCvec(cv) => {
-      println!("int cvec: {}", cv.iter().map(|i| i.to_string()).join(","));
-    }
     Cvec::Stuck => {
       println!("Stuck");
     }
@@ -292,7 +464,7 @@ pub fn print_cvec(cvec_analysis: &CvecAnalysis, cvec: &Cvec) {
 }
 
 /// Returns whether b should be merged into a
-fn should_merge_cvecs(a: &Vec<Id>, b: &Vec<Id>, a_timestamp: usize, b_timestamp: usize, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> bool {
+fn should_merge_cvecs(a: &Vec<Id>, b: &Vec<Id>, a_timestamp: usize, b_timestamp: usize, egraph: &RefCell<EGraph<ENodeOrInt, ()>>) -> bool {
   let different = zip(a.iter(), b.iter()).any(|(id1, id2)|{
     let resolved_id1 = egraph.borrow_mut().find(*id1);
     let resolved_id2 = egraph.borrow_mut().find(*id2);
@@ -314,24 +486,6 @@ fn should_merge_cvecs(a: &Vec<Id>, b: &Vec<Id>, a_timestamp: usize, b_timestamp:
   }
 }
 
-fn int_cvec_to_cvec(icv: &Vec<i32>, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> Vec<Id> {
-  icv.iter().map(|i| {
-    egraph.borrow_mut().add(SymbolLang::leaf(i.to_string()))
-  }).collect()
-}
-
-fn eval_int_function(op: Symbol, children: Vec<i32>) -> i32 {
-  match op.as_str() {
-    "iplus" => {
-      children[0] + children[1]
-    },
-    "imul" => {
-      children[0] * children[1]
-    },
-    _ => unreachable!()
-  }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cvec {
   /// Vector of CvecAnalysis.cvec_size Ids corresponding to random terms.
@@ -341,7 +495,6 @@ pub enum Cvec {
   /// two distinct values), but once we construct Cvecs recursively there
   /// is no guarantee of distinct valuations.
   Cvec(Vec<Id>),
-  IntCvec(Vec<i32>),
   /// We don't know how to evaluate this cvec yet (possibly because we haven't
   /// given information about it)
   Stuck,
@@ -399,60 +552,20 @@ impl Cvec {
     }
   }
 
-  fn make_int_cvec(egraph: &EGraph<SymbolLang, CycleggAnalysis>, enode: &SymbolLang) -> (Self, usize) {
-    let mut max_child_timestamp = egraph.analysis.cvec_analysis.current_timestamp;
-    let child_int_cvecs_opt: Option<Vec<Vec<i32>>> = enode.children().iter().map(|child| {
-      max_child_timestamp = std::cmp::max(max_child_timestamp, egraph[*child].data.timestamp);
-      match &egraph[*child].data.cvec_data {
-        Cvec::Stuck => None,
-        Cvec::Cvec(cv) => None,
-        Cvec::IntCvec(icv) => Some(icv.clone()),
-      }
-    }).collect();
-    match child_int_cvecs_opt {
-      // Some child is not an integer cvec
-      // NOTE: we don't update the timestamp because we don't use its children from which it would've
-      // gotten a fresher timestamp
-      None => (Cvec::Stuck, egraph.analysis.cvec_analysis.current_timestamp),
-      Some(child_int_cvecs) => {
-        let mut new_cvec = Vec::new();
-        // The max size of a Cvec should be this
-        for i in 0..egraph.analysis.cvec_analysis.cvec_size {
-          // Get the ith element of each cvec.
-          let cvec_children = child_int_cvecs.iter().map(|cvec| {
-            cvec[i]
-          }).collect();
-          let new_val = eval_int_function(enode.op, cvec_children);
-          new_cvec.push(new_val);
-        }
-        (Cvec::IntCvec(new_cvec), max_child_timestamp)
-      }
-    }
-  }
-
   fn make(egraph: &EGraph<SymbolLang, CycleggAnalysis>, enode: &SymbolLang) -> (Self, usize) {
     // println!("making cvec for enode: {}", enode);
     let mut max_child_timestamp = egraph.analysis.cvec_analysis.current_timestamp;
     if enode.is_leaf() {
       // We can't evaluate vars (we need outside input, i.e. type information to create them)
       // This could be resolved by having a type information analysis.
-      if is_var(&enode.op.to_string()) {
+      if is_var(&enode.op.as_str()) {
         return (Cvec::Stuck, max_child_timestamp);
       } else {
         // This cvec is for a value like Z or Leaf, so make a concrete cvec out of it.
-        let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(enode.clone());
+        let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(ENodeOrInt::ENode(enode.clone()));
         let cvec = repeat_n(id, egraph.analysis.cvec_analysis.cvec_size).collect();
         return (Cvec::Cvec(cvec), max_child_timestamp);
       }
-    }
-
-    let op = enode.op;
-
-    match op.as_str() {
-      "iplus" | "imul" => {
-        return Self::make_int_cvec(egraph, enode);
-      }
-      _ => {}
     }
 
     // We will convert all IntCvecs into regular Cvecs to make the next part easier.
@@ -464,7 +577,6 @@ impl Cvec {
       match &egraph[*child].data.cvec_data {
         Cvec::Stuck => None,
         Cvec::Cvec(cv) => Some(cv.clone()),
-        Cvec::IntCvec(icv) => Some(int_cvec_to_cvec(icv, &egraph.analysis.cvec_analysis.cvec_egraph)),
       }
     }).collect();
 
@@ -481,7 +593,7 @@ impl Cvec {
           let cvec_children = cvecs.iter().map(|cvec| {
             cvec[i]
           }).collect();
-          let new_enode = SymbolLang::new(op, cvec_children);
+          let new_enode = ENodeOrInt::ENode(SymbolLang::new(enode.op.clone(), cvec_children));
           let id = egraph.analysis.cvec_analysis.cvec_egraph.borrow_mut().add(new_enode);
           new_cvec.push(id);
         }
@@ -491,13 +603,13 @@ impl Cvec {
 
   }
 
-  fn merge(&mut self, a_timestamp: usize, b: Self, b_timestamp: usize, egraph: &RefCell<EGraph<SymbolLang, ()>>) -> DidMerge {
+  fn merge(&mut self, a_timestamp: usize, b: Self, b_timestamp: usize, egraph: &RefCell<EGraph<ENodeOrInt, ()>>) -> DidMerge {
     // println!("merging cvecs: {:?} and {:?} ({} is newer) {} < {}", self, b, if a_timestamp < b_timestamp {"second"} else {"first"}, a_timestamp, b_timestamp);
     // Always replace a stuck cvec
     // *self = b;
     // return DidMerge(false, false);
     match (&self, &b) {
-      (Cvec::Stuck, Cvec::Cvec(_) | Cvec::IntCvec(_)) => {
+      (Cvec::Stuck, Cvec::Cvec(_)) => {
         // println!("taking {:?}", b);
         *self = b;
         DidMerge(true, false)
@@ -513,40 +625,7 @@ impl Cvec {
           DidMerge(false, true)
         }
       }
-      (Cvec::Cvec(cv1), Cvec::IntCvec(icv2)) => {
-        let should_merge = should_merge_cvecs(cv1, &int_cvec_to_cvec(icv2, egraph), a_timestamp, b_timestamp, egraph);
-        if should_merge {
-          *self = b;
-          DidMerge(true, false)
-        } else {
-          DidMerge(false, true)
-        }
-      }
-      (Cvec::IntCvec(icv1), Cvec::Cvec(cv2)) => {
-        let should_merge = should_merge_cvecs(&int_cvec_to_cvec(&icv1, egraph), cv2, a_timestamp, b_timestamp, egraph);
-        if should_merge {
-          *self = b;
-          DidMerge(true, false)
-        } else {
-          DidMerge(false, true)
-        }
-      }
-      // Same deal as merge_cvecs but we don't need to convert the IntCvec into
-      // a regular Cvec.
-      (Cvec::IntCvec(cv1), Cvec::IntCvec(cv2)) => {
-        let different = zip(cv1.iter(), cv2.iter()).any(|(i1, i2)|{
-          i1 != i2
-        });
-        if different && a_timestamp < b_timestamp {
-          // println!("taking {:?}", b);
-          *self = b;
-          DidMerge(true, false)
-        } else {
-          // println!("keeping {:?}", self);
-          DidMerge(false, true)
-        }
-      }
-      (Cvec::Cvec(_) | Cvec::IntCvec(_), Cvec::Stuck) => {
+      (Cvec::Cvec(_), Cvec::Stuck) => {
         // println!("keeping {:?}", self);
         DidMerge(false, true)
       }
@@ -584,6 +663,8 @@ impl Cvec {
   }
 }
 
+/// The set of constructors in an e-class.
+/// The order of variants is important: since we use the derived order during the merge.
 /// The set of constructors in an e-class.
 /// The order of variants is important: since we use the derived order during the merge.
 #[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone)]
@@ -646,11 +727,11 @@ impl CanonicalForm {
       // We have just merged something into a constructor.
       // 1) Check if there are any other constructors in this class with the same head and union their children
       let other_constructors: Vec<SymbolLang> = egraph[id]
-        .nodes
-        .iter()
-        .filter(|n2| n1 != **n2 && n1.op == n2.op)
-        .cloned()
-        .collect();
+          .nodes
+          .iter()
+          .filter(|n2| n1 != **n2 && n1.op == n2.op)
+          .cloned()
+          .collect();
 
       for n2 in other_constructors {
         // We can't always extract because of destructive rewrites
@@ -708,13 +789,13 @@ impl CanonicalFormAnalysis {
       CanonicalForm::Const(n) => {
         // Extract canonical forms of the children:
         let children: BTreeMap<Id, Expr> =
-          n.children
-            .iter()
-            .try_fold(BTreeMap::new(), |mut acc, child| {
-              let child_expr = Self::extract_canonical(egraph, *child)?;
-              acc.insert(*child, child_expr);
-              Some(acc)
-            })?;
+            n.children
+                .iter()
+                .try_fold(BTreeMap::new(), |mut acc, child| {
+                  let child_expr = Self::extract_canonical(egraph, *child)?;
+                  acc.insert(*child, child_expr);
+                  Some(acc)
+                })?;
         // Join those forms into a single expression:
         let expr = n.join_recexprs(|child_id| children.get(&child_id).unwrap());
         Some(expr)

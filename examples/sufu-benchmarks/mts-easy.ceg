@@ -1,14 +1,16 @@
 (
+(data Bool (True False))
+(:: True Bool)
+(:: False Bool)
 
 (data Int ())
-(:: Zero Int)
-(:: Inf Int)
+(:: zero Int)
 (:: plus (-> (Int Int) Int))
-(let plus (x y) (plus y x))
-(let plus (x (plus y z)) (plus (plus x y) z))
+(let plus (?x ?y) (plus ?y ?x))
+(let plus (?x (plus ?y ?z)) (plus (plus ?x ?y) ?z))
 
 (:: max (-> (Int Int) Int))
-(let max (x y) (max y x))
+(let max (?x ?y) (max ?y ?x))
 
 (data List (a) (Nil Cons))
 (:: Nil  (List a))
@@ -16,23 +18,23 @@
 
 (:: tails (-> ((List a)) (List (List a))))
 (let tails (Nil)      (Cons Nil Nil)             )
-(let tails (Cons h t) (Cons (Cons h t) (tails t)))
+(let tails (Cons ?h ?t) (Cons (Cons ?h ?t) (tails ?t)))
 
 (:: sum (-> ((List Int)) Int))
-(let sum (Nil)      Zero            )
-(let sum (Cons h t) (plus h (sum t)))
+(let sum (Nil)      zero            )
+(let sum (Cons ?h ?t) (plus ?h (sum ?t)))
 
 (:: map (-> ((-> (a) b) (List a)) (List b)))
 (let map (?f Nil          ) Nil                          )
 (let map (?f (Cons ?x ?xs)) (Cons ($ ?f ?x) (map ?f ?xs)))
 
 (:: maximum (-> ((List Int)) Int))
-(let maximum (Nil)      Inf                )
-(let maximum (Cons h t) (max h (maximum t)))
+(let maximum (Nil)      zero                )
+(let maximum (Cons ?h ?t) (max ?h (maximum ?t)))
 
 (:: mts (-> ((List Int)) Int))
-(let mts (Nil)      Zero                          )
-(let mts (Cons h t) (max (mts t) (plus h (sum t))))
+(let mts (Nil)      zero                          )
+(let mts (Cons ?h ?t) (max (mts ?t) (plus ?h (sum ?t))))
 
 (=== mts_optimize (xs) ((List Int))
     (maximum (map sum (tails xs))) (mts xs)

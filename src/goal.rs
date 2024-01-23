@@ -9,7 +9,7 @@ use std::iter::zip;
 use std::time::{Duration, Instant};
 use symbolic_expressions::{parser, Sexp};
 
-use crate::analysis::{CycleggAnalysis, CanonicalFormAnalysis, CanonicalForm, cvecs_equal};
+use crate::analysis::{CycleggAnalysis, CanonicalFormAnalysis, CanonicalForm, cvecs_equal, print_cvec};
 use crate::ast::*;
 use crate::config::*;
 use crate::egraph::*;
@@ -504,7 +504,8 @@ impl<'a> Goal<'a> {
     };
     // FIXME: this could really also be a reference. Probably not necessary
     // for efficiency reason but yeah.
-    res.egraph.analysis.cvec_analysis.reductions = global_search_state.cvec_reductions.clone();
+    res.egraph.analysis.cvec_analysis.set_reductions(&global_search_state.cvec_reductions);
+    //res.egraph.analysis.cvec_analysis.reductions = .clone();
     for (name, ty) in &prop.params {
       res.add_scrutinee(*name, &ty, 0);
       res.local_context.insert(*name, ty.clone());
@@ -1254,7 +1255,11 @@ impl<'a> Goal<'a> {
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
     let resolved_rhs_id = self.egraph.find(self.eq.rhs.id);
     let class_ids: Vec<Id> = self.egraph.classes().map(|c| c.id).collect();
+    // println!("Search for lemmas");
     for class_1_id in &class_ids {
+      // println!("  print for {}", class_1_id);
+      // print!("    "); print_expressions_in_eclass(&self.egraph, *class_1_id);
+      // print!("    "); print_cvec(&self.egraph.analysis.cvec_analysis, &self.egraph[*class_1_id].data.cvec_data);
       for class_2_id in &class_ids {
         if state.timeout() {
           return lemmas;
@@ -1313,6 +1318,10 @@ impl<'a> Goal<'a> {
           }
           let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), state, false);
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
+          /*println!("find new rewrite eqs");
+          for prop in new_rewrite_eqs.iter() {
+            println!("  {} = {}", prop.eq.lhs, prop.eq.rhs);
+          }*/
           // We used to check the egraph to see if the lemma helped us, but now
           // we just throw it into our list. We do that check in try_prove_lemmas.
           if new_rewrite_eqs.is_empty() {
