@@ -129,6 +129,11 @@ lazy_static! {
 }
 pub const ARROW: &str = "->";
 pub const APPLY: &str = "$";
+// FIXME: we look for this prefix among variables but when we generate lemmas we
+// don't make their parameters fresh. This means that we can mistakenly treat
+// them as guards. I don't actually know if this causes problems with proof
+// search since guards will always be booleans anyway, but this is a source of
+// potential brittleness.
 pub const GUARD_PREFIX: &str = "g_";
 
 pub fn var_depth(var_name: &str) -> usize {

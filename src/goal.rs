@@ -618,7 +618,7 @@ impl<'a> Goal<'a> {
   /// add_termination_check is true, otherwise they will not.
   ///
   /// The rewrites will each be named lemma_n.
-  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, timer: &Timer, lemmas_state: &mut LemmasState, add_termination_check: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
+  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, timer: &Timer, lemmas_state: &mut LemmasState, add_termination_check: bool, exclude_wildcards: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite>) {
     let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
     let is_var = |v| self.local_context.contains_key(v);
     let mut rewrites = self.lemmas.clone();
@@ -634,7 +634,7 @@ impl<'a> Goal<'a> {
         }
         let lemma_number = lemmas_state.fresh_lemma();
 
-        if let Some(lemma_rw) = self.make_lemma_rewrite(lhs_expr, rhs_expr, &premises, add_termination_check, lemma_number) {
+        if let Some(lemma_rw) = self.make_lemma_rewrite(lhs_expr, rhs_expr, &premises, add_termination_check, lemma_number, exclude_wildcards) {
           // Add the rewrites (if lemma_rw is some at least one is guaranteed to exist).
           lemma_rw.add_to_rewrites(&mut rewrites);
           lemma_rws.push(lemma_rw);
@@ -645,7 +645,7 @@ impl<'a> Goal<'a> {
     (rewrites, lemma_rws)
   }
 
-  fn make_lemma_rewrite(&self, lhs_expr: &Expr, rhs_expr: &Expr, premises: &Vec<ETermEquation>, add_termination_check: bool, lemma_number: usize)
+  fn make_lemma_rewrite(&self, lhs_expr: &Expr, rhs_expr: &Expr, premises: &Vec<ETermEquation>, add_termination_check: bool, lemma_number: usize, exclude_wildcards: bool)
                         -> Option<LemmaRewrite> {
     let is_var = |v| self.local_context.contains_key(v);
 
@@ -661,17 +661,19 @@ impl<'a> Goal<'a> {
     // could instead loop over all lhs and rhs exprs first and precompute their
     // patterns + figure out which ones we don't need to consider.
     let lhs: Pattern<SymbolLang> = to_pattern(lhs_expr, is_var);
-    if (CONFIG.irreducible_only && self.is_reducible(lhs_expr)) || has_guard_wildcards(&lhs) {
+    if (CONFIG.irreducible_only && self.is_reducible(lhs_expr)) || (exclude_wildcards && has_guard_wildcards(&lhs)) {
       return None;
     }
 
     let rhs: Pattern<SymbolLang> = to_pattern(rhs_expr, is_var);
-    if (CONFIG.irreducible_only && self.is_reducible(rhs_expr)) || has_guard_wildcards(&rhs) {
+    if (CONFIG.irreducible_only && self.is_reducible(rhs_expr)) || (exclude_wildcards && has_guard_wildcards(&rhs)) {
       return None;
     }
 
     let lhs_vars = var_set(&lhs);
     let rhs_vars = var_set(&rhs);
+    // println!("lhs vars: {:?}", lhs_vars);
+    // println!("rhs vars: {:?}", rhs_vars);
     let lemma_vars = lhs_vars.union(&rhs_vars).cloned().collect();
     // println!("trying to make lemma rewrite forall {:?}. {} = {}", lemma_vars, lhs, rhs);
 
@@ -762,7 +764,12 @@ impl<'a> Goal<'a> {
       let mut rewrites = self.lemmas.clone();
       // In the non-cyclic case, only use the original LHS and RHS
       // and only if no other lemmas have been added yet
-      let lemma_rw = self.make_lemma_rewrite(&self.eq.lhs.expr, &self.eq.rhs.expr, &premises, true, ih_lemma_number).unwrap();
+      let lemma_rw = self.make_lemma_rewrite(&self.eq.lhs.expr, &self.eq.rhs.expr, &premises, true, ih_lemma_number, false);
+      if lemma_rw.is_none() {
+        println!("{}: {} == {}. params: {:?}", self.name, self.eq.lhs.sexp, self.eq.rhs.sexp, self.top_level_params);
+        panic!()
+      }
+      let lemma_rw = lemma_rw.unwrap();
       lemma_rw.add_to_rewrites(&mut rewrites);
       return rewrites;
     }
@@ -781,7 +788,7 @@ impl<'a> Goal<'a> {
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
     let premises = self.update_premises();
-    self.make_lemma_rewrites_from_all_exprs(lhs_id, rhs_id, premises, timer, lemmas_state, add_termination_check)
+    self.make_lemma_rewrites_from_all_exprs(lhs_id, rhs_id, premises, timer, lemmas_state, add_termination_check, true)
   }
 
   /// Add a rewrite `lhs => rhs` to `rewrites` if not already present
@@ -1319,7 +1326,7 @@ impl<'a> Goal<'a> {
             }
             _ => {}
           }
-          let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), timer, lemmas_state, false);
+          let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), timer, lemmas_state, false, false);
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
           // We used to check the egraph to see if the lemma helped us, but now
           // we just throw it into our list. We do that check in try_prove_lemmas.
@@ -1757,8 +1764,8 @@ impl<'a> LemmaProofState<'a> {
   pub fn new(lemma_number: usize, prop: Prop, premise: &Option<Equation>, global_search_state: GlobalSearchState<'a>, proof_depth: usize) -> Self {
     let lemma_name = format!("lemma_{}", lemma_number);
     let mut goal = Goal::top(&lemma_name, &prop, premise, global_search_state);
-    let lemma_rw_opt = goal.make_lemma_rewrite(&goal.eq.lhs.expr, &goal.eq.rhs.expr, &goal.premises, false, lemma_number);
-    let outcome = goal.cvecs_valid().and_then(|is_valid| {
+    let lemma_rw_opt = goal.make_lemma_rewrite(&goal.eq.lhs.expr, &goal.eq.rhs.expr, &goal.premises, false, lemma_number, false);
+    let mut outcome = goal.cvecs_valid().and_then(|is_valid| {
       // println!("{} cvec is valid = {}", lemma_name, is_valid);
       // FIXME: Handle premises in cvecs so that we can reject invalid props
       // with preconditions
@@ -1768,6 +1775,11 @@ impl<'a> LemmaProofState<'a> {
         None
       }
     });
+    // HACK: This means we don't have an IH. This lemma probably should not have
+    // been considered.
+    if lemma_rw_opt.is_none() {
+      outcome = Some(Outcome::Invalid);
+    }
     // println!("{} {:?} ({} == {}) has initial outcome {:?}", lemma_name, prop.params, prop.eq.lhs, prop.eq.rhs, outcome);
     // FIXME: add the option to do more cvec checks like we do in the old try_prove_lemmas
     Self {
@@ -1935,6 +1947,16 @@ impl<'a> LemmaProofState<'a> {
     }
   }
 
+  /// Attempt the next n goals
+  pub fn try_n_goals(&mut self, n: usize, timer: &Timer, lemmas_state: &mut LemmasState) {
+    for _ in 1..n {
+      if self.outcome.is_some() {
+        return;
+      }
+      self.try_next_goal(timer, lemmas_state);
+    }
+  }
+
   /// Iterate over all remaining goals, running them to saturation to see if any
   /// new lemmas solve them. If all of them are solved, the outcome is set to
   /// Some(Outcome::Valid).
@@ -2090,7 +2112,7 @@ impl<'a> ProofState<'a> {
           continue;
         }
         // println!("Trying to prove {} = {}", lemma_proof_state.prop.eq.lhs, lemma_proof_state.prop.eq.rhs);
-        lemma_proof_state.try_goals_until_next_depth(&self.timer, &mut self.lemmas_state);
+        lemma_proof_state.try_n_goals(3, &self.timer, &mut self.lemmas_state);
         if lemma_proof_state.outcome == Some(Outcome::Valid) {
           self.lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
           lemma_proof_state.rw.as_ref().map(|rw| rw.add_to_rewrites(&mut self.lemmas_state.lemma_rewrites));
@@ -2109,6 +2131,10 @@ impl<'a> ProofState<'a> {
           return Outcome::Timeout;
         }
         if new_lemma_proof_depth > CONFIG.proof_depth {
+          continue;
+        }
+        // We've proven a lemma that subsumes it or found a lemma it subsumes that is invalid.
+        if self.lemmas_state.proven_lemmas.contains_leq(&new_lemma) || self.lemmas_state.invalid_lemmas.contains_geq(&new_lemma) {
           continue;
         }
         let new_lemma_number = self.lemmas_state.find_or_make_fresh_lemma(&new_lemma);
@@ -2423,17 +2449,4 @@ pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_sea
 
   (outcome, proof_state)
 
-  // let top_goal_state = proof_state.lemma_proofs.get_mut(&top_goal_lemma_number).unwrap();
-  // while top_goal_state.outcome.is_none() {
-  //   top_goal_state.try_goals_until_next_depth(&proof_state, &mut proof_state.lemmas_state);
-
-  //   if proof_state.timeout() {
-  //     return (Outcome::Timeout, proof_state);
-  //   }
-
-  //   // proof_state.try_prove_lemmas(top_goal_state.theorized_lemmas);
-
-  // }
-
-  // return (outcome, proof_state);
 }
