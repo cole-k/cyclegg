@@ -7,7 +7,6 @@
 (axiom plus (?x ?y) (plus ?y ?x))
 (axiom plus (?x (plus ?y ?z)) (plus (plus ?x ?y) ?z))
 (axiom plus ((plus ?x ?y) ?z) (plus ?x (plus ?y ?z)))
-(axiom plus (?z (max ?x ?y)) (max (plus ?x ?z) (plus ?y ?z)))
 (axiom plus (?x zero) ?x)
 
 (data Bool (True False))
@@ -17,6 +16,7 @@
 (:: max (-> (Int Int) Int))
 (axiom max (?x ?y) (max ?y ?x))
 (axiom max ((plus ?x ?z) (plus ?y ?z)) (plus ?z (max ?x ?y)))
+(axiom plus (?z (max ?x ?y)) (max (plus ?x ?z) (plus ?y ?z)))
 (axiom max (?x ?x) ?x)
 
 (data Tree (a) (Leaf Node))

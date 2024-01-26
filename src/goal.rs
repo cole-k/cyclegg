@@ -873,7 +873,7 @@ impl<'a> Goal<'a> {
     let new_lemmas = self.add_lemma_rewrites(state);
 
     let var_str = scrutinee.name.to_string();
-    println!("start case split on variable {} {:?}", var_str, new_lemmas);
+    // println!("start case split on variable {} {:?}", var_str, new_lemmas);
     warn!("case-split on {}", scrutinee.name);
     let var_node = SymbolLang::leaf(scrutinee.name);
     let var_pattern_ast: RecExpr<ENodeOrVar<SymbolLang>> = vec![ENodeOrVar::ENode(var_node.clone())].into();
