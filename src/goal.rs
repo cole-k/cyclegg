@@ -561,7 +561,15 @@ impl<'a> Goal<'a> {
 
   /// Saturate the goal by applying all available rewrites
   pub fn saturate(&mut self, top_lemmas: &BTreeMap<String, Rw>) {
-    let rewrites = self.global_search_state.reductions.iter().chain(self.lemmas.values()).chain(top_lemmas.values());
+    //println!("before saturation");
+    //print_all_expressions_in_egraph(&self.egraph, 4);
+    let mut rewrites: Vec<_> = self.global_search_state.reductions.iter().chain(self.lemmas.values()).chain(top_lemmas.values()).collect();
+    //let test_rule1 = rewrite!("rule1"; "(plus ?x ?y)" => "(plus ?y ?x)");
+    //let test_rule2 = rewrite!("rule2"; "(plus ?x zero)" => "?x");
+    // rewrites.push(&test_rule1); rewrites.push(&test_rule2);
+    //for rewrite in rewrites.clone() {
+    //  println!("  {:?}", rewrite);
+    //}
     let lhs_id = self.eq.lhs.id;
     let rhs_id = self.eq.rhs.id;
     let runner = Runner::default()
@@ -574,8 +582,10 @@ impl<'a> Goal<'a> {
         } else {
           Ok(())
         }
-      })
-      .run(rewrites);
+      }).run(rewrites);
+    //runner.print_report();
+    //println!("after saturation");
+    //print_all_expressions_in_egraph(&runner.egraph, 4);
     self.egraph = runner.egraph;
   }
 
@@ -863,6 +873,7 @@ impl<'a> Goal<'a> {
     let new_lemmas = self.add_lemma_rewrites(state);
 
     let var_str = scrutinee.name.to_string();
+    println!("start case split on variable {} {:?}", var_str, new_lemmas);
     warn!("case-split on {}", scrutinee.name);
     let var_node = SymbolLang::leaf(scrutinee.name);
     let var_pattern_ast: RecExpr<ENodeOrVar<SymbolLang>> = vec![ENodeOrVar::ENode(var_node.clone())].into();
@@ -948,6 +959,8 @@ impl<'a> Goal<'a> {
       );
       // Remove old variable from the egraph and context
       remove_node(&mut new_goal.egraph, &var_node);
+
+      // TODO: add saturation
 
       new_goal.egraph.rebuild();
 
@@ -1255,11 +1268,11 @@ impl<'a> Goal<'a> {
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
     let resolved_rhs_id = self.egraph.find(self.eq.rhs.id);
     let class_ids: Vec<Id> = self.egraph.classes().map(|c| c.id).collect();
-    // println!("Search for lemmas");
+    //println!("\n\nSearch for lemmas {} {}", self.eq.lhs, self.eq.rhs);
     for class_1_id in &class_ids {
-      // println!("  print for {}", class_1_id);
-      // print!("    "); print_expressions_in_eclass(&self.egraph, *class_1_id);
-      // print!("    "); print_cvec(&self.egraph.analysis.cvec_analysis, &self.egraph[*class_1_id].data.cvec_data);
+      //println!("  print for {}", class_1_id);
+      //print!("    "); print_expressions_in_eclass(&self.egraph, *class_1_id);
+      //print!("    "); print_cvec(&self.egraph.analysis.cvec_analysis, &self.egraph[*class_1_id].data.cvec_data);
       for class_2_id in &class_ids {
         if state.timeout() {
           return lemmas;
@@ -1929,6 +1942,15 @@ pub fn explain_goal_failure(goal: &Goal) {
 
   println!("{}", "RHS Nodes".cyan());
   print_expressions_in_eclass(&goal.egraph, goal.eq.rhs.id);
+  /*println!("{}", "Lemmas".cyan());
+  for lemma in goal.lemmas.iter() {
+    println!("  {:?}", lemma);
+  }
+
+  println!("{}", "Reductions".cyan());
+  for reduction in goal.global_search_state.reductions.iter() {
+    println!("  {:?}", reduction);
+  }*/
 }
 
 fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {

@@ -8,7 +8,7 @@ use crate::config::CONFIG;
 use crate::egraph::{ConditionalSearcher, DestructiveApplier};
 use crate::goal::*;
 
-fn make_rewrite_for_defn<A>(name: &str, args: &Sexp, value: &Sexp) -> Rewrite<SymbolLang, A>
+fn make_rewrite_for_defn<A>(name: &str, args: &Sexp, value: &Sexp, is_axiom: bool) -> Rewrite<SymbolLang, A>
   where
     A: Analysis<SymbolLang>
 {
@@ -27,7 +27,7 @@ fn make_rewrite_for_defn<A>(name: &str, args: &Sexp, value: &Sexp) -> Rewrite<Sy
   // println!("rewrite rule: {} => {}", lhs, rhs);
   let searcher: Pattern<SymbolLang> = lhs.parse().unwrap();
   let applier: Pattern<SymbolLang> = rhs.parse().unwrap();
-  if CONFIG.destructive_rewrites {
+  if CONFIG.destructive_rewrites && !is_axiom {
     Rewrite::new(lhs, searcher.clone(), DestructiveApplier::new(searcher, applier)).unwrap()
   } else {
     Rewrite::new(lhs, searcher, applier).unwrap()
@@ -287,7 +287,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         }
         state.context.insert(mangled_name, mangled_type);
       }
-      "let" => {
+      "let" | "axiom" => {
         // This is a definition
         let name = decl.list()?[1].string()?;
         validate_variable(name);
@@ -300,11 +300,12 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
           &mangled_name,
           &mangled_args,
           &mangled_value,
+          decl_kind == "axiom"
         ));
         // HACK: add the same rules to a list of rewrites for cvecs. This is
         // only done because we don't have a good way of storing rules that can
         // work as both Rw and CvecRw.
-        state.cvec_rules.push(make_rewrite_for_defn(&mangled_name, &mangled_args, &mangled_value));
+        state.cvec_rules.push(make_rewrite_for_defn(&mangled_name, &mangled_args, &mangled_value, decl_kind == "axiom"));
 
         // Add to the hashmap
         if let Some(cases) = state.defns.get_mut(&mangled_name) {

@@ -4,17 +4,17 @@
 (:: zero Int)
 (:: inf Int)
 (:: plus (-> (Int Int) Int))
-(let plus (?x ?y) (plus ?y ?x))
-(let plus (?x (plus ?y ?z)) (plus (plus ?x ?y) ?z))
-(let plus (?x zero) ?x)
+(axiom plus (?x ?y) (plus ?y ?x))
+(axiom plus (?x (plus ?y ?z)) (plus (plus ?x ?y) ?z))
+(axiom plus (?x zero) ?x)
 
 (data Bool (True False))
 (:: True Bool)
 (:: False Bool)
 
 (:: max (-> (Int Int) Int))
-(let max (?x ?y) (max ?y ?x))
-(let max ((plus ?x ?z) (plus ?y ?z)) (plus ?z (max ?x ?y)))
+(axiom max (?x ?y) (max ?y ?x))
+(axiom max ((plus ?x ?z) (plus ?y ?z)) (plus ?z (max ?x ?y)))
 
 (data Tree (a) (Leaf Node))
 (:: Leaf (Tree a))

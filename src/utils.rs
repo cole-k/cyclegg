@@ -1,7 +1,10 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
+use colored::Colorize;
 
 use egg::*;
+use itertools::Itertools;
 use log::warn;
+use symbolic_expressions::Sexp;
 
 fn cartesian_product_helper<T: Clone>(
   vector: &[Vec<T>],
@@ -50,6 +53,124 @@ pub fn print_expressions_in_eclass<L: egg::Language + std::fmt::Display, N: egg:
     } else {
       println!("({} {})", node, child_rec_exprs);
     }
+  }
+}
+
+pub struct SchedulerPrinter {
+  scheduler: SimpleScheduler
+}
+
+impl Default for SchedulerPrinter {
+  fn default() -> Self {
+    SchedulerPrinter {scheduler: SimpleScheduler {}}
+  }
+}
+impl<N: Analysis<SymbolLang>> RewriteScheduler<SymbolLang, N> for SchedulerPrinter {
+  fn can_stop(&mut self, iteration: usize) -> bool {
+    <egg::SimpleScheduler as egg::RewriteScheduler<SymbolLang, N>>::can_stop(&mut self.scheduler, iteration)
+  }
+  fn search_rewrite<'a>(&mut self, iteration: usize, egraph: &EGraph<SymbolLang, N>, rewrite: &'a Rewrite<SymbolLang, N>) -> Vec<SearchMatches<'a, SymbolLang>> {
+    self.scheduler.search_rewrite(iteration, egraph, rewrite)
+  }
+  fn apply_rewrite(&mut self, iteration: usize, egraph: &mut EGraph<SymbolLang, N>, rewrite: &Rewrite<SymbolLang, N>, matches: Vec<SearchMatches<SymbolLang>>) -> usize {
+    let is_print = !matches.is_empty();
+    if is_print {
+      println!("\n\napply rewrite {:?} on matches:", rewrite.applier.get_pattern_ast().unwrap().to_string());
+      for match_case in matches.iter() {
+        println!("  {:?}", match_case)
+      }
+    }
+    let res = self.scheduler.apply_rewrite(iteration, egraph, rewrite, matches);
+    if is_print {
+      println!("apply num {}", res);
+      print_all_expressions_in_egraph(egraph, 4);
+    }
+    res
+  }
+}
+
+#[derive(Clone)]
+struct ExpressionStorage {
+  pub exp_storage: Vec<HashSet<String>>
+}
+
+impl ExpressionStorage {
+  fn new(size_limit: usize) -> Self{
+    ExpressionStorage {exp_storage: vec![HashSet::new(); size_limit + 1]}
+  }
+  fn merge(&mut self, other: &Self) -> bool {
+    assert_eq!(self.exp_storage.len(), other.exp_storage.len());
+    let mut is_changed = false;
+    for (self_set, other_set) in self.exp_storage.iter_mut().zip(other.exp_storage.iter()) {
+      for exp in other_set {
+        is_changed |= self_set.insert(exp.clone());
+      }
+    }
+    is_changed
+  }
+  fn print(&self) {
+    for exp_set in self.exp_storage.iter() {
+      for expression in exp_set.iter() {
+        println!("  {}", expression);
+      }
+    }
+  }
+  fn construct(size_limit: usize, op: String, sub_storages: &Vec<ExpressionStorage>) -> Self{
+    let mut res = ExpressionStorage::new(size_limit);
+    if sub_storages.is_empty() {
+      if size_limit >= 1 {res.exp_storage.get_mut(1).unwrap().insert(op);}
+      return res;
+    }
+    let size_pool = vec![(0..size_limit).collect::<Vec<usize>>(); sub_storages.len()];
+    for size_list in cartesian_product(&size_pool) {
+      let total_size: usize = 1 + size_list.iter().sum::<usize>();
+      if total_size > size_limit {continue;}
+      let res_set: &mut HashSet<String> = res.exp_storage.get_mut(total_size).unwrap();
+      let expression_pool: Vec<Vec<String>> = size_list.iter().zip(sub_storages.iter()).map(
+        |(size, sub_storage)| {sub_storage.exp_storage[*size].clone().into_iter().collect()}
+      ).collect();
+      for sub_list in cartesian_product(&expression_pool) {
+        let new_exp = format!("({} {})", op, sub_list.join(" "));
+        res_set.insert(new_exp);
+      }
+    }
+    res
+  }
+}
+
+pub fn print_all_expressions_in_egraph<N: egg::Analysis<SymbolLang>> (egraph: &EGraph<SymbolLang, N>, size_limit: usize) {
+  let mut node_info: HashMap<Id, ExpressionStorage> = egraph.classes().map(
+    |class| {(class.id, ExpressionStorage::new(size_limit))}
+  ).collect();
+  let mut is_changed = true;
+  while is_changed {
+    is_changed = false;
+    for class in egraph.classes() {
+      for node in class.nodes.iter() {
+        //println!("\n\nupdate according to node {}", node);
+        //println!("previous info");
+        //node_info[&class.id].print();
+        let sub_storage = node.children.iter().map(|id| {node_info.get(&egraph.find(*id)).unwrap().clone()}).collect_vec();
+        //for (child, child_storage) in sub_storage.iter().enumerate() {
+        //  println!("child {}:", child);
+        //  child_storage.print();
+        //}
+        let new_storage = ExpressionStorage::construct(size_limit, node.op.to_string(), &sub_storage);
+        //println!("extend with info");
+        //new_storage.print();
+        is_changed |= node_info.get_mut(&class.id).unwrap().merge(&new_storage);
+        //println!("result info");
+        // node_info[&class.id].print();
+      }
+    }
+  }
+  println!("#nodes: {}, #classes: {}", egraph.total_number_of_nodes(), egraph.number_of_classes());
+  for class in egraph.classes() {
+    println!("{} {}", "EClass ".cyan(), class.id.to_string().cyan());
+    for enode in class.nodes.iter() {
+      println!("  node: {:?}", enode);
+    }
+    node_info[&class.id].print();
   }
 }
 
