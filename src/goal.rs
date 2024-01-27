@@ -891,7 +891,11 @@ impl<'a> Goal<'a> {
     // Convert to datatype name
     let dt = Symbol::from(ty.datatype().unwrap().0);
     // Get the constructors of the datatype
-    let (_, cons) = self.global_search_state.env.get(&dt).unwrap();
+    let (_, cons) = self.global_search_state.env.get(&dt).unwrap_or_else(||{
+      println!("unexpected datatype {} for variable {}", dt, var_str);
+      println!("params: {:?}, prop: {}", self.top_level_params, self.eq);
+      panic!()
+    });
     // We will add this to state.proof to describe the case split.
     let mut instantiated_cons_and_goals: Vec<(String, String)> = vec![];
     // These are the new goals generated from the case split
@@ -1326,7 +1330,9 @@ impl<'a> Goal<'a> {
             }
             _ => {}
           }
+          println!("found candidate cc lemma: making rewrites");
           let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), timer, lemmas_state, false, false);
+          println!("made rewrites");
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
           // We used to check the egraph to see if the lemma helped us, but now
           // we just throw it into our list. We do that check in try_prove_lemmas.
@@ -1335,7 +1341,7 @@ impl<'a> Goal<'a> {
           }
 
           if CONFIG.cc_lemmas_generalization {
-            let fresh_name = format!("fresh_{}", self.egraph.total_size());
+            let fresh_name = format!("fresh_{}_{}", self.name, self.egraph.total_size());
             for new_rewrite_eq in new_rewrite_eqs.iter() {
               if timer.timeout() {
                 return lemmas;
@@ -1496,7 +1502,7 @@ impl<'a> Goal<'a> {
     // those construct the appropriate (possibly higher-order) type.
     let (_, class_ty) = self.global_search_state.context.get(&class_op).or_else(||self.local_context.get(&class_op)).unwrap().args_ret();
     // println!("generalizing {} with type {}", class_op, class_ty);
-    let fresh_var = format!("fresh_{}", self.egraph.total_size());
+    let fresh_var = format!("fresh_{}_{}", self.name, self.egraph.total_size());
     let fresh_symb = Symbol::from(&fresh_var);
     let lhs_id = self.egraph.find(self.eq.lhs.id);
     let rhs_id = self.egraph.find(self.eq.rhs.id);
@@ -1684,10 +1690,10 @@ impl LemmasState {
   /// This is slow: a change of data structure might be appropriate here. We
   /// might consider normalizing the props somehow so that we don't have to do a
   /// slow comparison to determine equality.
-  pub fn find_or_make_fresh_lemma(&mut self, prop: &Prop) -> usize {
+  pub fn find_or_make_fresh_lemma(&mut self, prop: &Prop) -> (usize, bool) {
     self.all_lemmas.iter().find_map(|(lemma_number, p)| {
       if p == prop {
-        Some(*lemma_number)
+        Some((*lemma_number, false))
       } else {
         None
       }
@@ -1695,7 +1701,7 @@ impl LemmasState {
                           .unwrap_or_else(|| {
                             let lemma_number = self.fresh_lemma();
                             self.all_lemmas.push((lemma_number, prop.clone()));
-                            lemma_number
+                            (lemma_number, true)
                           })
   }
 
@@ -1795,7 +1801,7 @@ impl<'a> LemmaProofState<'a> {
     }
   }
 
-  pub fn add_possible_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I, lemmas_state: &LemmasState) {
+  pub fn add_to_theorized_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I, lemmas_state: &LemmasState) {
     self.theorized_lemmas.extend(iter.into_iter().filter(|lemma| {
       let is_valid = lemmas_state.is_valid_new_prop(lemma);
       if is_valid {
@@ -1865,14 +1871,14 @@ impl<'a> LemmaProofState<'a> {
     // println!("searching for generalized lemmas");
     if CONFIG.generalization {
       // TODO: now that we generalize in the cc lemma search, do we need this?
-      self.add_possible_lemmas(goal.find_generalized_goals(&blocking_exprs), lemmas_state);
+      self.add_to_theorized_lemmas(goal.find_generalized_goals(&blocking_exprs), lemmas_state);
     }
-    // println!("searching for cc lemmas");
+    println!("searching for cc lemmas");
     if CONFIG.cc_lemmas {
       let possible_lemmas = goal.search_for_cc_lemmas(&timer, lemmas_state);
-      self.add_possible_lemmas(possible_lemmas, lemmas_state);
+      self.add_to_theorized_lemmas(possible_lemmas, lemmas_state);
     }
-    // println!("done searching for cc lemmas");
+    println!("done searching for cc lemmas");
     // This ends up being really slow so we'll just take the lemma duplication for now
     // It's unclear that it lets us prove that much more anyway.
     // state.add_cyclic_lemmas(&goal);
@@ -1949,7 +1955,8 @@ impl<'a> LemmaProofState<'a> {
 
   /// Attempt the next n goals
   pub fn try_n_goals(&mut self, n: usize, timer: &Timer, lemmas_state: &mut LemmasState) {
-    for _ in 1..n {
+    for i in 0..n {
+      // println!("iteration {}", i);
       if self.outcome.is_some() {
         return;
       }
@@ -2027,7 +2034,7 @@ impl<'a> ProofState<'a> {
         if self.timer.timeout() {
           return;
         }
-        let lemma_number = self.lemmas_state.find_or_make_fresh_lemma(lemma_prop);
+        let (lemma_number, _is_new_lemma) = self.lemmas_state.find_or_make_fresh_lemma(lemma_prop);
         let (lemma_outcome, lemma_rws) = {
           let lemma_proof_state = self.lemma_proofs.entry(lemma_number).or_insert_with(|| {
           LemmaProofState::new(lemma_number, lemma_prop.clone(), &None, self.global_search_state, proof_depth + 1)
@@ -2086,6 +2093,16 @@ impl<'a> ProofState<'a> {
 
   }
 
+  fn handle_lemma_outcome(lemmas_state: &mut LemmasState, lemma_proof_state: &LemmaProofState) {
+    if lemma_proof_state.outcome == Some(Outcome::Valid) {
+      lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
+      lemma_proof_state.rw.as_ref().map(|rw| rw.add_to_rewrites(&mut lemmas_state.lemma_rewrites));
+    }
+    if lemma_proof_state.outcome == Some(Outcome::Invalid) {
+      lemmas_state.invalid_lemmas.insert(lemma_proof_state.prop.clone());
+    }
+  }
+
   pub fn prove_breadth_first(&mut self, top_level_lemma_number: usize) -> Outcome {
     let mut i = 0;
     loop {
@@ -2102,24 +2119,16 @@ impl<'a> ProofState<'a> {
             return lemma_proof_state.outcome.as_ref().unwrap().clone();
           // If we ran out of gas trying to prove this lemma, we can still try
           // to finish it
-          } else if lemma_proof_state.outcome == Some(Outcome::Unknown) {
+          }
+          if lemma_proof_state.outcome == Some(Outcome::Unknown) {
             lemma_proof_state.try_finish_goals(&self.lemmas_state);
-            // If there was a change, try returning the now solved goal.
-            if lemma_proof_state.outcome != Some(Outcome::Unknown) {
-              return lemma_proof_state.outcome.as_ref().unwrap().clone();
-            }
+            ProofState::handle_lemma_outcome(&mut self.lemmas_state, &lemma_proof_state);
           }
           continue;
         }
         // println!("Trying to prove {} = {}", lemma_proof_state.prop.eq.lhs, lemma_proof_state.prop.eq.rhs);
         lemma_proof_state.try_n_goals(3, &self.timer, &mut self.lemmas_state);
-        if lemma_proof_state.outcome == Some(Outcome::Valid) {
-          self.lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
-          lemma_proof_state.rw.as_ref().map(|rw| rw.add_to_rewrites(&mut self.lemmas_state.lemma_rewrites));
-        }
-        if lemma_proof_state.outcome == Some(Outcome::Invalid) {
-          self.lemmas_state.invalid_lemmas.insert(lemma_proof_state.prop.clone());
-        }
+        ProofState::handle_lemma_outcome(&mut self.lemmas_state, &lemma_proof_state);
         for lemma_chain in &lemma_proof_state.theorized_lemmas.chains {
           for lemma in lemma_chain.chain.iter() {
             new_lemmas.push((lemma.clone(), lemma_proof_state.proof_depth + 1));
@@ -2137,7 +2146,7 @@ impl<'a> ProofState<'a> {
         if self.lemmas_state.proven_lemmas.contains_leq(&new_lemma) || self.lemmas_state.invalid_lemmas.contains_geq(&new_lemma) {
           continue;
         }
-        let new_lemma_number = self.lemmas_state.find_or_make_fresh_lemma(&new_lemma);
+        let (new_lemma_number, _is_new_lemma) = self.lemmas_state.find_or_make_fresh_lemma(&new_lemma);
         self.lemma_proofs.entry(new_lemma_number).or_insert_with(|| {
           LemmaProofState::new(new_lemma_number, new_lemma, &None, self.global_search_state, new_lemma_proof_depth)
         });
@@ -2374,6 +2383,10 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
   let resolved_rhs_id = egraph.find(eq.rhs.id);
   // Have we proven LHS == RHS?
   if resolved_lhs_id == resolved_rhs_id {
+    if egraph.lookup_expr(&eq.lhs.expr).is_none() || egraph.lookup_expr(&eq.rhs.expr).is_none() {
+      println!("One of {} or {} was removed from the e-graph! We can't emit a proof", eq.lhs.expr, eq.rhs.expr);
+      return Some(ProofLeaf::Todo);
+    }
     return Some(ProofLeaf::Refl(
       egraph
         .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
