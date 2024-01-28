@@ -157,10 +157,13 @@ where
 
   // Has any base cases (depth 0 terms)? This could be precomputed to speed
   // things up.
+  let is_base_case = |dt_name: &String, args: &Vec<Type>| -> bool {
+    args.iter().all(|name| {!name.to_string().contains(dt_name)})
+  } ;
   let has_base_case = cons.iter().any(|con| {
     let con_ty = ctx.get(con).unwrap();
     let (args, _ret) = con_ty.args_ret();
-    args.is_empty()
+    is_base_case(dt_name, &args)
   });
 
   let weights_opt = constructor_weights.get(dt_name);
@@ -175,7 +178,7 @@ where
     //
     // NOTE: I think there is the possibility for infinite loops here if the
     // weights are wrong (e.g. base cases all have 0 weights).
-    if max_depth == 0 && has_base_case && !args.is_empty() {
+    if max_depth == 0 && has_base_case && !is_base_case(dt_name, &args) {
       continue;
     }
 
@@ -198,7 +201,7 @@ where
   W: SampleUniform + PartialOrd,
   R: Rng
 {
-  weights_opt.map(|weights| {
+ weights_opt.map(|weights| {
     weights.sample(rng)
   // else pick at random
   }).unwrap_or_else(|| {
@@ -316,16 +319,32 @@ fn builtin_reductions() -> Vec<Rewrite<ENodeOrInt, ()>> {
       func: Box::new(|params| {0}),
       var_list: Vec::new()
     }}),
+    rewrite!("one-eval"; "one" => { IntApplier {
+      func: Box::new(|params| {1}),
+      var_list: Vec::new()
+    }}),
     rewrite!("inf-eval"; "inf" => { IntApplier {
       func: Box::new(|params| {i32::MAX}),
       var_list: Vec::new()
     }}),
+    rewrite!("inc-eval"; "(inc ?x)" => { IntApplier {
+      func: Box::new(|params: &Vec<i32>| {params[0].saturating_add(1)}),
+      var_list: vec![to_var("?x")]
+    }} if is_int(vec![to_var("?x")])),
     rewrite!("plus-eval"; "(plus ?x ?y)" => { IntApplier {
       func: Box::new(|params: &Vec<i32>| {params[0].saturating_add(params[1])}),
       var_list: vec![to_var("?x"), to_var("?y")]
     }} if is_int(vec![to_var("?x"), to_var("?y")])),
+    rewrite!("times-eval"; "(times ?x ?y)" => { IntApplier {
+      func: Box::new(|params: &Vec<i32>| {params[0].saturating_mul(params[1])}),
+      var_list: vec![to_var("?x"), to_var("?y")]
+    }} if is_int(vec![to_var("?x"), to_var("?y")])),
     rewrite!("max-eval"; "(max ?x ?y)" => { IntApplier {
       func: Box::new(|params: &Vec<i32>| {std::cmp::max(params[0], params[1])}),
+      var_list: vec![Var::from_str("?x").unwrap(), Var::from_str("?y").unwrap()]
+    }} if is_int(vec![to_var("?x"), to_var("?y")])),
+    rewrite!("min-eval"; "(min ?x ?y)" => { IntApplier {
+      func: Box::new(|params: &Vec<i32>| {std::cmp::min(params[0], params[1])}),
       var_list: vec![Var::from_str("?x").unwrap(), Var::from_str("?y").unwrap()]
     }} if is_int(vec![to_var("?x"), to_var("?y")]))
   ]

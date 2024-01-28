@@ -1333,7 +1333,7 @@ impl<'a> Goal<'a> {
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
           /*println!("find new rewrite eqs");
           for prop in new_rewrite_eqs.iter() {
-            println!("  {} = {}", prop.eq.lhs, prop.eq.rhs);
+            println!("  {} = {}", prop.eq.lhs.to_string().cyan(), prop.eq.rhs.to_string().cyan());
           }*/
           // We used to check the egraph to see if the lemma helped us, but now
           // we just throw it into our list. We do that check in try_prove_lemmas.
@@ -1958,6 +1958,7 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
   let resolved_rhs_id = egraph.find(eq.rhs.id);
   // Have we proven LHS == RHS?
   if resolved_lhs_id == resolved_rhs_id {
+    //return Some(ProofLeaf::Todo);
     return Some(ProofLeaf::Refl(
       egraph
         .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)

@@ -1,0 +1,46 @@
+(
+(data Bool (True False))
+(:: True Bool)
+(:: False Bool)
+
+(data Int ())
+(:: zero Int)
+(:: inc (-> (Int) Int))
+(:: min (-> (Int Int) Int))
+(axiom min (?x ?y) (min ?y ?x))
+(axiom min ((min ?x ?y) ?z) (min ?x (min ?y ?z)))
+
+(data List (Elt Cons))
+(:: Elt (-> (Int) List))
+(:: Cons (-> (Int List) List))
+
+(data CList (Single Concat))
+(:: Single (-> (Int) CList))
+(:: Concat (-> (CList CList) CList))
+
+(:: cat (-> (List List) List))
+(let cat ((Cons ?h ?t) ?xs) (Cons ?h (cat ?t ?xs)))
+(let cat ((Elt ?x) ?xs) (Cons ?x ?xs))
+
+(:: repr (-> (CList) List))
+(let repr ((Single ?h)) (Elt ?h))
+(let repr ((Concat ?l ?r)) (cat (repr ?l) (repr ?r)))
+
+(:: minimize (-> (List) Int))
+(let minimize ((Elt ?x)) ?x)
+(let minimize ((Cons ?h ?t)) (min ?h (minimize ?t)))
+
+(:: res (-> (CList) Int))
+(let res ((Single ?x)) ?x)
+(let res ((Concat ?l ?r)) (min (res ?l) (res ?r)))
+
+(=== minhom_optimize_1 (xs ys) (List List)
+    (min (minimize xs) (minimize ys)) (minimize (cat xs ys))
+)
+
+(=== minhom_optimize_2 (xs ys) (CList CList)
+    (min (minimize (repr xs)) (minimize (repr ys)))
+    (minimize (cat (repr xs) (repr ys)))
+)
+
+)

@@ -33,6 +33,12 @@ fn main() -> Result<()> {
   let mut num_differing_goals = 0;
   let mut cyclic_num_valid = 0;
   let mut non_cyclic_num_valid = 0;
+  if CONFIG.verbose {
+    println!("{}", "Reductions".cyan());
+    for rewrite in parser_state.rules.iter() {
+      println!("  {:?}", rewrite);
+    }
+  }
   for raw_goal in parser_state.raw_goals.iter() {
     let (reductions, defns) =
       parser_state.get_reductions_and_definitions(raw_goal, raw_goal.local_rules.clone());

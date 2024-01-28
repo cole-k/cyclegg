@@ -17,8 +17,9 @@
 
 (:: and (-> (Bool Bool) Bool))
 (let and (False ?y) False)
-(let and (?x False) False)
-(let and (True True) True)
+(let and (True ?x) ?x)
+(axiom and (?x ?y) (and ?y ?x))
+(axiom and ((and ?x ?y) ?z) (and ?x (and ?y ?z)))
 
 (data Pair (a b) (MakePair))
 (:: MakePair (-> (a b) (Pair a b)))
@@ -43,8 +44,9 @@
   )
 )
 
-(=== mts_optimize (a b) (Bool Bool)
-    (and a b) (and b a)
+(=== mts_optimize (key t) (Int (Tree Int))
+  (spec key t)
+  (and (fst (repr t)) (le (snd (repr t)) key))
 )
 
 )

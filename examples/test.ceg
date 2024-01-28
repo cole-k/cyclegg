@@ -120,12 +120,12 @@
 
 (=== good1 (n m) (Nat Nat)
   True
-  (lt n (add n (S m)))  
+  (lt n (add n (S m)))
 )
 
 (=== bad1 (n m) (Nat Nat)
   (add n n)
-  (add m m)  
+  (add m m)
 )
 
 (=== good2 (x y) (Nat Nat)

@@ -1,0 +1,34 @@
+(
+
+(data Int ())
+(:: zero Int)
+(:: inf Int)
+(:: plus (-> (Int Int) Int))
+(axiom plus (?x ?y) (plus ?y ?x))
+(axiom plus (?x (plus ?y ?z)) (plus (plus ?x ?y) ?z))
+(axiom plus ((plus ?x ?y) ?z) (plus ?x (plus ?y ?z)))
+(axiom plus (?x zero) ?x)
+
+(data Bool (True False))
+(:: True Bool)
+(:: False Bool)
+
+(data Tree (a) (Leaf Node))
+(:: Leaf (Tree a))
+(:: Node (-> (a (Tree a) (Tree a)) (Tree a)))
+
+(:: spec (-> (Int (Tree Int)) Int))
+(let spec (?w Leaf) ?w)
+(let spec (?w (Node ?a ?l ?r))
+  (spec (plus ?a (spec ?w ?l)) ?r)
+)
+
+(:: repr (-> ((Tree Int)) Int))
+(let repr (Leaf) zero)
+(let repr ((Node ?a ?l ?r)) (plus ?a (plus (repr ?l) (repr ?r))))
+
+(=== goal (t) ((Tree Int))
+    (repr t) (spec zero t)
+)
+
+)

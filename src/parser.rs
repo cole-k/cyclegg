@@ -305,7 +305,9 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         // HACK: add the same rules to a list of rewrites for cvecs. This is
         // only done because we don't have a good way of storing rules that can
         // work as both Rw and CvecRw.
-        state.cvec_rules.push(make_rewrite_for_defn(&mangled_name, &mangled_args, &mangled_value, decl_kind == "axiom"));
+        if decl_kind != "axiom" {
+          state.cvec_rules.push(make_rewrite_for_defn(&mangled_name, &mangled_args, &mangled_value, false));
+        }
 
         // Add to the hashmap
         if let Some(cases) = state.defns.get_mut(&mangled_name) {
