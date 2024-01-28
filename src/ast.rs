@@ -608,7 +608,7 @@ fn alpha_rename_sexp(sexp: &Sexp, params: &BTreeSet<String>, param_to_alpha_rena
         let num_params_seen = param_to_alpha_renamed.len();
         let new_name = param_to_alpha_renamed
           .entry(s.to_string())
-          .or_insert(format!("v{}", num_params_seen));
+          .or_insert_with(|| format!("v{}", num_params_seen));
         Sexp::String(new_name.clone())
       } else {
         Sexp::String(s.clone())
@@ -695,12 +695,14 @@ impl PartialOrd for Prop {
     }
 }
 
+impl Eq for Prop {}
+
 impl Display for Prop {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let formatted_params: String = self.params.iter().map(|(p, t)| {
-      format!("{}: {}.", p, t)
+      format!("{}: {}. ", p, t)
     }).collect();
-    write!(f, "forall {} {}", formatted_params, self.eq)
+    write!(f, "forall {}{}", formatted_params, self.eq)
   }
 }
 

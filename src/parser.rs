@@ -409,7 +409,7 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         let raw_goal = RawGoal {
           name,
           premise,
-          prop: Prop::new(equation, params),
+          prop: Prop::new_trusted(equation, params),
           local_rules,
           local_searchers,
         };
