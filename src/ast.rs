@@ -2,7 +2,7 @@ use egg::*;
 use lazy_static::lazy_static;
 
 use indexmap::IndexMap;
-use std::{collections::{BTreeMap, BTreeSet}, fmt::Display, str::FromStr};
+use std::{collections::{BTreeMap, BTreeSet}, fmt::Display, str::FromStr, hash::Hash};
 use symbolic_expressions::{Sexp, SexpError};
 
 use crate::config::CONFIG;
@@ -497,44 +497,33 @@ pub struct Equation {
 }
 
 impl Equation {
-
-  /// Creates a RawEquation, ensuring that it is in the right order
+  /// NOTE: Equation used to handle ordering the lhs and rhs, but we now let Prop
+  /// handle that.
   pub fn new(lhs: Sexp, rhs: Sexp) -> Self {
-    if lhs.to_string() < rhs.to_string() {
-      Self {
-        lhs, rhs
-      }
-    } else {
-      Self {
-        lhs: rhs,
-        rhs: lhs,
-      }
+    Self {
+      lhs,
+      rhs
     }
   }
 
-  /// Creates a RawEquation from exprs, ensuring that it is in the right order
   pub fn from_exprs(lhs: &Expr, rhs: &Expr) -> Self {
     let lhs_string = lhs.to_string();
     let rhs_string = rhs.to_string();
     let lhs = symbolic_expressions::parser::parse_str(&lhs_string).unwrap();
     let rhs = symbolic_expressions::parser::parse_str(&rhs_string).unwrap();
-    if lhs_string < rhs_string {
-      Equation {
-        lhs, rhs
-      }
-    } else {
-      Equation {
-        lhs: rhs,
-        rhs: lhs
-      }
-    }
+    Self::new(lhs, rhs)
   }
-
 
 }
 
+impl Display for Equation {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{} === {}", self.lhs, self.rhs)
+  }
+}
+
 // Can the vars of this expression be instantiated to the other expression?
-fn cmp_sexp<F>(sexp1: &Sexp, sexp2: &Sexp, is_var: F) -> Option<std::cmp::Ordering>
+fn cmp_sexp_by_instantiation<F>(sexp1: &Sexp, sexp2: &Sexp, is_var: F) -> Option<std::cmp::Ordering>
 where F: FnOnce(&str) -> bool + Copy {
   let sexp1_leq_sexp2 = find_instantiations(sexp1, sexp2, is_var).is_some();
   let sexp2_leq_sexp1 = find_instantiations(sexp2, sexp1, is_var).is_some();
@@ -554,8 +543,132 @@ pub struct Prop {
 }
 
 impl Prop {
-    pub fn new(eq: Equation, params: Vec<(Symbol, Type)>) -> Self { Self { eq, params } }
+  /// Creates a new Prop, alpha normalizing the parameters and reordering the
+  /// Equation and params so that the lhs is smaller than the rhs and the params
+  /// occur in the order they appear in the original Equation.
+  ///
+  /// This makes two passes over each of the two Sexps in the Equation. The
+  /// first pass is comparing them to each other lexicographically (although in
+  /// expectation this will not take very long). The second pass is alpha
+  /// renaming them.
+  pub fn new(eq: Equation, params: Vec<(Symbol, Type)>) -> Self {
+    // TODO: Could probably use a more efficient data structure since iteration
+    // order isn't important here.
+    let param_names: BTreeSet<String> = params.iter().map(|(p, _t)| p.to_string()).collect();
+    let mut param_to_alpha_renamed: BTreeMap<String, String> = BTreeMap::default();
+    // First we reorder the lhs and rhs based on their lexicographic order.
+    let (reordered_lhs, reordered_rhs) =
+      if cmp_sexp_lexicographic(&eq.lhs, &eq.rhs, |s| param_names.contains(s)) == std::cmp::Ordering::Greater {
+        (&eq.rhs, &eq.lhs)
+      } else {
+        (&eq.lhs, &eq.rhs)
+      };
+    // Then we rename the lhs and rhs. This computes the new names on-demand for
+    // efficiency's sake.
+    let renamed_lhs = alpha_rename_sexp(reordered_lhs, &param_names, &mut param_to_alpha_renamed);
+    let renamed_rhs = alpha_rename_sexp(reordered_rhs, &param_names, &mut param_to_alpha_renamed);
+    // Then we rename the parameters using the names we generated renaming the
+    // lhs and rhs.
+    let mut renamed_params: Vec<(Symbol, Type)> = params.into_iter().map(|(p, t)| {
+      let new_name: Symbol = param_to_alpha_renamed.get(p.as_str())
+        .unwrap_or_else(|| {
+          panic!("param {} does not occur in equation {} == {}", p, eq.lhs, eq.rhs);
+        })
+        .into();
+      (new_name, t)
+    }).collect();
+    // Finally, we reorder the parameters by their name.
+    renamed_params.sort_by_key(|(p, _t)| p.as_str());
 
+    Self {
+      eq: Equation::new(renamed_lhs, renamed_rhs),
+      params: renamed_params,
+    }
+  }
+
+  /// Creates a new Prop without performing any alpha normalization.
+  pub fn new_trusted(eq: Equation, params: Vec<(Symbol, Type)>) -> Self {
+    Self { eq, params }
+  }
+
+}
+
+/// We create Props a lot, so it's worth it to make this kind of weirdly
+/// specialized function.
+///
+/// This way, we can avoid making multiple traversals of the sexps whenever we
+/// make a Prop.
+fn alpha_rename_sexp(sexp: &Sexp, params: &BTreeSet<String>, param_to_alpha_renamed: &mut BTreeMap<String, String>) -> Sexp {
+  match sexp {
+    Sexp::Empty => Sexp::Empty,
+    Sexp::String(s) => {
+      if params.contains(s) {
+        // param_to_order.len() is equal to the number of params we've seen so
+        // far.
+        let num_params_seen = param_to_alpha_renamed.len();
+        let new_name = param_to_alpha_renamed
+          .entry(s.to_string())
+          .or_insert(format!("v{}", num_params_seen));
+        Sexp::String(new_name.clone())
+      } else {
+        Sexp::String(s.clone())
+      }
+    }
+    Sexp::List(list) => {
+      let new_list =
+        list.iter()
+            .map(|s| alpha_rename_sexp(s, params, param_to_alpha_renamed))
+            .collect();
+      Sexp::List(new_list)
+    }
+  }
+}
+
+/// Performs a "lexicographic" comparison between Sexps.
+///
+/// Empty < String < List
+///
+/// String-to-string separates between vars and non-vars.
+///
+///   Vars < Non-vars.
+///
+///   Var-to-var is always equal.
+///
+///   Non-var-to-non-var is by string comparison.
+///
+/// List-to-List is done by a lexicographic comparison
+// NOTE: It might be faster and still good enough in practice to not distinguish
+// between vars. The lookups might start to add up.
+fn cmp_sexp_lexicographic<F>(sexp1: &Sexp, sexp2: &Sexp, is_var: F) -> std::cmp::Ordering
+where F: FnOnce(&str) -> bool + Copy {
+  match (sexp1, sexp2) {
+    (Sexp::Empty, Sexp::Empty) => std::cmp::Ordering::Equal,
+    (Sexp::Empty, _) => std::cmp::Ordering::Less,
+    (_, Sexp::Empty) => std::cmp::Ordering::Greater,
+    (Sexp::String(s1), Sexp::String(s2)) => {
+      let s1_is_var = is_var(s1);
+      let s2_is_var = is_var(s2);
+      match (s1_is_var, s2_is_var) {
+        // Non-vars just compare normally
+        (false ,false) => s1.cmp(s2),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        // Vars are always considered equal
+        (true, true) => std::cmp::Ordering::Equal,
+      }
+    }
+    (Sexp::String(_), Sexp::List(_)) => std::cmp::Ordering::Less,
+    (Sexp::List(_), Sexp::String(_)) => std::cmp::Ordering::Greater,
+    (Sexp::List(lst1), Sexp::List(lst2)) => {
+      for (s1, s2) in lst1.iter().zip(lst2.iter()) {
+        let comparison = cmp_sexp_lexicographic(s1, s2, is_var);
+        if comparison != std::cmp::Ordering::Equal {
+          return comparison;
+        }
+      }
+      std::cmp::Ordering::Equal
+    }
+  }
 }
 
 impl PartialEq for Prop {
@@ -571,8 +684,8 @@ impl PartialOrd for Prop {
         // vars.contains(s)
         self.params.iter().chain(other.params.iter()).any(|(var, _)| s == &var.to_string())
       };
-      let lhs_cmp = cmp_sexp(&self.eq.lhs, &other.eq.lhs, is_var);
-      let rhs_cmp = cmp_sexp(&self.eq.rhs, &other.eq.rhs, is_var);
+      let lhs_cmp = cmp_sexp_by_instantiation(&self.eq.lhs, &other.eq.lhs, is_var);
+      let rhs_cmp = cmp_sexp_by_instantiation(&self.eq.rhs, &other.eq.rhs, is_var);
       // They should be the same result, otherwise, they aren't equal
       if lhs_cmp == rhs_cmp {
         lhs_cmp
@@ -580,6 +693,25 @@ impl PartialOrd for Prop {
         None
       }
     }
+}
+
+impl Display for Prop {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let formatted_params: String = self.params.iter().map(|(p, t)| {
+      format!("{}: {}.", p, t)
+    }).collect();
+    write!(f, "forall {} {}", formatted_params, self.eq)
+  }
+}
+
+impl Hash for Prop {
+  /// Props hash using their display string for simplicity's sake.
+  ///
+  /// This relies on the fact that we do our best to alpha-normalize and reorder
+  /// the lhs and rhs such that equivalent props hash to the same value.
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    format!("{}", self).hash(state)
+  }
 }
 
 pub fn sexp_size(sexp: &Sexp) -> usize {
