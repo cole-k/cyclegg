@@ -1672,7 +1672,7 @@ pub struct LemmasState {
   pub lemma_rewrites: BTreeMap<String, Rw>,
   // When we make a new state, this gets initialized to 0
   pub lemma_number: usize,
-  pub all_lemmas: HashMap<Prop, usize>,
+  pub all_lemmas: HashMap<Prop, (usize, usize)>,
 }
 
 impl LemmasState {
@@ -1684,15 +1684,15 @@ impl LemmasState {
     !is_proven && !is_invalid && !is_too_big
   }
 
-  pub fn find_or_make_fresh_lemma(&mut self, prop: Prop) -> usize {
-    *self.all_lemmas.entry(prop)
+  pub fn find_or_make_fresh_lemma(&mut self, prop: Prop, proof_depth: usize) -> usize {
+    self.all_lemmas.entry(prop)
                    .or_insert_with(|| {
                      // This is duplicated from fresh_lemma but necessary for
                      // the borrow checker.
                      let number = self.lemma_number;
                      self.lemma_number += 1;
-                     number
-                   })
+                     (number, proof_depth)
+                   }).0
   }
 
   pub fn fresh_lemma(&mut self) -> usize {
@@ -1701,10 +1701,10 @@ impl LemmasState {
     number
   }
 
-  pub fn add_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I) {
+  pub fn add_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I, proof_depth: usize) {
     for lemma in iter.into_iter() {
       if self.is_valid_new_prop(&lemma) {
-        self.find_or_make_fresh_lemma(lemma);
+        self.find_or_make_fresh_lemma(lemma, proof_depth);
       }
 
     }
@@ -1754,6 +1754,7 @@ pub struct LemmaProofState<'a> {
   // FIXME: Should not be an option - if we can't get any rewrites from a lemma
   // we shouldn't try to prove it
   pub rw: Option<LemmaRewrite>,
+  pub priority: usize,
 }
 
 impl<'a> LemmaProofState<'a> {
@@ -1776,6 +1777,9 @@ impl<'a> LemmaProofState<'a> {
     if lemma_rw_opt.is_none() {
       outcome = Some(Outcome::Invalid);
     }
+    // props with size 0-10 can take 10 steps, props with greater size decrease
+    // their number of steps.
+    let priority = std::cmp::max(7 - (std::cmp::min(prop.size(), 70) / 10), 0) + 3;
     // println!("{} {:?} ({} == {}) has initial outcome {:?}", lemma_name, prop.params, prop.eq.lhs, prop.eq.rhs, outcome);
     // FIXME: add the option to do more cvec checks like we do in the old try_prove_lemmas
     Self {
@@ -1788,6 +1792,7 @@ impl<'a> LemmaProofState<'a> {
       ih_lemma_number: lemma_number,
       theorized_lemmas: ChainSet::default(),
       rw: lemma_rw_opt,
+      priority,
     }
   }
 
@@ -1861,12 +1866,12 @@ impl<'a> LemmaProofState<'a> {
     // println!("searching for generalized lemmas");
     if CONFIG.generalization {
       // TODO: now that we generalize in the cc lemma search, do we need this?
-      lemmas_state.add_lemmas(goal.find_generalized_goals(&blocking_exprs));
+      lemmas_state.add_lemmas(goal.find_generalized_goals(&blocking_exprs), self.proof_depth + 1);
     }
     // println!("searching for cc lemmas");
     if CONFIG.cc_lemmas {
       let possible_lemmas = goal.search_for_cc_lemmas(&timer, lemmas_state);
-      lemmas_state.add_lemmas(possible_lemmas);
+      lemmas_state.add_lemmas(possible_lemmas, self.proof_depth + 1);
     }
     // println!("done searching for cc lemmas");
     // This ends up being really slow so we'll just take the lemma duplication for now
@@ -2024,7 +2029,7 @@ impl<'a> ProofState<'a> {
         if self.timer.timeout() {
           return;
         }
-        let lemma_number = self.lemmas_state.find_or_make_fresh_lemma(lemma_prop.clone());
+        let lemma_number = self.lemmas_state.find_or_make_fresh_lemma(lemma_prop.clone(), proof_depth + 1);
         let (lemma_outcome, lemma_rws) = {
           let lemma_proof_state = self.lemma_proofs.entry(lemma_number).or_insert_with(|| {
           LemmaProofState::new(lemma_number, lemma_prop.clone(), &None, self.global_search_state, proof_depth + 1)
@@ -2097,7 +2102,8 @@ impl<'a> ProofState<'a> {
     let mut i = 0;
     loop {
       i += 1;
-      println!("Lemma proving loop iteration {}", i);
+      // println!("Lemma proving loop iteration {}", i);
+      // println!("Number of lemmas seen: {}", self.lemmas_state.all_lemmas.len());
       for (lemma_number, lemma_proof_state) in self.lemma_proofs.iter_mut() {
         if self.timer.timeout() {
           return Outcome::Timeout;
@@ -2116,15 +2122,18 @@ impl<'a> ProofState<'a> {
           continue;
         }
         // println!("Trying to prove {} = {}", lemma_proof_state.prop.eq.lhs, lemma_proof_state.prop.eq.rhs);
-        lemma_proof_state.try_n_goals(3, &self.timer, &mut self.lemmas_state);
+        lemma_proof_state.try_n_goals(lemma_proof_state.priority, &self.timer, &mut self.lemmas_state);
         ProofState::handle_lemma_outcome(&mut self.lemmas_state, &lemma_proof_state);
       }
-      for (lemma, lemma_number) in self.lemmas_state.all_lemmas.iter() {
+      for (lemma, (lemma_number, lemma_depth)) in self.lemmas_state.all_lemmas.iter() {
         if self.timer.timeout() {
           return Outcome::Timeout;
         }
+        if lemma_depth == &CONFIG.proof_depth {
+          continue;
+        }
         self.lemma_proofs.entry(*lemma_number).or_insert_with(|| {
-          println!("Adding new lemma to search {}", lemma);
+          // println!("Adding new lemma to search {}", lemma);
           LemmaProofState::new(*lemma_number, lemma.clone(), &None, self.global_search_state, 0)
         });
       }

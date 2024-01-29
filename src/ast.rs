@@ -591,6 +591,10 @@ impl Prop {
     Self { eq, params }
   }
 
+  pub fn size(&self) -> usize {
+    sexp_size(&self.eq.lhs) + sexp_size(&self.eq.rhs)
+  }
+
 }
 
 /// We create Props a lot, so it's worth it to make this kind of weirdly
