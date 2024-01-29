@@ -2380,7 +2380,7 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
   }
 
   match (&egraph[resolved_lhs_id].data.canonical_form_data, &egraph[resolved_rhs_id].data.canonical_form_data) {
-    (CanonicalForm::Const(c1), CanonicalForm::Const(c2)) if c1 != c2 => {
+    (CanonicalForm::Const(c1), CanonicalForm::Const(c2)) if c1.op != c2.op => {
       return Some(ProofLeaf::Todo);
     }
     _ => {}
