@@ -2235,6 +2235,9 @@ impl<'a> ProofState<'a> {
         if lemma_number == top_level_lemma_number && lemma_proof_state.outcome.is_some() && lemma_proof_state.outcome != Some(Outcome::Unknown) {
           return lemma_proof_state.outcome.as_ref().unwrap().clone();
         }
+        if lemma_proof_state.outcome == Some(Outcome::Valid) {
+          scheduler.on_proven_lemma(lemma_number, self);
+        }
       }
       for (lemma, (lemma_number, lemma_depth)) in self.lemmas_state.all_lemmas.iter() {
         if self.timer.timeout() {
