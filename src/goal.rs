@@ -333,6 +333,7 @@ impl ETermEquation {
 
 /// When we make a new lemma and rewrites out of it, this tracks the the
 /// rewrites we made as well as the information about the lemma.
+#[derive(Clone)]
 pub struct LemmaRewrite<A> {
   pub lhs_to_rhs: Option<(String, Rewrite<SymbolLang, A>)>,
   pub rhs_to_lhs: Option<(String, Rewrite<SymbolLang, A>)>,
@@ -1672,6 +1673,46 @@ impl<'a> Goal<'a> {
       };
     });
   }
+
+  /// Returns a vector of lemmas necessary to discharge this goal.
+  pub fn find_lemmas_that_discharge(&self, lemmas_state: &LemmasState, lemma_rws: &Vec<Rw>) -> BTreeSet<usize> {
+    let rewrites = self.global_search_state.reductions.iter()
+                                                      .chain(self.lemmas.values())
+                                                      .chain(lemmas_state.lemma_rewrites.values())
+                                                      .chain(lemma_rws.iter());
+    let lhs_id = self.eq.lhs.id;
+    let rhs_id = self.eq.rhs.id;
+    let mut runner = Runner::default()
+      .with_explanations_enabled()
+      // We need to clone the egraph so as to not disturb it.
+      .with_egraph(self.egraph.clone())
+      .with_hook(move |runner| {
+        // Stop iteration if we have proven lhs == rhs
+        if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
+          Err("Goal proven".to_string())
+        } else {
+          Ok(())
+        }
+      })
+      .run(rewrites);
+    // None of these lemmas helped.
+    if runner.egraph.find(lhs_id) != runner.egraph.find(rhs_id) {
+      return BTreeSet::default();
+    }
+    let exp = runner.egraph.explain_equivalence(&self.eq.lhs.expr, &self.eq.rhs.expr);
+    exp.explanation_trees.into_iter().flat_map(|expl_tree| {
+      expl_tree.backward_rule
+               .or(expl_tree.forward_rule)
+               .and_then(|rule| {
+                 let rule_str = rule.to_string();
+                 if let Some(rest) = rule_str.strip_prefix("lemma_") {
+                   rest.chars().take_while(|c| c.is_digit(10)).join("").parse().ok()
+                 } else {
+                   None
+                 }
+               })
+    }).collect()
+  }
 }
 
 impl<'a> Display for Goal<'a> {
@@ -2664,6 +2705,31 @@ impl BreadthFirstScheduler for LemmaSizePriorityQueue {
   type LemmaIndex = usize;
 
   fn next_lemma_batch<'a>(&mut self, _top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
+    // NOTE: This is all testing code.
+    let all_lemma_rws: Vec<Rw> = proof_state.lemma_proofs.iter().flat_map(|(lemma_number, lemma_proof_state)| {
+      // Don't add the rw for the top level lemma because we are going to assume these lemmas are true.
+      if lemma_number == &_top_level_lemma_number || lemma_proof_state.outcome.is_some() {
+        vec!()
+      } else {
+        lemma_proof_state.rw.iter().flat_map(|rw| rw.rewrites()).collect()
+      }
+    }).collect();
+    if all_lemma_rws.len() > 0 {
+      let top_level_lemma = proof_state.lemma_proofs.get(&_top_level_lemma_number).unwrap();
+      let lemmas_that_discharge_top_level = top_level_lemma.goals.front().unwrap().find_lemmas_that_discharge(&proof_state.lemmas_state, &all_lemma_rws);
+      println!("Lemmas that will discharge a goal:");
+      lemmas_that_discharge_top_level.iter().for_each(|lemma_n| {
+        // Ignore the top-level lemma because it may show up since the IH
+        // rewrite has the name lemma_n where n is the top-level lemma.
+        if lemma_n == &_top_level_lemma_number {
+          return;
+        }
+        let lemma_proof_state = proof_state.lemma_proofs.get(lemma_n).unwrap();
+        println!("{}", lemma_proof_state.prop);
+      });
+    }
+
+
     // Update the queue with the lemmas we haven't yet considered.
     for (prop, (lemma_number, _)) in proof_state.lemmas_state.all_lemmas.iter() {
       if !self.lemmas_prev_seen.contains(lemma_number) {
@@ -2687,7 +2753,7 @@ impl BreadthFirstScheduler for LemmaSizePriorityQueue {
 
   fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>) {
     let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_index).unwrap();
-    println!("Trying to prove {}", lemma_proof_state.prop);
+    // println!("Trying to prove {}", lemma_proof_state.prop);
     lemma_proof_state.try_until_an_outcome(&proof_state.timer, &mut proof_state.lemmas_state);
     // If we don't get a conclusive result (Valid/Invalid), set it aside until
     // we can get a useful lemma.
