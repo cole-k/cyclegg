@@ -2201,81 +2201,39 @@ impl<'a> ProofState<'a> {
     }
   }
 
-  pub fn prove_breadth_first(&mut self, top_level_lemma_number: usize) -> Outcome {
+  fn prove_breadth_first(&mut self, top_level_lemma_number: usize, scheduler: &mut impl BreadthFirstScheduler) -> Outcome {
     let mut i = 0;
     loop {
       i += 1;
-      // println!("Lemma proving loop iteration {}", i);
-      // println!("Number of lemmas: {}", self.lemma_proofs.len());
-      let (lemma_graph_index, lemma_graph) = self.build_lemma_graph();
-      // println!("Number of lemmas remaining: {}", lemma_graph_index.len());
-      if lemma_graph_index.len() == 0 {
-        // We can't prove any more so we can only return the top-level goal
-        return self.lemma_proofs.get(&top_level_lemma_number).unwrap().outcome.as_ref().unwrap().clone();
+      let lemma_batch_res = scheduler.next_lemma_batch(top_level_lemma_number, self);
+      match lemma_batch_res {
+        Err(outcome) => {
+          return outcome;
+        }
+        Ok(_) => {}
       }
-      let sccs = petgraph::algo::tarjan_scc(&lemma_graph);
-      // println!("Lemma graph index: {:?}", lemma_graph_index);
-      // println!("Number of sccs: {}", sccs.len());
-      // HACK: this is used because we can't double borrow lemma_proofs to
-      // propagate any change in outcome.
-      let mut new_outcomes: Vec<(usize, Option<Outcome>)> = Vec::default();
-      let mut prev_seen_graph_indices = Vec::default();
-      for (scc_index, scc) in sccs.iter().enumerate() {
-
-        if prev_seen_graph_indices.iter().any(|prev_seen_graph_index| lemma_graph.has_edge(scc[0], *prev_seen_graph_index)) {
-          continue;
-        }
-        // println!("scc_index: {}", scc_index);
-        // Pick the first entry in the scc without loss of generality.
-        let lemma_number = lemma_graph_index[scc[0].index()];
-        if scc.len() > 1 {
-          // println!("The following lemmas have been deemed equivalent:");
-          // for l in scc.iter() {
-          //   let ln = lemma_graph_index[l.index()];
-          //   println!("{}", self.lemma_proofs.get(&ln).unwrap().prop);
-          // }
-          // println!("Eliminated {} lemmas", scc.len() - 1);
-        }
-        let lemma_proof_state = self.lemma_proofs.get_mut(&lemma_number).unwrap();
-        // println!("scc rep: {}", lemma_proof_state.prop);
-
+      for lemma_index in lemma_batch_res.unwrap() {
         if self.timer.timeout() {
           return Outcome::Timeout;
         }
-        if lemma_proof_state.outcome.is_some() {
-          // If we have an actual outcome on the lemma we care about it, return it
-          if lemma_number == top_level_lemma_number && lemma_proof_state.outcome != Some(Outcome::Unknown) {
-            return lemma_proof_state.outcome.as_ref().unwrap().clone();
-          // If we ran out of gas trying to prove this lemma, we can still try
-          // to finish it
-          }
-          if lemma_proof_state.outcome == Some(Outcome::Unknown) {
-            lemma_proof_state.try_finish_goals(&self.lemmas_state);
-            ProofState::handle_lemma_outcome(&mut self.lemmas_state, &lemma_proof_state);
-          }
+        let lemma_number = scheduler.get_lemma_number(&lemma_index);
+        let lemma_proof_state = self.lemma_proofs.get(&lemma_number).unwrap();
+        // This lemma has been declared valid/invalid
+        if lemma_proof_state.outcome.is_some() && lemma_proof_state.outcome != Some(Outcome::Unknown) {
           continue;
         }
+        // Check that there isn't a valid/invalid lemma that subsumes/is
+        // subsumed by this lemma.
         if !self.lemmas_state.is_valid_new_prop(&lemma_proof_state.prop) {
           continue;
         }
-        // println!("Trying to prove {} = {}", lemma_proof_state.prop.eq.lhs, lemma_proof_state.prop.eq.rhs);
-        lemma_proof_state.try_n_goals(lemma_proof_state.priority, &self.timer, &mut self.lemmas_state);
+        scheduler.handle_lemma(lemma_index, self);
+        // Clean up after the scheduler handles the lemma.
+        let lemma_proof_state = self.lemma_proofs.get_mut(&lemma_number).unwrap();
         ProofState::handle_lemma_outcome(&mut self.lemmas_state, &lemma_proof_state);
-        new_outcomes.push((scc_index, lemma_proof_state.outcome.clone()));
-        if lemma_proof_state.outcome.is_none() {
-          // Don't bother trying anything more specific before we're done with
-          // this prop.
-          prev_seen_graph_indices.push(scc[0]);
-        }
-      }
-      // Propagate any new outcome we get in an scc to the whole of the component.
-      for (scc_index, new_outcome) in new_outcomes {
-        for lemma_index in sccs[scc_index].iter() {
-          let lemma_number = lemma_graph_index[lemma_index.index()];
-          self.lemma_proofs.get_mut(&lemma_number).unwrap().outcome = new_outcome.clone();
-          if lemma_number == top_level_lemma_number && (new_outcome == Some(Outcome::Valid) || new_outcome == Some(Outcome::Invalid)){
-            return new_outcome.unwrap();
-          }
+        // Check for a definite result if this is the top level lemma.
+        if lemma_number == top_level_lemma_number && lemma_proof_state.outcome.is_some() && lemma_proof_state.outcome != Some(Outcome::Unknown) {
+          return lemma_proof_state.outcome.as_ref().unwrap().clone();
         }
       }
       for (lemma, (lemma_number, lemma_depth)) in self.lemmas_state.all_lemmas.iter() {
@@ -2555,6 +2513,109 @@ impl<'a> ProofState<'a> {
 
 }
 
+trait BreadthFirstScheduler {
+
+  /// How you index lemmas. Typically this should just be their number (a
+  /// usize).
+  type LemmaIndex;
+
+  /// Gives the next batch of lemmas to try and prove
+  fn next_lemma_batch<'a>(&mut self, top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome>;
+
+  fn get_lemma_number(&self, lemma_index: &Self::LemmaIndex) -> usize;
+
+  /// What we do when trying to prove each lemma.
+  ///
+  /// There is boilerplate that is taken care of before (checking the timer,
+  /// skipping invalid or proven lemmas) and after (updating the lemma state
+  /// based on the outcome).
+  fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>);
+
+  /// A hook that is called whenever a lemma is proven. Theoretically you could
+  /// have this logic be in handle_lemma instead.
+  fn on_proven_lemma<'a>(&mut self, lemma: usize, proof_state: &ProofState<'a>);
+
+}
+
+#[derive(Default)]
+struct SemanticLemmaRanker {
+  lemma_graph: MatrixGraph<(), (), Directed, Option<()>, usize>,
+  sccs: Vec<Vec<NodeIndex<usize>>>,
+  lemma_graph_index: Vec<usize>,
+  prev_seen_graph_indices: Vec<NodeIndex<usize>>,
+  // This is a kind of hacky
+  new_outcomes: Vec<(usize, Option<Outcome>)>,
+}
+
+impl BreadthFirstScheduler for SemanticLemmaRanker {
+
+  /// (scc index, scc representative)
+  type LemmaIndex = (usize, NodeIndex<usize>);
+
+  fn next_lemma_batch<'a>(&mut self, top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
+    for (scc_index, new_outcome) in self.new_outcomes.iter().cloned() {
+      for lemma_index in self.sccs[scc_index].iter() {
+        let lemma_number = self.lemma_graph_index[lemma_index.index()];
+        proof_state.lemma_proofs.get_mut(&lemma_number).unwrap().outcome = new_outcome.clone();
+        if lemma_number == top_level_lemma_number && (new_outcome == Some(Outcome::Valid) || new_outcome == Some(Outcome::Invalid)){
+          return Err(new_outcome.unwrap());
+        }
+      }
+    }
+    // println!("Number of lemmas: {}", self.lemma_proofs.len());
+    let (lemma_graph_index, lemma_graph) = proof_state.build_lemma_graph();
+    self.lemma_graph_index = lemma_graph_index;
+    self.lemma_graph = lemma_graph;
+    // println!("Number of lemmas remaining: {}", lemma_graph_index.len());
+    if self.lemma_graph_index.len() == 0 {
+      // We can't prove any more so we can only return the top-level goal
+      return Err(proof_state.lemma_proofs.get(&top_level_lemma_number).unwrap().outcome.as_ref().unwrap().clone());
+    }
+    self.sccs = petgraph::algo::tarjan_scc(&self.lemma_graph);
+    // println!("Lemma graph index: {:?}", lemma_graph_index);
+    // println!("Number of sccs: {}", sccs.len());
+    // HACK: this is used because we can't double borrow lemma_proofs to
+    // propagate any change in outcome.
+    self.new_outcomes = Vec::default();
+    self.prev_seen_graph_indices = Vec::default();
+
+    Ok(self.sccs.iter().enumerate().map(|(scc_index, scc)| (scc_index, scc[0])).collect())
+
+  }
+
+  fn get_lemma_number(&self, lemma_index: &Self::LemmaIndex) -> usize {
+    let (_scc_index, scc_rep) = lemma_index;
+    self.lemma_graph_index[scc_rep.index()]
+  }
+
+  fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>) {
+    let (scc_index, scc_rep) = lemma_index;
+    if self.prev_seen_graph_indices.iter().any(|prev_seen_graph_index| self.lemma_graph.has_edge(scc_rep, *prev_seen_graph_index)) {
+      return;
+    }
+    let lemma_number = self.get_lemma_number(&lemma_index);
+    let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_number).unwrap();
+    if lemma_proof_state.outcome.is_some() {
+      // If we ran out of gas trying to prove this lemma, we can still try
+      // to finish it
+      if lemma_proof_state.outcome == Some(Outcome::Unknown) {
+        lemma_proof_state.try_finish_goals(&proof_state.lemmas_state);
+      }
+      return;
+    }
+    lemma_proof_state.try_n_goals(lemma_proof_state.priority, &proof_state.timer, &mut proof_state.lemmas_state);
+    self.new_outcomes.push((scc_index, lemma_proof_state.outcome.clone()));
+    if lemma_proof_state.outcome.is_none() {
+      // Don't bother trying anything more specific before we're done with
+      // this prop.
+      self.prev_seen_graph_indices.push(scc_rep);
+    }
+  }
+
+  fn on_proven_lemma<'a>(&mut self, _lemma: usize, _proof_state: &ProofState<'a>) {
+  }
+}
+
 /// Pretty-printed proof state
 pub fn pretty_state(state: &LemmaProofState) -> String {
   format!(
@@ -2678,7 +2739,7 @@ pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_sea
   proof_state.lemma_proofs.insert(top_goal_lemma_number, top_goal_lemma_proof);
 
   // let outcome = proof_state.prove_lemma(top_goal_lemma_number);
-  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number);
+  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut SemanticLemmaRanker::default());
 
   (outcome, proof_state)
 
