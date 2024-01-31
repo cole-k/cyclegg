@@ -4,7 +4,8 @@ use itertools::Itertools;
 use log::warn;
 use petgraph::Directed;
 use petgraph::matrix_graph::{MatrixGraph, NodeIndex};
-use std::collections::{BTreeSet, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, HashMap, BinaryHeap};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::iter::zip;
@@ -1767,6 +1768,7 @@ pub struct LemmasState {
   pub lemma_rewrites_no_analysis: BTreeMap<String, Rewrite<SymbolLang, ()>>,
   // When we make a new state, this gets initialized to 0
   pub lemma_number: usize,
+  /// (lemma number, proof depth)
   pub all_lemmas: HashMap<Prop, (usize, usize)>,
 }
 
@@ -2060,6 +2062,16 @@ impl<'a> LemmaProofState<'a> {
     }
   }
 
+  /// Attempt goals until we reach an outcome.
+  pub fn try_until_an_outcome(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
+    loop {
+      if self.outcome.is_some() {
+        return;
+      }
+      self.try_next_goal(timer, lemmas_state);
+    }
+  }
+
   /// Iterate over all remaining goals, running them to saturation to see if any
   /// new lemmas solve them. If all of them are solved, the outcome is set to
   /// Some(Outcome::Valid).
@@ -2205,6 +2217,11 @@ impl<'a> ProofState<'a> {
     let mut i = 0;
     loop {
       i += 1;
+      // Stop if the top-level lemma is proved.
+      let top_level_lemma = self.lemma_proofs.get(&top_level_lemma_number).unwrap();
+      if top_level_lemma.outcome == Some(Outcome::Valid) || top_level_lemma.outcome == Some(Outcome::Invalid) {
+        return top_level_lemma.outcome.as_ref().unwrap().clone();
+      }
       let lemma_batch_res = scheduler.next_lemma_batch(top_level_lemma_number, self);
       match lemma_batch_res {
         Err(outcome) => {
@@ -2536,7 +2553,7 @@ trait BreadthFirstScheduler {
 
   /// A hook that is called whenever a lemma is proven. Theoretically you could
   /// have this logic be in handle_lemma instead.
-  fn on_proven_lemma<'a>(&mut self, lemma: usize, proof_state: &ProofState<'a>);
+  fn on_proven_lemma<'a>(&mut self, lemma: usize, proof_state: &mut ProofState<'a>);
 
 }
 
@@ -2615,7 +2632,79 @@ impl BreadthFirstScheduler for SemanticLemmaRanker {
     }
   }
 
-  fn on_proven_lemma<'a>(&mut self, _lemma: usize, _proof_state: &ProofState<'a>) {
+  fn on_proven_lemma<'a>(&mut self, _lemma: usize, _proof_state: &mut ProofState<'a>) {
+  }
+}
+
+#[derive(Default)]
+struct LemmaSizePriorityQueue {
+  /// A priority queue that orders lemma numbers by their corresponding
+  /// proposition's size
+  ///
+  /// (size, number)
+  lemma_queue: BinaryHeap<Reverse<(usize, usize)>>,
+  /// The set of lemmas that we've already considered (i.e. put in the queue
+  /// before)
+  lemmas_prev_seen: BTreeSet<usize>,
+  /// The lemmas that we have tried to prove so far, but failed to obtain
+  /// a positive result for.
+  ///
+  /// Every time we prove a new lemma, we will see if it can be used to
+  /// shrink this list.
+  ///
+  /// This list is sorted newest to oldest so that we always have as
+  /// many lemmas proven as possible before we try the most important
+  /// lemma (the top-level lemma, which is first).
+  lemmas_awaiting_new_information: VecDeque<usize>,
+}
+
+impl BreadthFirstScheduler for LemmaSizePriorityQueue {
+
+  /// This is just the lemma number
+  type LemmaIndex = usize;
+
+  fn next_lemma_batch<'a>(&mut self, _top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
+    // Update the queue with the lemmas we haven't yet considered.
+    for (prop, (lemma_number, _)) in proof_state.lemmas_state.all_lemmas.iter() {
+      if !self.lemmas_prev_seen.contains(lemma_number) {
+        self.lemma_queue.push(Reverse((prop.size(), *lemma_number)));
+        self.lemmas_prev_seen.insert(*lemma_number);
+      }
+    }
+    // No more lemmas to try and prove
+    if self.lemma_queue.is_empty() {
+      return Err(Outcome::Unknown);
+    }
+
+    // Take the lemma with smallest size that we haven't tried to prove yet.
+    Ok(vec!(self.lemma_queue.pop().unwrap().0.1))
+
+  }
+
+  fn get_lemma_number(&self, lemma_index: &Self::LemmaIndex) -> usize {
+    *lemma_index
+  }
+
+  fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>) {
+    let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_index).unwrap();
+    println!("Trying to prove {}", lemma_proof_state.prop);
+    lemma_proof_state.try_until_an_outcome(&proof_state.timer, &mut proof_state.lemmas_state);
+    // If we don't get a conclusive result (Valid/Invalid), set it aside until
+    // we can get a useful lemma.
+    if lemma_proof_state.outcome.is_none() || lemma_proof_state.outcome == Some(Outcome::Unknown) {
+      self.lemmas_awaiting_new_information.push_front(lemma_index);
+    }
+  }
+
+  fn on_proven_lemma<'a>(&mut self, _lemma: usize, proof_state: &mut ProofState<'a>) {
+    // Try and finish off any lemmas we couldn't prove yet
+    self.lemmas_awaiting_new_information.retain(|lemma| {
+      let lemma_proof_state = proof_state.lemma_proofs.get_mut(lemma).unwrap();
+      lemma_proof_state.try_finish_goals(&proof_state.lemmas_state);
+      ProofState::handle_lemma_outcome(&mut proof_state.lemmas_state, lemma_proof_state);
+      // Keep only lemmas that have results
+      lemma_proof_state.outcome.is_none() || lemma_proof_state.outcome == Some(Outcome::Unknown)
+    })
   }
 }
 
@@ -2737,12 +2826,12 @@ pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_sea
     global_search_state,
   };
 
-  let top_goal_lemma_number = proof_state.lemmas_state.fresh_lemma();
+  let top_goal_lemma_number = proof_state.lemmas_state.find_or_make_fresh_lemma(goal_prop.clone(), 0);
   let top_goal_lemma_proof = LemmaProofState::new(top_goal_lemma_number, goal_prop, &goal_premise, global_search_state, 0);
   proof_state.lemma_proofs.insert(top_goal_lemma_number, top_goal_lemma_proof);
 
   // let outcome = proof_state.prove_lemma(top_goal_lemma_number);
-  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut SemanticLemmaRanker::default());
+  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut LemmaSizePriorityQueue::default());
 
   (outcome, proof_state)
 
