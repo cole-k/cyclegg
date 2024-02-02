@@ -2705,29 +2705,29 @@ impl BreadthFirstScheduler for LemmaSizePriorityQueue {
   type LemmaIndex = usize;
 
   fn next_lemma_batch<'a>(&mut self, _top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
-    // NOTE: This is all testing code.
-    let all_lemma_rws: Vec<Rw> = proof_state.lemma_proofs.iter().flat_map(|(lemma_number, lemma_proof_state)| {
-      // Don't add the rw for the top level lemma because we are going to assume these lemmas are true.
-      if lemma_number == &_top_level_lemma_number || lemma_proof_state.outcome.is_some() {
-        vec!()
-      } else {
-        lemma_proof_state.rw.iter().flat_map(|rw| rw.rewrites()).collect()
-      }
-    }).collect();
-    if all_lemma_rws.len() > 0 {
-      let top_level_lemma = proof_state.lemma_proofs.get(&_top_level_lemma_number).unwrap();
-      let lemmas_that_discharge_top_level = top_level_lemma.goals.front().unwrap().find_lemmas_that_discharge(&proof_state.lemmas_state, &all_lemma_rws);
-      println!("Lemmas that will discharge a goal:");
-      lemmas_that_discharge_top_level.iter().for_each(|lemma_n| {
-        // Ignore the top-level lemma because it may show up since the IH
-        // rewrite has the name lemma_n where n is the top-level lemma.
-        if lemma_n == &_top_level_lemma_number {
-          return;
-        }
-        let lemma_proof_state = proof_state.lemma_proofs.get(lemma_n).unwrap();
-        println!("{}", lemma_proof_state.prop);
-      });
-    }
+    // // NOTE: This is all testing code.
+    // let all_lemma_rws: Vec<Rw> = proof_state.lemma_proofs.iter().flat_map(|(lemma_number, lemma_proof_state)| {
+    //   // Don't add the rw for the top level lemma because we are going to assume these lemmas are true.
+    //   if lemma_number == &_top_level_lemma_number || lemma_proof_state.outcome.is_some() {
+    //     vec!()
+    //   } else {
+    //     lemma_proof_state.rw.iter().flat_map(|rw| rw.rewrites()).collect()
+    //   }
+    // }).collect();
+    // if all_lemma_rws.len() > 0 {
+    //   let top_level_lemma = proof_state.lemma_proofs.get(&_top_level_lemma_number).unwrap();
+    //   let lemmas_that_discharge_top_level = top_level_lemma.goals.front().unwrap().find_lemmas_that_discharge(&proof_state.lemmas_state, &all_lemma_rws);
+    //   println!("Lemmas that will discharge a goal:");
+    //   lemmas_that_discharge_top_level.iter().for_each(|lemma_n| {
+    //     // Ignore the top-level lemma because it may show up since the IH
+    //     // rewrite has the name lemma_n where n is the top-level lemma.
+    //     if lemma_n == &_top_level_lemma_number {
+    //       return;
+    //     }
+    //     let lemma_proof_state = proof_state.lemma_proofs.get(lemma_n).unwrap();
+    //     println!("{}", lemma_proof_state.prop);
+    //   });
+    // }
 
 
     // Update the queue with the lemmas we haven't yet considered.
