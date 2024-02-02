@@ -3,7 +3,7 @@ use std::{collections::{BTreeMap, BTreeSet}, iter::zip};
 
 /// Denotation of an egraph (or its subgraph)
 /// is a map from eclass ids to sets of expressions
-type Denotation<L> = BTreeMap<Id, Vec<RecExpr<L>>>;
+pub type Denotation<L> = BTreeMap<Id, Vec<RecExpr<L>>>;
 
 /// Compute the denotation of all roots in egraph, ignoring cycles
 pub fn get_all_expressions<L: Language, A: Analysis<L>>(
@@ -13,6 +13,20 @@ pub fn get_all_expressions<L: Language, A: Analysis<L>>(
   let mut memo = BTreeMap::new();
   for root in roots {
     collect_expressions(egraph, root, &mut memo);
+  }
+  memo
+}
+
+/// Compute the denotation of all roots in egraph, ignoring cycles
+///
+/// Allows you to reuse the same memo between runs.
+pub fn get_all_expressions_with_memo<'a, L: Language, A:Analysis<L>>(
+  egraph: &EGraph<L, A>,
+  roots: Vec<Id>,
+  memo: &'a mut Denotation<L>,
+) -> &'a mut Denotation<L> {
+  for root in roots {
+    collect_expressions(egraph, root, memo);
   }
   memo
 }

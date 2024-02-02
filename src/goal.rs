@@ -622,8 +622,7 @@ impl<'a> Goal<'a> {
   /// add_termination_check is true, otherwise they will not.
   ///
   /// The rewrites will each be named lemma_n.
-  fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, timer: &Timer, lemmas_state: &mut LemmasState, add_termination_check: bool, exclude_wildcards: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite<CycleggAnalysis>>) {
-    let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
+  fn make_lemma_rewrites_from_exprs(&self, lhs_id: Id, rhs_id: Id, exprs: &Denotation<SymbolLang>, premises: Vec<ETermEquation>, timer: &Timer, lemmas_state: &mut LemmasState, add_termination_check: bool, exclude_wildcards: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite<CycleggAnalysis>>) {
     let is_var = |v| self.local_context.contains_key(v);
     let mut rewrites = self.lemmas.clone();
     let mut lemma_rws = vec!();
@@ -876,7 +875,8 @@ impl<'a> Goal<'a> {
     let rhs_id = self.egraph.find(self.eq.rhs.id);
 
     let premises = self.update_premises();
-    self.make_lemma_rewrites_from_all_exprs(lhs_id, rhs_id, premises, timer, lemmas_state, add_termination_check, true)
+    let all_exprs = get_all_expressions(&self.egraph, vec!(lhs_id, rhs_id));
+    self.make_lemma_rewrites_from_exprs(lhs_id, rhs_id, &all_exprs, premises, timer, lemmas_state, add_termination_check, true)
   }
 
   /// Create the rewrite lhs => rhs with condition Soundness
@@ -1363,6 +1363,10 @@ impl<'a> Goal<'a> {
     self.egraph.analysis.cvec_analysis.saturate();
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
     let resolved_rhs_id = self.egraph.find(self.eq.rhs.id);
+    // We will incrementally compute the expressions in the e-graph using this
+    // memo. By sharing it across separate calls to make_lemma_rewrites_from_exprs
+    // we can avoid rebuilding the expressions multiple times.
+    let mut exprs = BTreeMap::new();
     let class_ids: Vec<Id> = self.egraph.classes().map(|c| c.id).collect();
     for class_1_id in &class_ids {
       for class_2_id in &class_ids {
@@ -1422,7 +1426,10 @@ impl<'a> Goal<'a> {
             _ => {}
           }
           // println!("found candidate cc lemma: making rewrites");
-          let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_all_exprs(class_1_id, class_2_id, vec!(), timer, lemmas_state, false, false);
+
+          // Update the memo so that class_1_id and class_2_id are guaranteed to be in it.
+          get_all_expressions_with_memo(&self.egraph, vec!(class_1_id, class_2_id), &mut exprs);
+          let (_rewrites, rewrite_infos) = self.make_lemma_rewrites_from_exprs(class_1_id, class_2_id, &exprs, vec!(), timer, lemmas_state, false, false);
           // println!("made rewrites");
           let new_rewrite_eqs: Vec<Prop> = rewrite_infos.into_iter().map(|rw_info| rw_info.lemma_prop).collect();
           // We used to check the egraph to see if the lemma helped us, but now
