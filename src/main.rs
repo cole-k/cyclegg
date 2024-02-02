@@ -143,6 +143,12 @@ fn main() -> Result<()> {
 fn prove_goal<'a>(goal: Goal<'a>, goal_prop: Prop, goal_premise: Option<Equation>, global_search_state: GlobalSearchState<'a>, cyclic: bool) -> Result<(Outcome, Duration)> {
   CONFIG.set_cyclic(cyclic);
   let start_time = Instant::now();
+  if CONFIG.verbose {
+    println!("{}", "Reductions".cyan());
+    for rule in global_search_state.reductions {
+      println!("  {:?}", rule);
+    }
+  }
   let (result, mut proof_state) = goal::prove_top(goal_prop, goal_premise, global_search_state);
   let duration = start_time.elapsed();
   if CONFIG.emit_proofs {

@@ -443,6 +443,27 @@ impl<'a> GlobalSearchState<'a> {
     pub fn new(env: &'a Env, context: &'a Context, reductions: &'a Vec<Rw>, cvec_reductions: &'a Vec<CvecRw>, defns: &'a Defns, searchers: &'a Vec<ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>>) -> Self { Self { env, context, reductions, cvec_reductions, defns, searchers } }
 }
 
+
+
+fn rewrite_expr(expr: &Equation, name: &String, term: &Sexp) -> Equation {
+  fn replace(exp: &Sexp, name: &String, term: &Sexp) -> Sexp{
+    match exp {
+      Sexp::String(s) => {
+        if *s == *name {term.clone()} else {exp.clone()}
+      },
+      Sexp::List(subs) => {
+        Sexp::List(subs.iter().map(|sub| {replace(sub, name, term)}).collect())
+      },
+      Sexp::Empty => Sexp::Empty
+    }
+  }
+
+  Equation{
+    lhs: replace(&expr.lhs, name, term),
+    rhs: replace(&expr.rhs, name, term)
+  }
+}
+
 /// Proof goal
 #[derive(Clone)]
 pub struct Goal<'a> {
@@ -478,6 +499,8 @@ pub struct Goal<'a> {
   guard_exprs: BTreeMap<String, Expr>,
   /// The global search state.
   pub global_search_state: GlobalSearchState<'a>,
+  /// add by Ruyi: to get the size after case split
+  pub full_expr: Equation
 }
 
 impl<'a> Goal<'a> {
@@ -511,6 +534,7 @@ impl<'a> Goal<'a> {
       // Convert to a singleton list if the Option is Some, else the empty list
       premises: premise.into_iter().collect(),
       global_search_state,
+      full_expr: prop.eq.clone()
     };
     // FIXME: this could really also be a reference. Probably not necessary
     // for efficiency reason but yeah.
@@ -624,6 +648,12 @@ impl<'a> Goal<'a> {
   /// The rewrites will each be named lemma_n.
   fn make_lemma_rewrites_from_all_exprs(&self, lhs_id: Id, rhs_id: Id, premises: Vec<ETermEquation>, timer: &Timer, lemmas_state: &mut LemmasState, add_termination_check: bool, exclude_wildcards: bool) -> (BTreeMap<String, Rw>, Vec<LemmaRewrite<CycleggAnalysis>>) {
     let exprs = get_all_expressions(&self.egraph, vec![lhs_id, rhs_id]);
+    /*println!("Try extracting lemmas");
+    for (_, expr_list) in exprs.iter() {
+      for expr in expr_list.iter() {
+        println!("  {}", expr);
+      }
+    }*/
     let is_var = |v| self.local_context.contains_key(v);
     let mut rewrites = self.lemmas.clone();
     let mut lemma_rws = vec!();
@@ -1013,6 +1043,7 @@ impl<'a> Goal<'a> {
       // We will update the timestamp of the cvec analysis so that we enforce
       // the update when we generate a cvec.
       new_goal.egraph.analysis.cvec_analysis.current_timestamp += 1;
+      let mut pre_expr = self.full_expr.clone();
 
       for (i, arg_type) in con_args.iter().enumerate() {
         let fresh_var_name = format!("{}_{}{}", scrutinee.name, self.egraph.total_size(), i);
@@ -1054,6 +1085,8 @@ impl<'a> Goal<'a> {
 
       // Add con_app to the new goal's egraph and union it with var
       new_goal.egraph.add_expr(&con_app);
+      let con_expr = symbolic_expressions::parser::parse_str(&con_app.to_string()).unwrap();
+      new_goal.full_expr = rewrite_expr(&new_goal.full_expr, &scrutinee.name.to_string(), &con_expr);
       new_goal.egraph.union_instantiations(
         &var_pattern_ast,
         &rec_expr_to_pattern_ast(con_app.clone()),
@@ -1449,6 +1482,10 @@ impl<'a> Goal<'a> {
         }
       }
     }
+    /*println!("found lemmas");
+    for lemma in lemmas.iter() {
+      println!("  {}", lemma);
+    }*/
     lemmas
   }
 
@@ -1922,7 +1959,7 @@ impl<'a> LemmaProofState<'a> {
     }
     // props with size 0-10 can take 10 steps, props with greater size decrease
     // their number of steps.
-    let priority = std::cmp::max(10 - (std::cmp::min(prop.size(), 140) / 10), 0) + 1;
+    let priority = 0; // std::cmp::max(10 - (std::cmp::min(prop.size(), 140) / 10), 0) + 1;
     // println!("{} {:?} ({} == {}) has initial outcome {:?}", lemma_name, prop.params, prop.eq.lhs, prop.eq.rhs, outcome);
     // FIXME: add the option to do more cvec checks like we do in the old try_prove_lemmas
     Self {
@@ -1959,6 +1996,11 @@ impl<'a> LemmaProofState<'a> {
     warn!("PROOF STATE: {}", pretty_state(&self));
     // Pop the first subgoal
     let mut goal = self.goals.pop_front().unwrap();
+    /*if self.case_split_depth >= 1 && goal.egraph.total_size() > 100 {
+      // give up proving right now
+      self.outcome = Some(Outcome::Unknown);
+      return;
+    }*/
     // FIXME: need to run the analysis properly here
     // if goal.cvecs_valid() == Some(false) {
     //   // FIXME: add cvec counterexample to proof
@@ -2066,7 +2108,7 @@ impl<'a> LemmaProofState<'a> {
         self.outcome = Some(Outcome::Unknown);
       } else {
         // FIXME: This used to be Invalid but that seems wrong?
-        self.outcome = Some(Outcome::Unknown);
+        self.outcome = if self.goals.is_empty() {Some(Outcome::Invalid)} else {Some(Outcome::Unknown)};
       }
     }
   }
@@ -2113,6 +2155,28 @@ impl<'a> LemmaProofState<'a> {
     }
   }
 
+  pub fn try_one_step(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
+    if self.outcome.is_some() {
+      return;
+    }
+    if !self.goals.is_empty() {
+      // arrange the goals to first consider the one with the smallest e-graph
+      let mut pos = 0usize;
+      let cost = get_lemma_graph_size(self);
+      for (index, goal) in self.goals.iter().enumerate() {
+        if get_goal_cost(goal) == cost {
+          pos = index;
+        }
+      }
+      if pos != 0 {self.goals.swap(0, pos);}
+    }
+    self.try_next_goal(timer, lemmas_state);
+    if self.goals.is_empty() && self.outcome.is_none() {
+      self.outcome = Some(Outcome::Valid);
+    }
+  }
+
+
   /// Iterate over all remaining goals, running them to saturation to see if any
   /// new lemmas solve them. If all of them are solved, the outcome is set to
   /// Some(Outcome::Valid).
@@ -2140,6 +2204,21 @@ impl<'a> LemmaProofState<'a> {
     });
     if self.goals.is_empty() {
       self.outcome = Some(Outcome::Valid);
+    }
+  }
+
+  pub fn try_finish_one_goal(&mut self, lemmas_state: &LemmasState) {
+    if self.goals.is_empty() {panic!()}
+    if self.goals.is_empty() {
+      self.outcome = Some(Outcome::Valid);
+      return;
+    }
+    let goal = self.goals.get_mut(0).unwrap();
+    goal.saturate(&lemmas_state.lemma_rewrites);
+    if let Some(leaf) = goal.find_proof() {
+      self.process_goal_explanation(leaf, &self.goals[0].name.clone());
+      self.goals.remove(0);
+      self.outcome = if self.goals.is_empty() {Some(Outcome::Valid)} else {None}
     }
   }
 }
@@ -2244,6 +2323,8 @@ impl<'a> ProofState<'a> {
   }
 
   fn handle_lemma_outcome(lemmas_state: &mut LemmasState, lemma_proof_state: &LemmaProofState) {
+    //println!("handle outcomes for {:?}", lemma_proof_state.outcome);
+    //println!("  {:?}", lemmas_state.lemma_rewrites_no_analysis);
     if lemma_proof_state.outcome == Some(Outcome::Valid) {
       lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
       lemma_proof_state.rw.as_ref().map(|rw| rw.add_to_rewrites(&mut lemmas_state.lemma_rewrites));
@@ -2301,9 +2382,9 @@ impl<'a> ProofState<'a> {
         if self.timer.timeout() {
           return Outcome::Timeout;
         }
-        if lemma_depth == &CONFIG.proof_depth {
+        /*if lemma_depth == &CONFIG.proof_depth {
           continue;
-        }
+        }*/
         self.lemma_proofs.entry(*lemma_number).or_insert_with(|| {
           // println!("Adding new lemma to search {}", lemma);
           LemmaProofState::new(*lemma_number, lemma.clone(), &None, self.global_search_state, 0)
@@ -2678,6 +2759,116 @@ impl BreadthFirstScheduler for SemanticLemmaRanker {
 }
 
 #[derive(Default)]
+struct GoalLevelPriorityQueue {
+  queue: BinaryHeap<Reverse<(usize, usize)>>,
+  lemmas_prev_seen: BTreeSet<usize>,
+  lemmas_awaiting_new_information: VecDeque<usize>
+}
+
+fn get_goal_cost(goal: &Goal) -> usize {
+  sexp_size(&goal.full_expr.lhs) + sexp_size(&goal.full_expr.rhs)
+}
+fn get_lemma_graph_size(lemma: &LemmaProofState) -> usize {
+  lemma.goals.iter().map(|goal| get_goal_cost(goal)).min().unwrap_or_default()
+}
+
+impl BreadthFirstScheduler for GoalLevelPriorityQueue {
+
+  /// This is just the lemma number
+  type LemmaIndex = usize;
+
+  fn next_lemma_batch<'a>(&mut self, _top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
+    // (Not sure) this heuristics may stuck the search into infinite loop, temporarily ignore it.
+    let all_lemma_rws: Vec<Rw> = proof_state.lemma_proofs.iter().flat_map(|(lemma_number, lemma_proof_state)| {
+      // Don't add the rw for the top level lemma because we are going to assume these lemmas are true.
+      if lemma_number == &_top_level_lemma_number || lemma_proof_state.outcome.is_some() {
+        vec!()
+      } else {
+        lemma_proof_state.rw.iter().flat_map(|rw| rw.rewrites()).collect()
+      }
+    }).collect();
+    if all_lemma_rws.len() > 0 {
+      let top_level_lemma = proof_state.lemma_proofs.get(&_top_level_lemma_number).unwrap();
+      let lemmas_that_discharge_top_level = top_level_lemma.goals.front().unwrap().find_lemmas_that_discharge(&proof_state.lemmas_state, &all_lemma_rws);
+      //println!("Lemmas that will discharge a goal:");
+      lemmas_that_discharge_top_level.iter().for_each(|lemma_n| {
+        // Ignore the top-level lemma because it may show up since the IH
+        // rewrite has the name lemma_n where n is the top-level lemma.
+        if lemma_n == &_top_level_lemma_number {
+          return;
+        }
+        let lemma_proof_state = proof_state.lemma_proofs.get(lemma_n).unwrap();
+        //println!("{}", lemma_proof_state.prop);
+      });
+    }
+
+    /*println!("\n\n================= current queue ==============");
+    let mut q = self.queue.clone();
+    while !q.is_empty() {
+      let (weight, lemma_number) = q.pop().unwrap().0;
+      let lemma = proof_state.lemma_proofs.get(&lemma_number).unwrap();
+      println!("[{}] {}", weight, lemma.goals[0].full_expr);
+    }
+    println!("\n\n");*/
+
+
+    // Update the queue with the lemmas we haven't yet considered.
+    for (prop, (lemma_number, _)) in proof_state.lemmas_state.all_lemmas.iter() {
+      if !self.lemmas_prev_seen.contains(lemma_number) {
+        // println!("insert lemma {} {}", prop, lemma_number);
+        let graph_size = get_lemma_graph_size(proof_state.lemma_proofs.get(lemma_number).unwrap());
+        self.queue.push(Reverse((graph_size, *lemma_number)));
+        self.lemmas_prev_seen.insert(*lemma_number);
+      }
+    }
+    // No more lemmas to try and prove
+    if self.queue.is_empty() {
+      println!("report unknown in this way");
+      return Err(Outcome::Unknown);
+    }
+
+    // Take the lemma with smallest size that we haven't tried to prove yet.
+    Ok(vec!(self.queue.pop().unwrap().0.1))
+
+  }
+
+  fn get_lemma_number(&self, lemma_index: &Self::LemmaIndex) -> usize {
+    *lemma_index
+  }
+
+  fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>) {
+    let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_index).unwrap();
+    // println!("try {:?} {} {}", lemma_proof_state.outcome, lemma_proof_state.prop, lemma_proof_state.goals.len());
+    lemma_proof_state.try_one_step(&proof_state.timer, &mut proof_state.lemmas_state);
+
+    // Two possibilities when the status of the lemma is not determined:
+    // 1. The current goal is proved, then the lemma should be pushed-back to the queue
+    // 2. Otherwise, the current lemma should be marked as awaiting_new_information
+    //println!("one step info for {} {} {:?}", lemma_proof_state.prop, lemma_proof_state.goals.len(), lemma_proof_state.outcome);
+    if lemma_proof_state.outcome.is_none() {
+      let graph_size = get_lemma_graph_size(lemma_proof_state);
+      self.queue.push(Reverse((graph_size, lemma_index)));
+    } else if lemma_proof_state.outcome == Some(Outcome::Unknown) {
+      println!("insert to awaiting {} {}", lemma_proof_state.prop, lemma_proof_state.goals.len());
+      self.lemmas_awaiting_new_information.push_front(lemma_index);
+    }
+  }
+
+  fn on_proven_lemma<'a>(&mut self, _lemma: usize, proof_state: &mut ProofState<'a>) {
+    // Try and finish off any lemmas we couldn't prove yet
+    self.lemmas_awaiting_new_information.retain(|lemma| {
+      let lemma_proof_state = proof_state.lemma_proofs.get_mut(lemma).unwrap();
+      lemma_proof_state.try_finish_one_goal(&proof_state.lemmas_state);
+      ProofState::handle_lemma_outcome(&mut proof_state.lemmas_state, lemma_proof_state);
+      if lemma_proof_state.outcome.is_none() {
+        self.queue.push(Reverse((get_lemma_graph_size(lemma_proof_state), *lemma)))
+      }
+      lemma_proof_state.outcome == Some(Outcome::Unknown)
+    })
+  }
+}
+
+#[derive(Default)]
 struct LemmaSizePriorityQueue {
   /// A priority queue that orders lemma numbers by their corresponding
   /// proposition's size
@@ -2706,6 +2897,14 @@ impl BreadthFirstScheduler for LemmaSizePriorityQueue {
 
   fn next_lemma_batch<'a>(&mut self, _top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
     // NOTE: This is all testing code.
+    /*println!("try generate next batch {}", self.lemma_queue.len());
+    for lemma_index in self.lemma_queue.iter() {
+      for (lemma_num, lemma_state) in proof_state.lemma_proofs.iter() {
+        if *lemma_num == lemma_index.0.1 {
+          println!(" {}", lemma_state.prop);
+        }
+      }
+    }*/
     let all_lemma_rws: Vec<Rw> = proof_state.lemma_proofs.iter().flat_map(|(lemma_number, lemma_proof_state)| {
       // Don't add the rw for the top level lemma because we are going to assume these lemmas are true.
       if lemma_number == &_top_level_lemma_number || lemma_proof_state.outcome.is_some() {
@@ -2733,12 +2932,14 @@ impl BreadthFirstScheduler for LemmaSizePriorityQueue {
     // Update the queue with the lemmas we haven't yet considered.
     for (prop, (lemma_number, _)) in proof_state.lemmas_state.all_lemmas.iter() {
       if !self.lemmas_prev_seen.contains(lemma_number) {
+        println!("insert lemma {} {}", prop, lemma_number);
         self.lemma_queue.push(Reverse((prop.size(), *lemma_number)));
         self.lemmas_prev_seen.insert(*lemma_number);
       }
     }
     // No more lemmas to try and prove
     if self.lemma_queue.is_empty() {
+      println!("report unknown in this way");
       return Err(Outcome::Unknown);
     }
 
@@ -2753,8 +2954,10 @@ impl BreadthFirstScheduler for LemmaSizePriorityQueue {
 
   fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>) {
     let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_index).unwrap();
-    // println!("Trying to prove {}", lemma_proof_state.prop);
+    //println!("Trying to prove {}", lemma_proof_state.prop);
+    //println!("  time limit: {:?}", CONFIG.timeout);
     lemma_proof_state.try_until_an_outcome(&proof_state.timer, &mut proof_state.lemmas_state);
+    //println!("Get outcome!");
     // If we don't get a conclusive result (Valid/Invalid), set it aside until
     // we can get a useful lemma.
     if lemma_proof_state.outcome.is_none() || lemma_proof_state.outcome == Some(Outcome::Unknown) {
@@ -2810,11 +3013,11 @@ impl std::fmt::Display for Outcome {
 pub fn explain_goal_failure(goal: &Goal) {
   println!("{} {}", "Could not prove".red(), goal.name);
 
-  println!("{}", "LHS Nodes".cyan());
+  /*println!("{}", "LHS Nodes".cyan());
   print_expressions_in_eclass(&goal.egraph, goal.eq.lhs.id);
 
   println!("{}", "RHS Nodes".cyan());
-  print_expressions_in_eclass(&goal.egraph, goal.eq.rhs.id);
+  print_expressions_in_eclass(&goal.egraph, goal.eq.rhs.id);*/
 }
 
 fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
@@ -2897,7 +3100,8 @@ pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_sea
   proof_state.lemma_proofs.insert(top_goal_lemma_number, top_goal_lemma_proof);
 
   // let outcome = proof_state.prove_lemma(top_goal_lemma_number);
-  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut LemmaSizePriorityQueue::default());
+  //let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut LemmaSizePriorityQueue::default());
+  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut GoalLevelPriorityQueue::default());
 
   (outcome, proof_state)
 
