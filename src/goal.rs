@@ -478,6 +478,9 @@ pub struct Goal<'a> {
   guard_exprs: BTreeMap<String, Expr>,
   /// The global search state.
   pub global_search_state: GlobalSearchState<'a>,
+  /// Have we made lemmas from this pair of ids before?
+  /// If so, what were the sizes of their eclasses?
+  cc_lemma_cache: BTreeMap<(Id, Id), (usize, usize)>,
 }
 
 impl<'a> Goal<'a> {
@@ -511,6 +514,7 @@ impl<'a> Goal<'a> {
       // Convert to a singleton list if the Option is Some, else the empty list
       premises: premise.into_iter().collect(),
       global_search_state,
+      cc_lemma_cache: BTreeMap::new(),
     };
     // FIXME: this could really also be a reference. Probably not necessary
     // for efficiency reason but yeah.
@@ -1386,6 +1390,16 @@ impl<'a> Goal<'a> {
           continue;
         }
 
+        // Skip trying to make lemmas here if there is no change.
+        if self.cc_lemma_cache.get(&(class_1_id, class_2_id))
+          .map(|(size_1, size_2)| {
+            size_1 == &self.egraph[class_1_id].len() && size_2 == &self.egraph[class_2_id].len()
+          })
+          .unwrap_or(false) {
+            // println!("skipping generating lemmas because nothing has changed");
+            continue;
+          }
+
         // NOTE: We no longer skip here because we need to generalize sometimes
         // Don't try unioning the LHS and RHS, we've seen those already.
         // if class_1_id == resolved_lhs_id && class_2_id == resolved_rhs_id
@@ -1425,6 +1439,7 @@ impl<'a> Goal<'a> {
             }
             _ => {}
           }
+          self.cc_lemma_cache.insert((class_1_id, class_2_id), (self.egraph[class_1_id].len(), self.egraph[class_2_id].len()));
           // println!("found candidate cc lemma: making rewrites");
 
           // Update the memo so that class_1_id and class_2_id are guaranteed to be in it.
