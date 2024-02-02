@@ -214,8 +214,8 @@
 (let headE ((MkExpr (Cst ?x) ?n)     ) (MkExpr (Cst ?x) ?n))
 (let headE ((MkExpr (App ?e1 ?e2) ?n)) (headE ?e1)         )
 
-(=== clam_6 (x y) ((List a) (List a))
-  (len (rev (append x y)))
-  (plus (len x) (len y))
+(=== goal_74 (i xs) (Nat (List a))
+  (rev (drop i xs))
+  (take (sub (len xs) i) (rev xs))
 )
 )

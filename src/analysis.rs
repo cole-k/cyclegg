@@ -231,6 +231,10 @@ impl CvecAnalysis {
   }
 
   pub fn saturate(&mut self) {
+    /*println!("reductions");
+    for rewrite in self.reductions.iter() {
+      println!("  {:?}", rewrite);
+    }*/
     self.cvec_egraph.replace_with(|egraph|{
       let runner = Runner::default()
         .with_egraph(egraph.to_owned())
@@ -524,9 +528,9 @@ impl CanonicalForm {
         // let extractor = Extractor::new(egraph, AstSize);
         // let expr1 = extract_with_node(&n1, &extractor);
         // let expr2 = extract_with_node(&n2, &extractor);
-        if CONFIG.verbose && n1 != n2 {
+        /*if CONFIG.verbose && n1 != n2 {
           println!("INJECTIVITY {} = {}", n1, n2);
-        }
+        }*/
         // Unify the parameters of the two constructors
         for (c1, c2) in n1.children.iter().zip(n2.children.iter()) {
           let c1 = egraph.find(*c1);

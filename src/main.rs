@@ -43,6 +43,7 @@ fn main() -> Result<()> {
       }
     }
     let global_search_state = GlobalSearchState::new(&parser_state.env, &parser_state.context, &reductions, &parser_state.cvec_rules, &defns, &raw_goal.local_searchers);
+
     let mut goal = Goal::top(
       &raw_goal.name,
       &raw_goal.prop,

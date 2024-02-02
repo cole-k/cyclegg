@@ -4,8 +4,8 @@ use itertools::Itertools;
 use log::warn;
 use petgraph::Directed;
 use petgraph::matrix_graph::{MatrixGraph, NodeIndex};
-use std::cmp::Reverse;
-use std::collections::{BTreeSet, HashMap, BinaryHeap};
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BTreeSet, HashMap, BinaryHeap, HashSet};
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::iter::zip;
@@ -44,16 +44,16 @@ impl Soundness {
   /// Substitution as a string, for debugging purposes
   fn _pretty_subst(subst: &[(Symbol, Expr, Expr)]) -> String {
     let strings: Vec<String> = subst
-      .iter()
-      .map(|(x, orig, new)| {
-        format!(
-          "{} = {} -> {}",
-          &x.to_string(),
-          &orig.to_string(),
-          &new.to_string()
-        )
-      })
-      .collect();
+        .iter()
+        .map(|(x, orig, new)| {
+          format!(
+            "{} = {} -> {}",
+            &x.to_string(),
+            &orig.to_string(),
+            &new.to_string()
+          )
+        })
+        .collect();
     strings.join(", ")
   }
 
@@ -86,31 +86,31 @@ impl Soundness {
     // but substituting over RecExprs is too much of a pain
     // Convert triples to a substitution over s-expressions
     let subst: SSubst = triples
-      .iter()
-      .map(|(var, _, new_expr)| {
-        (
-          var.to_string(),
-          // FIXME: we give an empty expression if the var is not blocking.
-          // Right now, we just substitute the var for itself, but we should instead
-          // find the correct expression to give.
-          if new_expr.as_ref().len() == 0 {
-            Sexp::String(var.to_string())
-          } else {
-            symbolic_expressions::parser::parse_str(&new_expr.to_string()).unwrap()
-          },
-        )
-      })
-      .collect();
+        .iter()
+        .map(|(var, _, new_expr)| {
+          (
+            var.to_string(),
+            // FIXME: we give an empty expression if the var is not blocking.
+            // Right now, we just substitute the var for itself, but we should instead
+            // find the correct expression to give.
+            if new_expr.as_ref().len() == 0 {
+              Sexp::String(var.to_string())
+            } else {
+              symbolic_expressions::parser::parse_str(&new_expr.to_string()).unwrap()
+            },
+          )
+        })
+        .collect();
 
     // Perform the substitution
     let lhs: Expr = resolve_sexp(&premise.lhs.sexp, &subst)
-      .to_string()
-      .parse()
-      .unwrap();
+        .to_string()
+        .parse()
+        .unwrap();
     let rhs: Expr = resolve_sexp(&premise.rhs.sexp, &subst)
-      .to_string()
-      .parse()
-      .unwrap();
+        .to_string()
+        .parse()
+        .unwrap();
 
     // Lookup the sides of the new premise in the egraph;
     // they must be there, since we added them during grounding
@@ -129,9 +129,9 @@ impl Soundness {
   /// Check all of the premises of this condition
   fn check_premises(&self, triples: &[(Symbol, Expr, Expr)], egraph: &Eg) -> bool {
     self
-      .premises
-      .iter()
-      .all(|premise| Soundness::check_premise(premise, triples, egraph))
+        .premises
+        .iter()
+        .all(|premise| Soundness::check_premise(premise, triples, egraph))
   }
 }
 
@@ -142,34 +142,34 @@ impl SearchCondition<SymbolLang, CycleggAnalysis> for Soundness {
   fn check(&self, egraph: &Eg, _eclass: Id, subst: &Subst) -> bool {
     // Create an iterator over triples: (variable, old canonical form, new canonical form)
     let triples = self
-      .free_vars
-      .iter()
-      .map(|(x, orig_id)| {
-        let v = to_wildcard(x);
-        // Subst must have all lemma variables defined
-        // because we did the filtering when creating SmallerVars
-        let new_id = subst.get(v).unwrap();
-        // Exit early with something guaranteed to be LE if this var is not blocking
-        if CONFIG.better_termination && !egraph.analysis.blocking_vars.contains(x) {
-          // FIXME: we need to give the actual value here
-          return Some((*x, vec!().into(), vec!().into()))
-        }
-        // match &egraph[*orig_id].data.canonical_form_data {
-        //   CanonicalForm::Var(var) if !egraph.analysis.blocking_vars.contains(&var.op) => {
-        //     assert_eq!(&var.op, x, "Canonical form analysis is bad");
-        //     // println!("skipping checking {} because it's not blocking", var);
-        //     return Some((*x, vec!().into(), vec!().into()))
-        //   }
-        //   _ => {}
-        // };
-        // If the actual argument of the lemma is not canonical, give up
-        let new_canonical = CanonicalFormAnalysis::extract_canonical(egraph, *new_id)?;
-        // Same for the original argument:
-        // it might not be canonical if it's inconsistent, in which case there's no point applying any lemmas
-        let orig_canonical = CanonicalFormAnalysis::extract_canonical(egraph, *orig_id)?;
-        Some((*x, orig_canonical, new_canonical))
-      })
-      .collect::<Option<Vec<(Symbol, Expr, Expr)>>>();
+        .free_vars
+        .iter()
+        .map(|(x, orig_id)| {
+          let v = to_wildcard(x);
+          // Subst must have all lemma variables defined
+          // because we did the filtering when creating SmallerVars
+          let new_id = subst.get(v).unwrap();
+          // Exit early with something guaranteed to be LE if this var is not blocking
+          if CONFIG.better_termination && !egraph.analysis.blocking_vars.contains(x) {
+            // FIXME: we need to give the actual value here
+            return Some((*x, vec!().into(), vec!().into()))
+          }
+          // match &egraph[*orig_id].data.canonical_form_data {
+          //   CanonicalForm::Var(var) if !egraph.analysis.blocking_vars.contains(&var.op) => {
+          //     assert_eq!(&var.op, x, "Canonical form analysis is bad");
+          //     // println!("skipping checking {} because it's not blocking", var);
+          //     return Some((*x, vec!().into(), vec!().into()))
+          //   }
+          //   _ => {}
+          // };
+          // If the actual argument of the lemma is not canonical, give up
+          let new_canonical = CanonicalFormAnalysis::extract_canonical(egraph, *new_id)?;
+          // Same for the original argument:
+          // it might not be canonical if it's inconsistent, in which case there's no point applying any lemmas
+          let orig_canonical = CanonicalFormAnalysis::extract_canonical(egraph, *orig_id)?;
+          Some((*x, orig_canonical, new_canonical))
+        })
+        .collect::<Option<Vec<(Symbol, Expr, Expr)>>>();
 
     match triples {
       None => false, // All actual arguments must be canonical in order to be comparable to the formals
@@ -231,15 +231,15 @@ impl ETerm {
   /// Update variables in my expressions with their canonical forms
   fn update_variables(&self, subst: &IdSubst, egraph: &Eg) -> Self {
     let ssubst: SSubst = subst
-      .iter()
-      .map(|(x, id)| {
-        let expr = CanonicalFormAnalysis::extract_canonical(egraph, *id).unwrap();
-        (
-          x.to_string(),
-          symbolic_expressions::parser::parse_str(&expr.to_string()).unwrap(),
-        )
-      })
-      .collect();
+        .iter()
+        .map(|(x, id)| {
+          let expr = CanonicalFormAnalysis::extract_canonical(egraph, *id).unwrap();
+          (
+            x.to_string(),
+            symbolic_expressions::parser::parse_str(&expr.to_string()).unwrap(),
+          )
+        })
+        .collect();
     let new_sexp = resolve_sexp(&self.sexp, &ssubst);
     let new_expr = new_sexp.to_string().parse().unwrap();
     Self {
@@ -440,7 +440,7 @@ pub struct GlobalSearchState<'a> {
 }
 
 impl<'a> GlobalSearchState<'a> {
-    pub fn new(env: &'a Env, context: &'a Context, reductions: &'a Vec<Rw>, cvec_reductions: &'a Vec<CvecRw>, defns: &'a Defns, searchers: &'a Vec<ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>>) -> Self { Self { env, context, reductions, cvec_reductions, defns, searchers } }
+  pub fn new(env: &'a Env, context: &'a Context, reductions: &'a Vec<Rw>, cvec_reductions: &'a Vec<CvecRw>, defns: &'a Defns, searchers: &'a Vec<ConditionalSearcher<Pattern<SymbolLang>, Pattern<SymbolLang>>>) -> Self { Self { env, context, reductions, cvec_reductions, defns, searchers } }
 }
 
 
@@ -499,7 +499,7 @@ pub struct Goal<'a> {
   guard_exprs: BTreeMap<String, Expr>,
   /// The global search state.
   pub global_search_state: GlobalSearchState<'a>,
-  /// add by Ruyi: to get the size after case split
+  /// added by Ruyi: to get the size after case split
   pub full_expr: Equation
 }
 
@@ -514,8 +514,8 @@ impl<'a> Goal<'a> {
     let mut egraph: Eg = EGraph::default().with_explanations_enabled();
     let eq = ETermEquation::new(&prop.eq, &mut egraph, false);
     let premise = premise
-      .as_ref()
-      .map(|eq| ETermEquation::new(eq, &mut egraph, true));
+        .as_ref()
+        .map(|eq| ETermEquation::new(eq, &mut egraph, true));
     let var_classes = lookup_vars(&egraph, prop.params.iter().map(|(x, _)| x));
 
     let mut res = Self {
@@ -601,17 +601,17 @@ impl<'a> Goal<'a> {
     let lhs_id = self.eq.lhs.id;
     let rhs_id = self.eq.rhs.id;
     let runner = Runner::default()
-      .with_explanations_enabled()
-      .with_egraph(self.egraph.to_owned())
-      .with_hook(move |runner| {
-        // Stop iteration if we have proven lhs == rhs
-        if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
-          Err("Goal proven".to_string())
-        } else {
-          Ok(())
-        }
-      })
-      .run(rewrites);
+        .with_explanations_enabled()
+        .with_egraph(self.egraph.to_owned())
+        .with_hook(move |runner| {
+          // Stop iteration if we have proven lhs == rhs
+          if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
+            Err("Goal proven".to_string())
+          } else {
+            Ok(())
+          }
+        })
+        .run(rewrites);
     self.egraph = runner.egraph;
   }
 
@@ -723,7 +723,7 @@ impl<'a> Goal<'a> {
       let premise_lhs_vars = var_set(&to_pattern(&eq.lhs.expr, is_var));
       let premise_rhs_vars = var_set(&to_pattern(&eq.rhs.expr, is_var));
       let premise_vars: BTreeSet<Var> =
-        premise_lhs_vars.union(&premise_rhs_vars).cloned().collect();
+          premise_lhs_vars.union(&premise_rhs_vars).cloned().collect();
       premise_vars.is_subset(&lemma_vars)
     }) {
       return None;
@@ -731,11 +731,11 @@ impl<'a> Goal<'a> {
 
     // Pick out those variables that occur in the lemma
     let lemma_var_classes: IdSubst = self
-      .var_classes
-      .iter()
-      .filter(|(x, _)| lemma_vars.contains(&to_wildcard(x)))
-      .map(|(x, id)| (*x, *id))
-      .collect();
+        .var_classes
+        .iter()
+        .filter(|(x, _)| lemma_vars.contains(&to_wildcard(x)))
+        .map(|(x, id)| (*x, *id))
+        .collect();
     let params: Vec<(Symbol, Type)> = lemma_var_classes.keys().map(|var|{
       (*var, self.local_context.get(var).unwrap().clone())
     }).collect();
@@ -816,11 +816,11 @@ impl<'a> Goal<'a> {
 
     // Pick out those variables that occur in the lemma
     let lemma_var_classes: IdSubst = self
-      .var_classes
-      .iter()
-      .filter(|(x, _)| lemma_vars.contains(&to_wildcard(x)))
-      .map(|(x, id)| (*x, *id))
-      .collect();
+        .var_classes
+        .iter()
+        .filter(|(x, _)| lemma_vars.contains(&to_wildcard(x)))
+        .map(|(x, id)| (*x, *id))
+        .collect();
     let params: Vec<(Symbol, Type)> = lemma_var_classes.keys().map(|var|{
       (*var, self.local_context.get(var).unwrap().clone())
     }).collect();
@@ -864,10 +864,10 @@ impl<'a> Goal<'a> {
   /// variables
   fn update_premises(&self) -> Vec<ETermEquation> {
     self
-      .premises
-      .iter()
-      .map(|eq| eq.update_variables(&self.var_classes, &self.egraph))
-      .collect()
+        .premises
+        .iter()
+        .map(|eq| eq.update_variables(&self.var_classes, &self.egraph))
+        .collect()
   }
 
   /// Create a rewrite `lhs => rhs` which will serve as the lemma ("induction hypothesis") for a cycle in the proof;
@@ -933,10 +933,10 @@ impl<'a> Goal<'a> {
     let name = format!("{}-{}={}", lemma_name, lhs, rhs);
     warn!("creating unchecked lemma: {} => {}", lhs, rhs);
     let rw = Rewrite::new(
-               &name,
-               lhs,
-               rhs,
-             ).unwrap();
+      &name,
+      lhs,
+      rhs,
+    ).unwrap();
     (name, rw)
   }
 
@@ -974,11 +974,11 @@ impl<'a> Goal<'a> {
       // This is here only for logging purposes
       let expr = Extractor::new(&self.egraph, AstSize).find_best(guard_id).1;
       let add_scrutinee_message =
-        format!("adding scrutinee {} to split condition {}", fresh_var, expr);
+          format!("adding scrutinee {} to split condition {}", fresh_var, expr);
       warn!("{}", add_scrutinee_message);
       self
-        .local_context
-        .insert(fresh_var, BOOL_TYPE.parse().unwrap());
+          .local_context
+          .insert(fresh_var, BOOL_TYPE.parse().unwrap());
       // We are adding the new scrutinee to the front of the deque,
       // because we want to split conditions first, since they don't introduce new variables
       self.scrutinees.push_front(Scrutinee::new_guard(fresh_var));
@@ -997,7 +997,7 @@ impl<'a> Goal<'a> {
   }
 
   /// Consume this goal and add its case splits to the proof state
-  fn case_split(self, scrutinee: Scrutinee, timer: &Timer, lemmas_state: &mut LemmasState, ih_lemma_number: usize) -> (ProofTerm, Vec<Goal<'a>>) {
+  fn case_split(&self, scrutinee: Scrutinee, timer: &Timer, lemmas_state: &mut LemmasState, ih_lemma_number: usize) -> (ProofTerm, Vec<Goal<'a>>) {
     let new_lemmas = self.add_lemma_rewrites(timer, lemmas_state, ih_lemma_number);
 
     let var_str = scrutinee.name.to_string();
@@ -1073,9 +1073,9 @@ impl<'a> Goal<'a> {
         "({} {})",
         con,
         fresh_var_strings_iter
-          .clone()
-          .collect::<Vec<String>>()
-          .join(" ")
+            .clone()
+            .collect::<Vec<String>>()
+            .join(" ")
       );
       let con_app: Expr = con_app_string.parse().unwrap();
 
@@ -1147,12 +1147,12 @@ impl<'a> Goal<'a> {
 
       // Hack to dedup the new patterns (sexps) we generated
       let mut new_sexps: Vec<Sexp> = Goal::analyze_sexp_for_blocking_vars(&sexp)
-        .into_iter()
-        .map(|x| x.to_string())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|x| symbolic_expressions::parser::parse_str(x.as_str()).unwrap())
-        .collect();
+          .into_iter()
+          .map(|x| x.to_string())
+          .collect::<BTreeSet<_>>()
+          .into_iter()
+          .map(|x| symbolic_expressions::parser::parse_str(x.as_str()).unwrap())
+          .collect();
 
       // the patterns we generated contained only ? instead of ?var, so we go and add fresh variable names everywhere
       for ns in new_sexps.iter_mut() {
@@ -1168,11 +1168,11 @@ impl<'a> Goal<'a> {
 
         // for each new pattern, find the pattern variables in blocking positions so that we can use them to look up the substs later
         let bvs: Vec<Var> = mod_searcher
-          .vars()
-          .iter()
-          .filter(|&x| x.to_string().contains("block_"))
-          .cloned()
-          .collect();
+            .vars()
+            .iter()
+            .filter(|&x| x.to_string().contains("block_"))
+            .cloned()
+            .collect();
 
         let matches = mod_searcher.search(&self.egraph);
 
@@ -1225,9 +1225,9 @@ impl<'a> Goal<'a> {
   /// Gets the next variable to case split on using the blocking var analysis
   fn next_scrutinee(&mut self, mut blocking_vars: BTreeSet<Symbol>) -> Option<Scrutinee> {
     let blocking = self
-      .scrutinees
-      .iter()
-      .find_position(|s| blocking_vars.contains(&s.name));
+        .scrutinees
+        .iter()
+        .find_position(|s| blocking_vars.contains(&s.name));
 
     // Add the vars we already have case split on, since those were previously
     // blocking. This is important for our soundness check, since we skip
@@ -1252,11 +1252,11 @@ impl<'a> Goal<'a> {
       Sexp::String(s) if s == "?" => Sexp::String(format!("?block_{}", idx)),
       Sexp::List(v) => Sexp::List(
         v.iter()
-          .map(|x| {
-            idx = idx + 1;
-            Goal::gen_fresh_vars(x.clone(), idx + 1)
-          })
-          .collect(),
+            .map(|x| {
+              idx = idx + 1;
+              Goal::gen_fresh_vars(x.clone(), idx + 1)
+            })
+            .collect(),
       ),
       _ => sexp,
     }
@@ -1309,13 +1309,13 @@ impl<'a> Goal<'a> {
     let verbosity = format!("-q{}", CONFIG.log_level as usize);
     let dot = self.egraph.dot();
     dot
-      .run_dot([
-        "-Tpng",
-        verbosity.as_str(),
-        "-o",
-        &filename.to_string_lossy(),
-      ])
-      .unwrap();
+        .run_dot([
+          "-Tpng",
+          verbosity.as_str(),
+          "-o",
+          &filename.to_string_lossy(),
+        ])
+        .unwrap();
   }
 
   /// Given a polymorphic constructor and a concrete instantiation of a
@@ -1325,9 +1325,9 @@ impl<'a> Goal<'a> {
     let (args, ret) = con_ty.args_ret();
     let instantiations = find_instantiations(&ret.repr, &actual.repr, is_var).unwrap();
     let ret = args
-      .iter()
-      .map(|arg| Type::new(resolve_sexp(&arg.repr, &instantiations)))
-      .collect();
+        .iter()
+        .map(|arg| Type::new(resolve_sexp(&arg.repr, &instantiations)))
+        .collect();
     ret
   }
 
@@ -1346,29 +1346,29 @@ impl<'a> Goal<'a> {
     let mut new_instantiations = vec![];
     for inst in self.grounding_instantiations.iter() {
       let replaced_canonicals: Vec<(Symbol, ETerm, bool)> = self
-        .top_level_params
-        .iter()
-        .map(|x| {
-          // Which class was this param instantiated to?
-          let id = inst.get(x).unwrap();
-          // Parameters must be canonical (at least in a clean state)
-          let canonical = CanonicalFormAnalysis::extract_canonical(&self.egraph, *id).unwrap();
-          // Try replacing the case-split variable with its child
-          let (new_expr, replaced) = replace_var(&canonical, parent, child);
-          let eterm = if replaced {
-            ETerm::new_from_expr(&new_expr, &mut self.egraph)
-          } else {
-            ETerm::from_expr(new_expr, &self.egraph)
-          };
-          (*x, eterm, replaced)
-        })
-        .collect();
+          .top_level_params
+          .iter()
+          .map(|x| {
+            // Which class was this param instantiated to?
+            let id = inst.get(x).unwrap();
+            // Parameters must be canonical (at least in a clean state)
+            let canonical = CanonicalFormAnalysis::extract_canonical(&self.egraph, *id).unwrap();
+            // Try replacing the case-split variable with its child
+            let (new_expr, replaced) = replace_var(&canonical, parent, child);
+            let eterm = if replaced {
+              ETerm::new_from_expr(&new_expr, &mut self.egraph)
+            } else {
+              ETerm::from_expr(new_expr, &self.egraph)
+            };
+            (*x, eterm, replaced)
+          })
+          .collect();
       // If any of the canonical forms had a replacement, add a new instantiation:
       if replaced_canonicals.iter().any(|(_, _, b)| *b) {
         let new_instantiation = replaced_canonicals
-          .iter()
-          .map(|(x, e, _)| (x.to_string(), e.sexp.clone()))
-          .collect();
+            .iter()
+            .map(|(x, e, _)| (x.to_string(), e.sexp.clone()))
+            .collect();
         // For each new instantiation, instantiate all the sides and add them to the egraph
         for term in sides.iter() {
           let new_term = resolve_sexp(&term.sexp, &new_instantiation);
@@ -1376,9 +1376,9 @@ impl<'a> Goal<'a> {
         }
         // Add the new instantiation to the list of grounding instantiations
         let new_subst = replaced_canonicals
-          .iter()
-          .map(|(x, e, _)| (*x, e.id))
-          .collect();
+            .iter()
+            .map(|(x, e, _)| (*x, e.id))
+            .collect();
         new_instantiations.push(new_subst);
       }
     }
@@ -1396,6 +1396,12 @@ impl<'a> Goal<'a> {
     self.egraph.analysis.cvec_analysis.saturate();
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
     let resolved_rhs_id = self.egraph.find(self.eq.rhs.id);
+    if CONFIG.verbose {
+      println!("lhs: ");
+      print_expressions_in_eclass(&self.egraph, resolved_lhs_id);
+      println!("rhs: ");
+      print_expressions_in_eclass(&self.egraph, resolved_rhs_id);
+    }
     let class_ids: Vec<Id> = self.egraph.classes().map(|c| c.id).collect();
     for class_1_id in &class_ids {
       for class_2_id in &class_ids {
@@ -1476,7 +1482,7 @@ impl<'a> Goal<'a> {
 
           // Optimization: skip adding any lemmas that would be subsumed by a cyclic lemma
           if !(class_1_id == resolved_lhs_id && class_2_id == resolved_rhs_id
-            || class_1_id == resolved_rhs_id && class_2_id == resolved_lhs_id) {
+              || class_1_id == resolved_rhs_id && class_2_id == resolved_lhs_id) {
             lemmas.extend(new_rewrite_eqs);
           }
         }
@@ -1524,8 +1530,8 @@ impl<'a> Goal<'a> {
     for (i, node) in self.egraph[class].nodes.iter().enumerate() {
       for child in node.children() {
         parents_map.entry(*child)
-                   .and_modify(|e| {e.insert((class, i));})
-                   .or_insert(vec!((class, i)).into_iter().collect());
+            .and_modify(|e| {e.insert((class, i));})
+            .or_insert(vec!((class, i)).into_iter().collect());
         self.compute_parents(*child, parents_map, seen);
       }
     }
@@ -1579,8 +1585,8 @@ impl<'a> Goal<'a> {
       let expr = node.join_recexprs(|child_class| self.extract_generalized_expr_helper(gen_class, gen_fresh_sym, child_class, parent_to_child_index, cache));
       cache.insert(extract_class, Some(expr.clone()));
       expr
-    // If this class can't lead us to gen_class, we don't care
-    // about it and we can just extract whatever.
+      // If this class can't lead us to gen_class, we don't care
+      // about it and we can just extract whatever.
     }).unwrap_or_else(||{
       let extractor = Extractor::new(&self.egraph, AstSize);
       let expr = extractor.find_best(extract_class).1;
@@ -1657,9 +1663,9 @@ impl<'a> Goal<'a> {
     let eq = Equation::from_exprs(&lhs_expr, &rhs_expr);
     let prop = Prop::new(eq.clone(), params.clone());
     let mut new_goal = Goal::top(&format!("{}_gen", self.name),
-                             &prop,
-                             &None,
-                             self.global_search_state,
+                                 &prop,
+                                 &None,
+                                 self.global_search_state,
     );
     if new_goal.cvecs_valid() == Some(true) {
       // println!("generalizing {} === {}", lhs_expr, rhs_expr);
@@ -1714,24 +1720,24 @@ impl<'a> Goal<'a> {
   /// Returns a vector of lemmas necessary to discharge this goal.
   pub fn find_lemmas_that_discharge(&self, lemmas_state: &LemmasState, lemma_rws: &Vec<Rw>) -> BTreeSet<usize> {
     let rewrites = self.global_search_state.reductions.iter()
-                                                      .chain(self.lemmas.values())
-                                                      .chain(lemmas_state.lemma_rewrites.values())
-                                                      .chain(lemma_rws.iter());
+        .chain(self.lemmas.values())
+        .chain(lemmas_state.lemma_rewrites.values())
+        .chain(lemma_rws.iter());
     let lhs_id = self.eq.lhs.id;
     let rhs_id = self.eq.rhs.id;
     let mut runner = Runner::default()
-      .with_explanations_enabled()
-      // We need to clone the egraph so as to not disturb it.
-      .with_egraph(self.egraph.clone())
-      .with_hook(move |runner| {
-        // Stop iteration if we have proven lhs == rhs
-        if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
-          Err("Goal proven".to_string())
-        } else {
-          Ok(())
-        }
-      })
-      .run(rewrites);
+        .with_explanations_enabled()
+        // We need to clone the egraph so as to not disturb it.
+        .with_egraph(self.egraph.clone())
+        .with_hook(move |runner| {
+          // Stop iteration if we have proven lhs == rhs
+          if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
+            Err("Goal proven".to_string())
+          } else {
+            Ok(())
+          }
+        })
+        .run(rewrites);
     // None of these lemmas helped.
     if runner.egraph.find(lhs_id) != runner.egraph.find(rhs_id) {
       return BTreeSet::default();
@@ -1739,15 +1745,15 @@ impl<'a> Goal<'a> {
     let exp = runner.egraph.explain_equivalence(&self.eq.lhs.expr, &self.eq.rhs.expr);
     exp.explanation_trees.into_iter().flat_map(|expl_tree| {
       expl_tree.backward_rule
-               .or(expl_tree.forward_rule)
-               .and_then(|rule| {
-                 let rule_str = rule.to_string();
-                 if let Some(rest) = rule_str.strip_prefix("lemma_") {
-                   rest.chars().take_while(|c| c.is_digit(10)).join("").parse().ok()
-                 } else {
-                   None
-                 }
-               })
+          .or(expl_tree.forward_rule)
+          .and_then(|rule| {
+            let rule_str = rule.to_string();
+            if let Some(rest) = rule_str.strip_prefix("lemma_") {
+              rest.chars().take_while(|c| c.is_digit(10)).join("").parse().ok()
+            } else {
+              None
+            }
+          })
     }).collect()
   }
 }
@@ -1756,11 +1762,11 @@ impl<'a> Display for Goal<'a> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if !self.premises.is_empty() {
       let premises_string = self
-        .premises
-        .iter()
-        .map(|premise| format!("{}", premise))
-        .collect::<Vec<String>>()
-        .join(", ");
+          .premises
+          .iter()
+          .map(|premise| format!("{}", premise))
+          .collect::<Vec<String>>()
+          .join(", ");
       write!(f, "{} ==> ", premises_string)?;
     }
     write!(f, "{}", self.eq)
@@ -1855,19 +1861,19 @@ impl LemmasState {
     let is_proven = self.proven_lemmas.contains_leq(&prop);
     let is_invalid = self.invalid_lemmas.contains_geq(&prop);
     let is_too_big = CONFIG.max_lemma_size > 0
-      && sexp_size(&prop.eq.lhs) + sexp_size(&prop.eq.rhs) > CONFIG.max_lemma_size;
+        && sexp_size(&prop.eq.lhs) + sexp_size(&prop.eq.rhs) > CONFIG.max_lemma_size;
     !is_proven && !is_invalid && !is_too_big
   }
 
   pub fn find_or_make_fresh_lemma(&mut self, prop: Prop, proof_depth: usize) -> usize {
     self.all_lemmas.entry(prop)
-                   .or_insert_with(|| {
-                     // This is duplicated from fresh_lemma but necessary for
-                     // the borrow checker.
-                     let number = self.lemma_number;
-                     self.lemma_number += 1;
-                     (number, proof_depth)
-                   }).0
+        .or_insert_with(|| {
+          // This is duplicated from fresh_lemma but necessary for
+          // the borrow checker.
+          let number = self.lemma_number;
+          self.lemma_number += 1;
+          (number, proof_depth)
+        }).0
   }
 
   pub fn fresh_lemma(&mut self) -> usize {
@@ -1876,13 +1882,15 @@ impl LemmasState {
     number
   }
 
-  pub fn add_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I, proof_depth: usize) {
+  pub fn add_lemmas<I: IntoIterator<Item = Prop>>(&mut self, iter: I, proof_depth: usize) -> Vec<(usize, Prop)>{
+    let mut new_lemmas = Vec::new();
     for lemma in iter.into_iter() {
       if self.is_valid_new_prop(&lemma) {
-        self.find_or_make_fresh_lemma(lemma, proof_depth);
+        let backup = lemma.clone();
+        new_lemmas.push((self.find_or_make_fresh_lemma(lemma, proof_depth), backup));
       }
-
     }
+    new_lemmas
   }
 
 }
@@ -1898,14 +1906,14 @@ pub struct Timer {
 }
 
 impl Timer {
-    fn new(start_time: Instant) -> Self { Self { start_time } }
+  fn new(start_time: Instant) -> Self { Self { start_time } }
 
   /// Has timeout been reached?
   pub fn timeout(&self) -> bool {
     CONFIG
-      .timeout
-      .map_or(false,
-              |timeout| self.start_time.elapsed() > Duration::new(timeout, 0))
+        .timeout
+        .map_or(false,
+                |timeout| self.start_time.elapsed() > Duration::new(timeout, 0))
   }
 }
 
@@ -1987,77 +1995,69 @@ impl<'a> LemmaProofState<'a> {
     }));
   }
 
-  pub fn try_next_goal(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
-    if self.goals.is_empty() {
-      self.outcome = Some(Outcome::Valid);
-      return;
+  fn get_info_index(&mut self, info: &GoalInfo) -> usize {
+    for (index, goal) in self.goals.iter().enumerate() {
+      if goal.name == info.name {
+        return index;
+      }
     }
-    // TODO: This should be info! but I don't know how to suppress all the info output from egg
-    warn!("PROOF STATE: {}", pretty_state(&self));
-    // Pop the first subgoal
-    let mut goal = self.goals.pop_front().unwrap();
-    /*if self.case_split_depth >= 1 && goal.egraph.total_size() > 100 {
-      // give up proving right now
-      self.outcome = Some(Outcome::Unknown);
-      return;
-    }*/
-    // FIXME: need to run the analysis properly here
-    // if goal.cvecs_valid() == Some(false) {
-    //   // FIXME: add cvec counterexample to proof
-    //   if CONFIG.verbose {
-    //     println!("proved goal via cvec counterexample");
-    //   }
-    //   continue;
-    // }
-    // Saturate the goal
+    panic!();
+  }
+
+  // three outputs
+  // 1. if the goal is not proved, return it out
+  // 2. the indices of all related lemmas
+  // 3. the info of all related goals
+  pub fn try_goal(&mut self, info: &GoalInfo, timer: &Timer, lemmas_state: &mut LemmasState) -> Option<(Vec<(usize, Prop)>, Vec<GoalInfo>)> {
+    let pos = self.get_info_index(info);
+    let goal = self.goals.get_mut(pos).unwrap();
+    if CONFIG.verbose {
+      println!("{}", "current lemmas".cyan());
+      for rewrite in lemmas_state.lemma_rewrites.iter() {
+        println!("  rewrite: {}", rewrite.0);
+      }
+    }
     goal.saturate(&lemmas_state.lemma_rewrites);
     if CONFIG.save_graphs {
       goal.save_egraph();
     }
     if let Some(proof_leaf) = goal.find_proof() {
-      // println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
-      self.process_goal_explanation(proof_leaf, &goal.name);
-      return;
-
+      //println!("{}", proof_leaf.name());
+      //println!("Proven goal {} has e-graph size {}, lhs/rhs size {}", goal.name, goal.egraph.total_number_of_nodes(), goal.egraph[goal.eq.lhs.id].nodes.len());
+      self.process_goal_explanation(proof_leaf, &self.goals[pos].name.clone());
+      return None;
     }
     if CONFIG.verbose {
       explain_goal_failure(&goal);
     }
-    warn!("goal scrutinees before split: {:?}", goal.scrutinees);
     goal.split_ite();
-    warn!("goal scrutinees after split: {:?}", goal.scrutinees);
     if goal.scrutinees.is_empty() {
-      // This goal has no more variables to case-split on,
-      // so this goal, and hence the whole conjecture, is invalid
-      if CONFIG.verbose {
-        for remaining_goal in &self.goals {
-          println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
-        }
-      }
       self.outcome = Some(Outcome::Invalid);
-      return;
+      return None;
     }
     let (blocking_vars, blocking_exprs) =
-      if !CONFIG.blocking_vars_analysis {
-        warn!("Blocking var analysis is disabled");
-        (goal.scrutinees.iter().map(|s| s.name).collect(), BTreeSet::default())
-      } else {
-        let (blocking_vars, blocking_exprs) = goal.find_blocking(&timer);
-        if CONFIG.verbose {
-          println!("blocking vars: {:?}", blocking_vars);
-        }
-        (blocking_vars, blocking_exprs)
-      };
+        if !CONFIG.blocking_vars_analysis {
+          warn!("Blocking var analysis is disabled");
+          (goal.scrutinees.iter().map(|s| s.name).collect(), BTreeSet::default())
+        } else {
+          let (blocking_vars, blocking_exprs) = goal.find_blocking(&timer);
+          if CONFIG.verbose {
+            println!("blocking vars: {:?}", blocking_vars);
+          }
+          (blocking_vars, blocking_exprs)
+        };
 
     // println!("searching for generalized lemmas");
+    let mut related_lemmas = Vec::new();
     if CONFIG.generalization {
-      // TODO: now that we generalize in the cc lemma search, do we need this?
-      lemmas_state.add_lemmas(goal.find_generalized_goals(&blocking_exprs), self.proof_depth + 1);
+      let lemma_indices = lemmas_state.add_lemmas(goal.find_generalized_goals(&blocking_exprs), self.proof_depth + 1);
+      related_lemmas.extend(lemma_indices);
     }
     // println!("searching for cc lemmas");
     if CONFIG.cc_lemmas {
       let possible_lemmas = goal.search_for_cc_lemmas(&timer, lemmas_state);
-      lemmas_state.add_lemmas(possible_lemmas, self.proof_depth + 1);
+      let lemma_indices = lemmas_state.add_lemmas(possible_lemmas, self.proof_depth + 1);
+      related_lemmas.extend(lemma_indices);
     }
     // println!("done searching for cc lemmas");
     // This ends up being really slow so we'll just take the lemma duplication for now
@@ -2067,18 +2067,6 @@ impl<'a> LemmaProofState<'a> {
     goal.debug_search_for_patterns_in_egraph();
 
     if let Some(scrutinee) = goal.next_scrutinee(blocking_vars) {
-      // let d = depth.max(depth_at_front);
-      if scrutinee.depth > self.case_split_depth {
-        // println!("depth {} is greater than current depth, increasing.", depth);
-        self.case_split_depth = scrutinee.depth;
-      }
-      if self.case_split_depth >= CONFIG.max_split_depth {
-        // println!("Bailing because depth is too high");
-        // This goal could be further split, but we have reached the maximum depth,
-        // we cannot prove or disprove the conjecture
-        self.outcome = Some(Outcome::Unknown);
-        return;
-      }
       if CONFIG.verbose {
         println!(
           "{}: {}",
@@ -2091,7 +2079,9 @@ impl<'a> LemmaProofState<'a> {
       // This goal is now an internal node in the proof tree.
       self.lemma_proof.proof.insert(goal_name, proof_term);
       // Add the new goals to the back of the VecDeque.
+      let goal_infos = goals.iter().map(|new_goal| {GoalInfo::new(new_goal, info.lemma_id)}).collect();
       self.goals.extend(goals);
+      Some((related_lemmas, goal_infos))
     } else {
       if CONFIG.verbose {
         println!("{}", "Cannot case split: no blocking variables found".red());
@@ -2099,233 +2089,43 @@ impl<'a> LemmaProofState<'a> {
           println!("{} {}", "Remaining case".yellow(), remaining_goal.name);
         }
       }
-      // We cannot guarantee that the lemma is invalid if there are still
-      // non-blocking variables of a higher case split depth than we will
-      // consider.
-      //
       // FIXME: Why?
-      if goal.scrutinees.iter().any(|s| s.depth >= CONFIG.max_split_depth) {
-        self.outcome = Some(Outcome::Unknown);
-      } else {
-        // FIXME: This used to be Invalid but that seems wrong?
-        self.outcome = if self.goals.is_empty() {Some(Outcome::Invalid)} else {Some(Outcome::Unknown)};
-      }
+      self.outcome = Some(Outcome::Invalid);
+      None
     }
+  }
+
+  pub fn try_finish(&mut self, info: &GoalInfo, lemmas_state: &mut LemmasState) -> bool{
+    let pos = self.get_info_index(info);
+    let goal = self.goals.get_mut(pos).unwrap();
+    goal.saturate(&lemmas_state.lemma_rewrites);
+    if let Some(leaf) = goal.find_proof() {
+      let name = goal.name.clone();
+      self.process_goal_explanation(leaf, &name);
+      true
+    } else {false}
   }
 
   fn process_goal_explanation(&mut self, proof_leaf: ProofLeaf, goal_name: &str) {
     // This goal has been discharged, proceed to the next goal
-    if CONFIG.verbose {
+    /*if CONFIG.verbose {
       println!("{} {} by {}", "Proved case".bright_blue(), goal_name, proof_leaf.name());
       println!("{}", proof_leaf);
-    }
+    }*/
     self
-      .lemma_proof
-      .solved_goal_proofs
-      .insert(goal_name.to_string(), proof_leaf);
-  }
-
-  /// Keep attempting goals until we encounter a goal with a hitherto unseen
-  /// case split depth.
-  pub fn try_goals_until_next_depth(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
-    let curr_depth = self.case_split_depth;
-    while self.outcome.is_none() && self.case_split_depth == curr_depth && !timer.timeout() {
-      self.try_next_goal(timer, lemmas_state);
-    }
-  }
-
-  /// Attempt the next n goals
-  pub fn try_n_goals(&mut self, n: usize, timer: &Timer, lemmas_state: &mut LemmasState) {
-    for i in 0..n {
-      // println!("iteration {}", i);
-      if self.outcome.is_some() {
-        return;
-      }
-      self.try_next_goal(timer, lemmas_state);
-    }
-  }
-
-  /// Attempt goals until we reach an outcome.
-  pub fn try_until_an_outcome(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
-    loop {
-      if self.outcome.is_some() {
-        return;
-      }
-      self.try_next_goal(timer, lemmas_state);
-    }
-  }
-
-  pub fn try_one_step(&mut self, timer: &Timer, lemmas_state: &mut LemmasState) {
-    if self.outcome.is_some() {
-      return;
-    }
-    if !self.goals.is_empty() {
-      // arrange the goals to first consider the one with the smallest e-graph
-      let mut pos = 0usize;
-      let cost = get_lemma_graph_size(self);
-      for (index, goal) in self.goals.iter().enumerate() {
-        if get_goal_cost(goal) == cost {
-          pos = index;
-        }
-      }
-      if pos != 0 {self.goals.swap(0, pos);}
-    }
-    self.try_next_goal(timer, lemmas_state);
-    if self.goals.is_empty() && self.outcome.is_none() {
-      self.outcome = Some(Outcome::Valid);
-    }
-  }
-
-
-  /// Iterate over all remaining goals, running them to saturation to see if any
-  /// new lemmas solve them. If all of them are solved, the outcome is set to
-  /// Some(Outcome::Valid).
-  // TODO: Cleanup the code here.
-  //
-  // I've struggled with the borrow checker due to the definition of
-  // `process_goal_explanation`. Realistically this should only require one or
-  // two iterations and it shouldn't need all too many clones or additional data
-  // structures. But this probably isn't too critical because there shouldn't be
-  // too many goals in the list ever.
-  pub fn try_finish_goals(&mut self, lemmas_state: &LemmasState) {
-    let proofs: Vec<(usize, ProofLeaf)> = self.goals.iter_mut().enumerate().flat_map(|(i, goal)| {
-      goal.saturate(&lemmas_state.lemma_rewrites);
-      goal.find_proof().map(|proof_leaf| (i, proof_leaf))
-    }).collect();
-    let indices_to_remove: Vec<usize> = proofs.iter().map(|(i, _)| *i).collect();
-    for (i, proof_leaf) in proofs {
-      self.process_goal_explanation(proof_leaf, &self.goals[i].name.clone());
-    }
-    let mut i = 0;
-    self.goals.retain(|_| {
-      let keep = !indices_to_remove.contains(&i);
-      i += 1;
-      keep
-    });
-    if self.goals.is_empty() {
-      self.outcome = Some(Outcome::Valid);
-    }
-  }
-
-  pub fn try_finish_one_goal(&mut self, lemmas_state: &LemmasState) {
-    if self.goals.is_empty() {panic!()}
-    if self.goals.is_empty() {
-      self.outcome = Some(Outcome::Valid);
-      return;
-    }
-    let goal = self.goals.get_mut(0).unwrap();
-    goal.saturate(&lemmas_state.lemma_rewrites);
-    if let Some(leaf) = goal.find_proof() {
-      self.process_goal_explanation(leaf, &self.goals[0].name.clone());
-      self.goals.remove(0);
-      self.outcome = if self.goals.is_empty() {Some(Outcome::Valid)} else {None}
-    }
+        .lemma_proof
+        .solved_goal_proofs
+        .insert(goal_name.to_string(), proof_leaf);
   }
 }
 
 impl<'a> ProofState<'a> {
 
-  pub fn prove_lemma(&mut self, lemma_number: usize) -> Outcome {
-    let mut lemma_proof_state = self.lemma_proofs.remove(&lemma_number).unwrap();
-
-    while lemma_proof_state.outcome.is_none() {
-      lemma_proof_state.try_goals_until_next_depth(&self.timer, &mut self.lemmas_state);
-
-      if lemma_proof_state.outcome.is_some() {
-        let outcome = lemma_proof_state.outcome.as_ref().unwrap().clone();
-        if outcome == Outcome::Valid {
-          self.lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
-          lemma_proof_state.rw.as_ref().map(|rw| rw.add_to_rewrites(&mut self.lemmas_state.lemma_rewrites));
-          lemma_proof_state.rw_no_analysis.as_ref().map(|rw| rw.add_to_rewrites(&mut self.lemmas_state.lemma_rewrites_no_analysis));
-        }
-        if outcome == Outcome::Invalid {
-          self.lemmas_state.invalid_lemmas.insert(lemma_proof_state.prop.clone());
-        }
-        self.lemma_proofs.insert(lemma_number, lemma_proof_state);
-        return outcome.clone();
-      }
-
-      let next_goal = lemma_proof_state.goals.front_mut().unwrap();
-
-      self.try_prove_lemmas(&lemma_proof_state.theorized_lemmas, next_goal, lemma_proof_state.proof_depth);
-    }
-
-    let outcome = lemma_proof_state.outcome.as_ref().unwrap().clone();
-    self.lemma_proofs.insert(lemma_number, lemma_proof_state);
-    outcome
-
-  }
-
-  fn try_prove_lemmas(&mut self, lemmas: &ChainSet<Prop>, goal: &mut Goal, proof_depth: usize) {
-    let lemma_chains = lemmas.chains.clone();
-    for chain in lemma_chains.iter() {
-      for (i, lemma_prop) in chain.chain.iter().enumerate() {
-        if self.timer.timeout() {
-          return;
-        }
-        let lemma_number = self.lemmas_state.find_or_make_fresh_lemma(lemma_prop.clone(), proof_depth + 1);
-        let (lemma_outcome, lemma_rws) = {
-          let lemma_proof_state = self.lemma_proofs.entry(lemma_number).or_insert_with(|| {
-          LemmaProofState::new(lemma_number, lemma_prop.clone(), &None, self.global_search_state, proof_depth + 1)
-          });
-          (lemma_proof_state.outcome.clone(), lemma_proof_state.rw.as_ref().map(|rw| rw.rewrites()).unwrap_or(vec!()))
-        };
-        // If we already know the result, don't bother trying to prove it
-        if lemma_outcome == Some(Outcome::Invalid) || lemma_outcome == Some(Outcome::Valid) {
-          break;
-        }
-        // NOTE CK: This used to be necessary for speed, but with some patches to efficiency, we
-        // no longer need it. Perhaps if we allowed a greater proof depth we would need it.
-        // // HACK: Optimization to proving lemmas
-        // // We will always try to prove the most general lemma we've theorized so far, but thereafter
-        // // we require that the lemma be actually useful to us if we are going to try and prove it.
-        // //
-        // // This eliminates us spending time trying to prove a junk lemma like
-        // // (mult (S n) Z) = (plus (mult (S n) Z) Z)
-        // // when we already failed to prove the more general lemma
-        // // (mult n Z) = (plus (mult n Z) Z)
-        // //
-        // // Really we should have more sophisticated lemma filtering - the junk
-        // // lemma in this case is really no easier to prove than the first lemma
-        // // (since we will try to prove it eventually when we case split the first),
-        // // so we shouldn't consider it in the first place.
-        // //
-        // // Hence why I consider this optimization a hack, even though it
-        // // probably avoids some lemmas which are junky in a more complicated
-        // // way. I imagine it might rarely pass on interesting and useful lemmas.
-        // // This is because sometimes you need more than one lemma to prove a goal.
-        if i > 0 {
-          let goal_egraph_copy = goal.egraph.clone();
-          let rewrites = goal.global_search_state.reductions.iter().chain(goal.lemmas.values()).chain(lemma_rws.iter()).chain(self.lemmas_state.lemma_rewrites.values());
-          let runner = Runner::default()
-            // .with_explanations_enabled()
-            .with_egraph(goal_egraph_copy)
-            .run(rewrites);
-          if runner.egraph.find(goal.eq.lhs.id) != runner.egraph.find(goal.eq.rhs.id) {
-            break;
-          }
-        }
-        println!("Trying to prove lemma: forall {}. {} = {}", lemma_prop.params.iter().map(|(v, t)| format!("{}: {}", v, t)).join(" "), lemma_prop.eq.lhs, lemma_prop.eq.rhs);
-
-        self.prove_lemma(lemma_number);
-        let lemma_outcome = &self.lemma_proofs.get(&lemma_number).unwrap().outcome;
-        if lemma_outcome == &Some(Outcome::Valid) {
-          println!("proved {} = {}", lemma_prop.eq.lhs, lemma_prop.eq.rhs);
-          goal.saturate(&self.lemmas_state.lemma_rewrites);
-          if goal.find_proof().is_some() {
-            return;
-          }
-          break;
-        }
-      }
-    }
-
-  }
-
   fn handle_lemma_outcome(lemmas_state: &mut LemmasState, lemma_proof_state: &LemmaProofState) {
     //println!("handle outcomes for {:?}", lemma_proof_state.outcome);
     //println!("  {:?}", lemmas_state.lemma_rewrites_no_analysis);
     if lemma_proof_state.outcome == Some(Outcome::Valid) {
+      //println!("new lemma: {}", lemma_proof_state.prop);
       lemmas_state.proven_lemmas.insert(lemma_proof_state.prop.clone());
       lemma_proof_state.rw.as_ref().map(|rw| rw.add_to_rewrites(&mut lemmas_state.lemma_rewrites));
       lemma_proof_state.rw_no_analysis.as_ref().map(|rw| rw.add_to_rewrites(&mut lemmas_state.lemma_rewrites_no_analysis));
@@ -2337,6 +2137,7 @@ impl<'a> ProofState<'a> {
 
   fn prove_breadth_first(&mut self, top_level_lemma_number: usize, scheduler: &mut impl BreadthFirstScheduler) -> Outcome {
     let mut i = 0;
+    let mut visited_lemma = HashSet::new();
     loop {
       i += 1;
       // Stop if the top-level lemma is proved.
@@ -2357,15 +2158,17 @@ impl<'a> ProofState<'a> {
         }
         let lemma_number = scheduler.get_lemma_number(&lemma_index);
         let lemma_proof_state = self.lemma_proofs.get(&lemma_number).unwrap();
+        //println!("info {} {:?}", lemma_proof_state.prop, lemma_proof_state.outcome);
         // This lemma has been declared valid/invalid
         if lemma_proof_state.outcome.is_some() && lemma_proof_state.outcome != Some(Outcome::Unknown) {
           continue;
         }
         // Check that there isn't a valid/invalid lemma that subsumes/is
         // subsumed by this lemma.
-        if !self.lemmas_state.is_valid_new_prop(&lemma_proof_state.prop) {
+        if !self.lemmas_state.is_valid_new_prop(&lemma_proof_state.prop) && !visited_lemma.contains(&lemma_number){
           continue;
         }
+        visited_lemma.insert(lemma_number);
         scheduler.handle_lemma(lemma_index, self);
         // Clean up after the scheduler handles the lemma.
         let lemma_proof_state = self.lemma_proofs.get_mut(&lemma_number).unwrap();
@@ -2378,7 +2181,8 @@ impl<'a> ProofState<'a> {
           scheduler.on_proven_lemma(lemma_number, self);
         }
       }
-      for (lemma, (lemma_number, lemma_depth)) in self.lemmas_state.all_lemmas.iter() {
+      // Ruyi: move this part inside scheduler
+      /*for (lemma, (lemma_number, lemma_depth)) in self.lemmas_state.all_lemmas.iter() {
         if self.timer.timeout() {
           return Outcome::Timeout;
         }
@@ -2389,7 +2193,7 @@ impl<'a> ProofState<'a> {
           // println!("Adding new lemma to search {}", lemma);
           LemmaProofState::new(*lemma_number, lemma.clone(), &None, self.global_search_state, 0)
         });
-      }
+      }*/
     }
   }
 
@@ -2420,20 +2224,20 @@ impl<'a> ProofState<'a> {
       (lhs_id, rhs_id)
     }).collect();
     let runner = Runner::default()
-      .with_egraph(egraph)
-      .with_explanations_disabled();
+        .with_egraph(egraph)
+        .with_explanations_disabled();
     let lemma_rws: Vec<Rewrite<SymbolLang, ()>> = self.lemma_proofs.get(&lemma)
-                                     .unwrap()
-                                     .rw_no_analysis
-                                     .as_ref()
-                                     .map(|rw| rw.rewrites())
-                                     .into_iter()
-                                     .flatten()
-                                     .collect();
+        .unwrap()
+        .rw_no_analysis
+        .as_ref()
+        .map(|rw| rw.rewrites())
+        .into_iter()
+        .flatten()
+        .collect();
 
     let runner = runner.run(self.global_search_state.cvec_reductions.iter()
-               .chain(self.lemmas_state.lemma_rewrites_no_analysis.values())
-               .chain(lemma_rws.iter())
+        .chain(self.lemmas_state.lemma_rewrites_no_analysis.values())
+        .chain(lemma_rws.iter())
     );
     id_pairs.into_iter().enumerate().flat_map(|(lemma_graph_index, (lhs_id, rhs_id))| {
       if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
@@ -2459,18 +2263,18 @@ impl<'a> ProofState<'a> {
       }
     }).collect();
     let lemma_graph =
-    MatrixGraph::from_edges(lemmas.iter().enumerate().flat_map(|(lemma_graph_index, lemma_number)| {
-      // NOTE: Do we need the lemmas.clone() here?
-      self.bulk_compare_lemma(*lemma_number, lemmas.clone())
-          .into_iter()
-          // An edge from other_lemma to lemma means that lemma subsumes it.
-          //
-          // Why do we store these in reverse order? Because Tarjan's SCC
-          // algorithm (which we will use to make this into a DAG) returns the
-          // SCCs in reverse topological order.
-          .map(move |other_lemma_graph_index| (other_lemma_graph_index, lemma_graph_index))
-    }
-    ));
+        MatrixGraph::from_edges(lemmas.iter().enumerate().flat_map(|(lemma_graph_index, lemma_number)| {
+          // NOTE: Do we need the lemmas.clone() here?
+          self.bulk_compare_lemma(*lemma_number, lemmas.clone())
+              .into_iter()
+              // An edge from other_lemma to lemma means that lemma subsumes it.
+              //
+              // Why do we store these in reverse order? Because Tarjan's SCC
+              // algorithm (which we will use to make this into a DAG) returns the
+              // SCCs in reverse topological order.
+              .map(move |other_lemma_graph_index| (other_lemma_graph_index, lemma_graph_index))
+        }
+        ));
     (lemmas, lemma_graph)
   }
 
@@ -2679,97 +2483,117 @@ trait BreadthFirstScheduler {
 
 }
 
-#[derive(Default)]
-struct SemanticLemmaRanker {
-  lemma_graph: MatrixGraph<(), (), Directed, Option<()>, usize>,
-  sccs: Vec<Vec<NodeIndex<usize>>>,
-  lemma_graph_index: Vec<usize>,
-  prev_seen_graph_indices: Vec<NodeIndex<usize>>,
-  // This is a kind of hacky
-  new_outcomes: Vec<(usize, Option<Outcome>)>,
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+struct GoalInfo {
+  name: String,
+  lemma_id: usize,
+  full_exp: String,
+  size: usize
 }
 
-impl BreadthFirstScheduler for SemanticLemmaRanker {
-
-  /// (scc index, scc representative)
-  type LemmaIndex = (usize, NodeIndex<usize>);
-
-  fn next_lemma_batch<'a>(&mut self, top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
-    for (scc_index, new_outcome) in self.new_outcomes.iter().cloned() {
-      for lemma_index in self.sccs[scc_index].iter() {
-        let lemma_number = self.lemma_graph_index[lemma_index.index()];
-        proof_state.lemma_proofs.get_mut(&lemma_number).unwrap().outcome = new_outcome.clone();
-        if lemma_number == top_level_lemma_number && (new_outcome == Some(Outcome::Valid) || new_outcome == Some(Outcome::Invalid)){
-          return Err(new_outcome.unwrap());
-        }
-      }
-    }
-    // println!("Number of lemmas: {}", self.lemma_proofs.len());
-    let (lemma_graph_index, lemma_graph) = proof_state.build_lemma_graph();
-    self.lemma_graph_index = lemma_graph_index;
-    self.lemma_graph = lemma_graph;
-    // println!("Number of lemmas remaining: {}", lemma_graph_index.len());
-    if self.lemma_graph_index.len() == 0 {
-      // We can't prove any more so we can only return the top-level goal
-      return Err(proof_state.lemma_proofs.get(&top_level_lemma_number).unwrap().outcome.as_ref().unwrap().clone());
-    }
-    self.sccs = petgraph::algo::tarjan_scc(&self.lemma_graph);
-    // println!("Lemma graph index: {:?}", lemma_graph_index);
-    // println!("Number of sccs: {}", sccs.len());
-    // HACK: this is used because we can't double borrow lemma_proofs to
-    // propagate any change in outcome.
-    self.new_outcomes = Vec::default();
-    self.prev_seen_graph_indices = Vec::default();
-
-    Ok(self.sccs.iter().enumerate().map(|(scc_index, scc)| (scc_index, scc[0])).collect())
-
-  }
-
-  fn get_lemma_number(&self, lemma_index: &Self::LemmaIndex) -> usize {
-    let (_scc_index, scc_rep) = lemma_index;
-    self.lemma_graph_index[scc_rep.index()]
-  }
-
-  fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>) {
-    let (scc_index, scc_rep) = lemma_index;
-    if self.prev_seen_graph_indices.iter().any(|prev_seen_graph_index| self.lemma_graph.has_edge(scc_rep, *prev_seen_graph_index)) {
-      return;
-    }
-    let lemma_number = self.get_lemma_number(&lemma_index);
-    let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_number).unwrap();
-    if lemma_proof_state.outcome.is_some() {
-      // If we ran out of gas trying to prove this lemma, we can still try
-      // to finish it
-      if lemma_proof_state.outcome == Some(Outcome::Unknown) {
-        lemma_proof_state.try_finish_goals(&proof_state.lemmas_state);
-      }
-      return;
-    }
-    lemma_proof_state.try_n_goals(lemma_proof_state.priority, &proof_state.timer, &mut proof_state.lemmas_state);
-    self.new_outcomes.push((scc_index, lemma_proof_state.outcome.clone()));
-    if lemma_proof_state.outcome.is_none() {
-      // Don't bother trying anything more specific before we're done with
-      // this prop.
-      self.prev_seen_graph_indices.push(scc_rep);
+impl GoalInfo {
+  pub fn new(goal: &Goal, lemma_id: usize) -> Self{
+    GoalInfo {
+      name: goal.name.clone(),
+      lemma_id,
+      full_exp: goal.full_expr.to_string(),
+      size: sexp_size(&goal.full_expr.lhs) + sexp_size(&goal.full_expr.rhs)
     }
   }
+}
 
-  fn on_proven_lemma<'a>(&mut self, _lemma: usize, _proof_state: &mut ProofState<'a>) {
+impl PartialOrd for GoalInfo {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Reverse(self.size).partial_cmp(&Reverse(other.size))
+  }
+}
+
+impl Ord for GoalInfo {
+  fn cmp(&self, other: &Self) -> Ordering {
+    Reverse(self.size).cmp(&Reverse(other.size))
   }
 }
 
 #[derive(Default)]
 struct GoalLevelPriorityQueue {
-  queue: BinaryHeap<Reverse<(usize, usize)>>,
+  queue: BinaryHeap<GoalInfo>,
   lemmas_prev_seen: BTreeSet<usize>,
-  lemmas_awaiting_new_information: VecDeque<usize>
+  waiting_goals: Vec<GoalInfo>,
+  next_goal: Option<GoalInfo>,
+  case_split_father: HashMap<GoalInfo, GoalInfo>,
+  case_split_children: HashMap<GoalInfo, Vec<GoalInfo>>,
+  proved_set: HashSet<GoalInfo>
 }
 
-fn get_goal_cost(goal: &Goal) -> usize {
-  sexp_size(&goal.full_expr.lhs) + sexp_size(&goal.full_expr.rhs)
-}
-fn get_lemma_graph_size(lemma: &LemmaProofState) -> usize {
-  lemma.goals.iter().map(|goal| get_goal_cost(goal)).min().unwrap_or_default()
+impl GoalLevelPriorityQueue {
+  fn insert_waiting<'a>(&mut self, info: &GoalInfo, related_lemmas: Vec<(usize, Prop)>, related_goals: Vec<GoalInfo>, proof_state: &mut ProofState<'a>) {
+    for (index, prop) in related_lemmas {
+      if proof_state.timer.timeout() {return;}
+      if !self.lemmas_prev_seen.contains(&index) {
+        proof_state.lemma_proofs.entry(index).or_insert_with(|| {
+          // println!("Adding new lemma to search {}", lemma);
+          LemmaProofState::new(index, prop, &None, proof_state.global_search_state, 0)
+        });
+        self.lemmas_prev_seen.insert(index);
+        let state = proof_state.lemma_proofs.get(&index).unwrap();
+        let goal_info = GoalInfo::new(&state.goals[0], index);
+        self.queue.push(goal_info);
+      }
+    }
+    self.case_split_children.insert(info.clone(), related_goals.clone());
+    for child_info in related_goals {
+      self.case_split_father.insert(child_info.clone(), info.clone());
+      self.queue.push(child_info);
+    }
+  }
+
+  fn is_already_proved(&self, info: &GoalInfo) -> bool {
+    self.proved_set.contains(info)
+  }
+
+  fn is_all_children_proved(&self, info: &GoalInfo) -> bool {
+    self.case_split_children.get(info).unwrap().iter().all({
+      |children_info| self.is_already_proved(children_info)
+    })
+  }
+
+  fn update_proved_status(&mut self, info: &GoalInfo) {
+    if !self.proved_set.insert(info.clone()) {return;}
+    if let Some(father_info) = self.case_split_father.get(info).cloned() {
+      if self.is_all_children_proved(&father_info) {
+        self.update_proved_status(&father_info);
+      }
+    }
+    if let Some(children_info) = self.case_split_children.get(info).cloned() {
+      for child in children_info {
+        self.update_proved_status(&child);
+      }
+    }
+  }
+
+  fn try_finish_lemma(&mut self, info: &GoalInfo, lemma_state: &mut LemmaProofState) -> bool{
+    if lemma_state.outcome != None {return false;}
+    let is_lemma_proved = lemma_state.goals.iter().all(
+      |sub_goal| {
+        let info = GoalInfo::new(sub_goal, info.lemma_id);
+        self.is_already_proved(&info)
+      }
+    );
+    if is_lemma_proved {
+      println!("new lemma {}", lemma_state.prop);
+      lemma_state.outcome = Some(Outcome::Valid);
+      true
+    } else {
+      false
+    }
+  }
+
+  fn ignored_by_queue(&self, info: &GoalInfo, lemma_state: &LemmaProofState) -> bool{
+    /*if lemma_state.outcome.is_some() {
+      println!("ignore {} {} {:?}", info.full_exp, lemma_state.prop, lemma_state.outcome);
+    }*/
+    lemma_state.outcome.is_some()
+  }
 }
 
 impl BreadthFirstScheduler for GoalLevelPriorityQueue {
@@ -2778,174 +2602,36 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
   type LemmaIndex = usize;
 
   fn next_lemma_batch<'a>(&mut self, _top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
-    // (Not sure) this heuristics may stuck the search into infinite loop, temporarily ignore it.
-    let all_lemma_rws: Vec<Rw> = proof_state.lemma_proofs.iter().flat_map(|(lemma_number, lemma_proof_state)| {
-      // Don't add the rw for the top level lemma because we are going to assume these lemmas are true.
-      if lemma_number == &_top_level_lemma_number || lemma_proof_state.outcome.is_some() {
-        vec!()
-      } else {
-        lemma_proof_state.rw.iter().flat_map(|rw| rw.rewrites()).collect()
-      }
-    }).collect();
-    if all_lemma_rws.len() > 0 {
-      let top_level_lemma = proof_state.lemma_proofs.get(&_top_level_lemma_number).unwrap();
-      let lemmas_that_discharge_top_level = top_level_lemma.goals.front().unwrap().find_lemmas_that_discharge(&proof_state.lemmas_state, &all_lemma_rws);
-      //println!("Lemmas that will discharge a goal:");
-      lemmas_that_discharge_top_level.iter().for_each(|lemma_n| {
-        // Ignore the top-level lemma because it may show up since the IH
-        // rewrite has the name lemma_n where n is the top-level lemma.
-        if lemma_n == &_top_level_lemma_number {
-          return;
+    if CONFIG.verbose {
+      println!("\n\n================= current queue ==============");
+      let mut q = self.queue.clone();
+      while !q.is_empty() {
+        let info = q.pop().unwrap();
+        if !self.is_already_proved(&info) {
+          println!("[{}] {}", info.size, info.full_exp);
         }
-        let lemma_proof_state = proof_state.lemma_proofs.get(lemma_n).unwrap();
-        //println!("{}", lemma_proof_state.prop);
-      });
+      }
+      println!("\n\n");
     }
-
-    /*println!("\n\n================= current queue ==============");
-    let mut q = self.queue.clone();
-    while !q.is_empty() {
-      let (weight, lemma_number) = q.pop().unwrap().0;
-      let lemma = proof_state.lemma_proofs.get(&lemma_number).unwrap();
-      println!("[{}] {}", weight, lemma.goals[0].full_expr);
-    }
-    println!("\n\n");*/
-
-
     // Update the queue with the lemmas we haven't yet considered.
-    for (prop, (lemma_number, _)) in proof_state.lemmas_state.all_lemmas.iter() {
+    /*for (prop, (lemma_number, _)) in proof_state.lemmas_state.all_lemmas.iter() {
       if !self.lemmas_prev_seen.contains(lemma_number) {
         // println!("insert lemma {} {}", prop, lemma_number);
         let graph_size = get_lemma_graph_size(proof_state.lemma_proofs.get(lemma_number).unwrap());
         self.queue.push(Reverse((graph_size, *lemma_number)));
         self.lemmas_prev_seen.insert(*lemma_number);
       }
-    }
-    // No more lemmas to try and prove
-    if self.queue.is_empty() {
-      println!("report unknown in this way");
-      return Err(Outcome::Unknown);
-    }
-
-    // Take the lemma with smallest size that we haven't tried to prove yet.
-    Ok(vec!(self.queue.pop().unwrap().0.1))
-
-  }
-
-  fn get_lemma_number(&self, lemma_index: &Self::LemmaIndex) -> usize {
-    *lemma_index
-  }
-
-  fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>) {
-    let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_index).unwrap();
-    // println!("try {:?} {} {}", lemma_proof_state.outcome, lemma_proof_state.prop, lemma_proof_state.goals.len());
-    lemma_proof_state.try_one_step(&proof_state.timer, &mut proof_state.lemmas_state);
-
-    // Two possibilities when the status of the lemma is not determined:
-    // 1. The current goal is proved, then the lemma should be pushed-back to the queue
-    // 2. Otherwise, the current lemma should be marked as awaiting_new_information
-    //println!("one step info for {} {} {:?}", lemma_proof_state.prop, lemma_proof_state.goals.len(), lemma_proof_state.outcome);
-    if lemma_proof_state.outcome.is_none() {
-      let graph_size = get_lemma_graph_size(lemma_proof_state);
-      self.queue.push(Reverse((graph_size, lemma_index)));
-    } else if lemma_proof_state.outcome == Some(Outcome::Unknown) {
-      println!("insert to awaiting {} {}", lemma_proof_state.prop, lemma_proof_state.goals.len());
-      self.lemmas_awaiting_new_information.push_front(lemma_index);
-    }
-  }
-
-  fn on_proven_lemma<'a>(&mut self, _lemma: usize, proof_state: &mut ProofState<'a>) {
-    // Try and finish off any lemmas we couldn't prove yet
-    self.lemmas_awaiting_new_information.retain(|lemma| {
-      let lemma_proof_state = proof_state.lemma_proofs.get_mut(lemma).unwrap();
-      lemma_proof_state.try_finish_one_goal(&proof_state.lemmas_state);
-      ProofState::handle_lemma_outcome(&mut proof_state.lemmas_state, lemma_proof_state);
-      if lemma_proof_state.outcome.is_none() {
-        self.queue.push(Reverse((get_lemma_graph_size(lemma_proof_state), *lemma)))
-      }
-      lemma_proof_state.outcome == Some(Outcome::Unknown)
-    })
-  }
-}
-
-#[derive(Default)]
-struct LemmaSizePriorityQueue {
-  /// A priority queue that orders lemma numbers by their corresponding
-  /// proposition's size
-  ///
-  /// (size, number)
-  lemma_queue: BinaryHeap<Reverse<(usize, usize)>>,
-  /// The set of lemmas that we've already considered (i.e. put in the queue
-  /// before)
-  lemmas_prev_seen: BTreeSet<usize>,
-  /// The lemmas that we have tried to prove so far, but failed to obtain
-  /// a positive result for.
-  ///
-  /// Every time we prove a new lemma, we will see if it can be used to
-  /// shrink this list.
-  ///
-  /// This list is sorted newest to oldest so that we always have as
-  /// many lemmas proven as possible before we try the most important
-  /// lemma (the top-level lemma, which is first).
-  lemmas_awaiting_new_information: VecDeque<usize>,
-}
-
-impl BreadthFirstScheduler for LemmaSizePriorityQueue {
-
-  /// This is just the lemma number
-  type LemmaIndex = usize;
-
-  fn next_lemma_batch<'a>(&mut self, _top_level_lemma_number: usize, proof_state: &mut ProofState<'a>) -> Result<Vec<Self::LemmaIndex>, Outcome> {
-    // NOTE: This is all testing code.
-    /*println!("try generate next batch {}", self.lemma_queue.len());
-    for lemma_index in self.lemma_queue.iter() {
-      for (lemma_num, lemma_state) in proof_state.lemma_proofs.iter() {
-        if *lemma_num == lemma_index.0.1 {
-          println!(" {}", lemma_state.prop);
-        }
-      }
     }*/
-    let all_lemma_rws: Vec<Rw> = proof_state.lemma_proofs.iter().flat_map(|(lemma_number, lemma_proof_state)| {
-      // Don't add the rw for the top level lemma because we are going to assume these lemmas are true.
-      if lemma_number == &_top_level_lemma_number || lemma_proof_state.outcome.is_some() {
-        vec!()
-      } else {
-        lemma_proof_state.rw.iter().flat_map(|rw| rw.rewrites()).collect()
-      }
-    }).collect();
-    if all_lemma_rws.len() > 0 {
-      let top_level_lemma = proof_state.lemma_proofs.get(&_top_level_lemma_number).unwrap();
-      let lemmas_that_discharge_top_level = top_level_lemma.goals.front().unwrap().find_lemmas_that_discharge(&proof_state.lemmas_state, &all_lemma_rws);
-      println!("Lemmas that will discharge a goal:");
-      lemmas_that_discharge_top_level.iter().for_each(|lemma_n| {
-        // Ignore the top-level lemma because it may show up since the IH
-        // rewrite has the name lemma_n where n is the top-level lemma.
-        if lemma_n == &_top_level_lemma_number {
-          return;
-        }
-        let lemma_proof_state = proof_state.lemma_proofs.get(lemma_n).unwrap();
-        println!("{}", lemma_proof_state.prop);
-      });
-    }
-
-
-    // Update the queue with the lemmas we haven't yet considered.
-    for (prop, (lemma_number, _)) in proof_state.lemmas_state.all_lemmas.iter() {
-      if !self.lemmas_prev_seen.contains(lemma_number) {
-        println!("insert lemma {} {}", prop, lemma_number);
-        self.lemma_queue.push(Reverse((prop.size(), *lemma_number)));
-        self.lemmas_prev_seen.insert(*lemma_number);
-      }
-    }
     // No more lemmas to try and prove
-    if self.lemma_queue.is_empty() {
-      println!("report unknown in this way");
-      return Err(Outcome::Unknown);
+    while !self.queue.is_empty() {
+      let first_info = self.queue.pop().unwrap();
+      if self.ignored_by_queue(&first_info, proof_state.lemma_proofs.get(&first_info.lemma_id).unwrap()) {continue;}
+      let index = first_info.lemma_id;
+      self.next_goal = Some(first_info);
+      return Ok(vec!(index));
     }
-
-    // Take the lemma with smallest size that we haven't tried to prove yet.
-    Ok(vec!(self.lemma_queue.pop().unwrap().0.1))
-
+    println!("report unknown because of an empty queue");
+    return Err(Outcome::Unknown);
   }
 
   fn get_lemma_number(&self, lemma_index: &Self::LemmaIndex) -> usize {
@@ -2953,27 +2639,59 @@ impl BreadthFirstScheduler for LemmaSizePriorityQueue {
   }
 
   fn handle_lemma<'a>(&mut self, lemma_index: Self::LemmaIndex, proof_state: &mut ProofState<'a>) {
+    assert!(self.next_goal.is_some());
+    let info = self.next_goal.clone().unwrap();
+    assert_eq!(info.lemma_id, lemma_index);
     let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_index).unwrap();
-    //println!("Trying to prove {}", lemma_proof_state.prop);
-    //println!("  time limit: {:?}", CONFIG.timeout);
-    lemma_proof_state.try_until_an_outcome(&proof_state.timer, &mut proof_state.lemmas_state);
-    //println!("Get outcome!");
-    // If we don't get a conclusive result (Valid/Invalid), set it aside until
-    // we can get a useful lemma.
-    if lemma_proof_state.outcome.is_none() || lemma_proof_state.outcome == Some(Outcome::Unknown) {
-      self.lemmas_awaiting_new_information.push_front(lemma_index);
+
+    let step_res = lemma_proof_state.try_goal(&info, &proof_state.timer, &mut proof_state.lemmas_state);
+
+    if CONFIG.verbose {
+      println!("try goal {} {}", info.full_exp, step_res.is_none());
     }
+    if let Some((related_lemmas, related_goals)) = step_res {
+      if CONFIG.verbose {
+        println!("  lemmas: {}, goals: {}", related_lemmas.len(), related_goals.len());
+        for lemma in related_lemmas.iter() {
+          println!("  {}", lemma.1);
+        }
+      }
+      self.insert_waiting(&info, related_lemmas, related_goals, proof_state);
+    } else {
+      if lemma_proof_state.outcome.is_none() {
+       // println!("proved {}", info.full_exp);
+        self.update_proved_status(&info);
+      }
+      self.try_finish_lemma(&info, proof_state.lemma_proofs.get_mut(&info.lemma_id).unwrap());
+    }
+    let lemma_state = proof_state.lemma_proofs.get(&info.lemma_id).unwrap();
+    //println!("  lemma res: {} {:?}", lemma_state.prop, lemma_state.outcome);
   }
 
   fn on_proven_lemma<'a>(&mut self, _lemma: usize, proof_state: &mut ProofState<'a>) {
-    // Try and finish off any lemmas we couldn't prove yet
-    self.lemmas_awaiting_new_information.retain(|lemma| {
-      let lemma_proof_state = proof_state.lemma_proofs.get_mut(lemma).unwrap();
-      lemma_proof_state.try_finish_goals(&proof_state.lemmas_state);
-      ProofState::handle_lemma_outcome(&mut proof_state.lemmas_state, lemma_proof_state);
-      // Keep only lemmas that have results
-      lemma_proof_state.outcome.is_none() || lemma_proof_state.outcome == Some(Outcome::Unknown)
-    })
+    let mut removed_index = Vec::new();
+
+    for (index, info) in self.waiting_goals.iter().enumerate() {
+      let state = proof_state.lemma_proofs.get_mut(&info.lemma_id).unwrap();
+
+      if self.is_already_proved(info) {
+        removed_index.push((false, index)); continue;
+      }
+      if state.try_finish(info, &mut proof_state.lemmas_state) {
+        removed_index.push((true, index));
+      }
+    }
+
+    for (is_new, index) in removed_index.iter().rev() {
+      let info = self.waiting_goals.remove(*index);
+      if *is_new {
+        self.update_proved_status(&info);
+        let lemma_state = proof_state.lemma_proofs.get_mut(&info.lemma_id).unwrap();
+        if self.try_finish_lemma(&info, lemma_state) {
+          ProofState::handle_lemma_outcome(&mut proof_state.lemmas_state, lemma_state);
+        }
+      }
+    }
   }
 }
 
@@ -2982,11 +2700,11 @@ pub fn pretty_state(state: &LemmaProofState) -> String {
   format!(
     "[{}]",
     state
-      .goals
-      .iter()
-      .map(|g| g.name.clone())
-      .collect::<Vec<String>>()
-      .join(", ")
+        .goals
+        .iter()
+        .map(|g| g.name.clone())
+        .collect::<Vec<String>>()
+        .join(", ")
   )
 }
 
@@ -3031,7 +2749,7 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
     }
     return Some(ProofLeaf::Refl(
       egraph
-        .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
+          .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
     ));
   }
 
@@ -3097,11 +2815,17 @@ pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_sea
 
   let top_goal_lemma_number = proof_state.lemmas_state.find_or_make_fresh_lemma(goal_prop.clone(), 0);
   let top_goal_lemma_proof = LemmaProofState::new(top_goal_lemma_number, goal_prop, &goal_premise, global_search_state, 0);
+
+  let mut scheduler = GoalLevelPriorityQueue::default();
+  let start_info = GoalInfo::new(&top_goal_lemma_proof.goals[0], top_goal_lemma_number);
+  scheduler.queue.push(start_info);
+  scheduler.lemmas_prev_seen.insert(top_goal_lemma_number);
+
   proof_state.lemma_proofs.insert(top_goal_lemma_number, top_goal_lemma_proof);
 
   // let outcome = proof_state.prove_lemma(top_goal_lemma_number);
   //let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut LemmaSizePriorityQueue::default());
-  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut GoalLevelPriorityQueue::default());
+  let outcome = proof_state.prove_breadth_first(top_goal_lemma_number, &mut scheduler);
 
   (outcome, proof_state)
 
