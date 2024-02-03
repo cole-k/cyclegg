@@ -12,6 +12,7 @@ pub mod explain;
 pub mod goal;
 pub mod parser;
 pub mod utils;
+mod goal_graph;
 
 use config::{ARGS, CONFIG};
 use explain::explain_top;

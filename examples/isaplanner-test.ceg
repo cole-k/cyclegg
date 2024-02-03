@@ -214,8 +214,8 @@
 (let headE ((MkExpr (Cst ?x) ?n)     ) (MkExpr (Cst ?x) ?n))
 (let headE ((MkExpr (App ?e1 ?e2) ?n)) (headE ?e1)         )
 
-(=== goal_74 (i xs) (Nat (List a))
-  (rev (drop i xs))
-  (take (sub (len xs) i) (rev xs))
+(=== goal_31 (a b c) (Nat Nat Nat)
+  (min (min a b) c)
+  (min a (min b c))
 )
 )
