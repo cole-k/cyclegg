@@ -4,6 +4,7 @@ use colored::Colorize;
 use egg::*;
 use itertools::Itertools;
 use log::warn;
+use crate::analysis::{CvecAnalysis, CycleggAnalysis, print_cvec};
 
 fn cartesian_product_helper<T: Clone>(
   vector: &[Vec<T>],
@@ -103,7 +104,7 @@ impl ExpressionStorage {
   }
 }
 
-pub fn print_all_expressions_in_egraph<N: egg::Analysis<SymbolLang>> (egraph: &EGraph<SymbolLang, N>, size_limit: usize) {
+pub fn print_all_expressions_in_egraph (egraph: &EGraph<SymbolLang, CycleggAnalysis>, size_limit: usize) {
   let mut node_info: HashMap<Id, ExpressionStorage> = egraph.classes().map(
     |class| {(class.id, ExpressionStorage::new(size_limit))}
   ).collect();
@@ -132,6 +133,7 @@ pub fn print_all_expressions_in_egraph<N: egg::Analysis<SymbolLang>> (egraph: &E
   println!("#nodes: {}, #classes: {}", egraph.total_number_of_nodes(), egraph.number_of_classes());
   for class in egraph.classes() {
     println!("{} {}", "EClass ".cyan(), class.id.to_string().cyan());
+    // print_cvec(&egraph.analysis.cvec_analysis, &class.data.cvec_data);
     for enode in class.nodes.iter() {
       println!("  node: {:?}", enode);
     }

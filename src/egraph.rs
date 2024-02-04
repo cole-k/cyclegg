@@ -1,5 +1,8 @@
 use egg::*;
 use std::{collections::{BTreeMap, BTreeSet}, iter::zip};
+use std::collections::HashMap;
+use crate::config::CONFIG;
+use crate::utils::cartesian_product;
 
 /// Denotation of an egraph (or its subgraph)
 /// is a map from eclass ids to sets of expressions
@@ -66,6 +69,62 @@ fn collect_expressions<L: Language, A: Analysis<L>>(
     }
     memo.insert(eclass, denotations);
   }
+}
+
+pub fn collect_expressions_with_loops_aux<L: Language, A: Analysis<L>>(egraph: &EGraph<L, A>, id: Id, loop_num: usize, depth: usize, trace: &mut HashMap<Id, usize>) -> Vec<RecExpr<L>> {
+    let mut res = Vec::new();
+    if depth > CONFIG.extraction_max_depth {return res;}
+    let class = &egraph[id];
+    if loop_num > CONFIG.extraction_loop_limit {
+        if CONFIG.extraction_allow_end_loop {
+            for node in class.nodes.iter() {
+                if node.children().is_empty() {
+                    let expr = RecExpr::from(vec![node.clone()]);
+                    res.push(expr);
+                }
+            }
+        }
+        return res;
+    }
+    trace.entry(id).and_modify(|w| {*w = *w + 1usize;});
+    for node in class.nodes.iter() {
+        let mut sub_exprs = Vec::new();
+        for child in node.children() {
+            let next_id = egraph.find(*child);
+            let next_loop_num = loop_num + if trace[&next_id] > 0 {1usize} else {0usize};
+            sub_exprs.push(collect_expressions_with_loops_aux(egraph, next_id, next_loop_num, depth + 1, trace));
+        }
+        let mut local_node = node.clone();
+        for (index, child) in local_node.children_mut().iter_mut().enumerate() {
+            *child = Id::from(index);
+        }
+        if sub_exprs.iter().any(|exprs| exprs.is_empty()) {continue;}
+        for sub_expr in cartesian_product(&sub_exprs) {
+            let expr = local_node.join_recexprs(|id| {sub_expr[usize::from(id)].clone()});
+            res.push(expr);
+            if res.len() > CONFIG.extraction_max_num {
+                return res;
+            }
+        }
+    }
+    res
+}
+
+
+pub fn collect_expressions_with_loops<L: Language, A: Analysis<L>>(egraph: &EGraph<L, A>, id: Id) -> Vec<RecExpr<L>>{
+    let mut trace: HashMap<Id, _> = egraph.classes().map(|class| (class.id, 0usize)).collect();
+    collect_expressions_with_loops_aux(egraph, id, 0, 0, &mut trace)
+}
+
+pub fn get_all_expressions_with_loop<L: Language, A: Analysis<L>>(
+    egraph: &EGraph<L, A>,
+    roots: Vec<Id>,
+) -> Denotation<L> {
+    let mut memo = BTreeMap::new();
+    for root in roots {
+        memo.insert(root, collect_expressions_with_loops(egraph, egraph.find(root)));
+    }
+    memo
 }
 
 /// Remove node from egraph

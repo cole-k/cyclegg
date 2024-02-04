@@ -62,7 +62,7 @@ pub struct Args {
   pub no_blocking_analysis: bool,
   /// Number of terms to put into the cvecs used to propose equalities between
   /// e-classes.
-  #[clap(long = "cvec-size", default_value = "15")]
+  #[clap(long = "cvec-size", default_value = "30")]
   pub cvec_size: usize,
   /// Maximum depth for the random terms we generate for the cvecs.
   #[clap(long = "cvec-term-max-depth", default_value = "4")]
@@ -111,6 +111,9 @@ pub struct Args {
   /// flag to disable skipping this check.
   #[clap(long = "no-better-termination")]
   pub no_better_termination: bool,
+
+  #[clap(long = "only-generalize")]
+  pub only_generalize: bool
 }
 
 impl Args {
@@ -159,6 +162,11 @@ pub struct Config {
   pub cc_lemmas: bool,
   pub cc_lemmas_generalization: bool,
   pub better_termination: bool,
+  pub only_generalize: bool,
+  pub extraction_loop_limit: usize,
+  pub extraction_allow_end_loop: bool,
+  pub extraction_max_depth: usize,
+  pub extraction_max_num: usize
 }
 
 impl Config {
@@ -213,6 +221,11 @@ impl Config {
       cc_lemmas: !args.no_cc_lemmas,
       cc_lemmas_generalization: !args.no_cc_lemmas_generalization,
       better_termination: !args.no_better_termination,
+      only_generalize: args.only_generalize,
+      extraction_loop_limit: 0,
+      extraction_allow_end_loop: true,
+      extraction_max_depth: 10,
+      extraction_max_num: 1000
     }
   }
 
