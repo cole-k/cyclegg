@@ -1,225 +1,64 @@
-/Users/pro/.cargo/bin/cargo run --color=always --package cyclegg --bin cyclegg --release -- examples/isaplanner.ceg -d 100000 -t 60 -r
-warning: cyclegg v0.1.0 (/Users/pro/Desktop/work/2024S/cyclegg) ignoring invalid dependency `clippy` which is missing a lib target
-warning: unused import: `NodeIndex`
- --> src/goal.rs:7:43
-  |
-7 | use petgraph::matrix_graph::{MatrixGraph, NodeIndex};
-  |                                           ^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` on by default
-
-warning: unused imports: `Ordering`, `Reverse`
- --> src/goal.rs:8:16
-  |
-8 | use std::cmp::{Ordering, Reverse};
-  |                ^^^^^^^^  ^^^^^^^
-
-warning: unused import: `BinaryHeap`
- --> src/goal.rs:9:43
-  |
-9 | use std::collections::{BTreeSet, HashMap, BinaryHeap, HashSet};
-  |                                           ^^^^^^^^^^
-
-warning: unused import: `print_cvec`
-  --> src/goal.rs:17:91
-   |
-17 | use crate::analysis::{CycleggAnalysis, CanonicalFormAnalysis, CanonicalForm, cvecs_equal, print_cvec, CvecAnalysis, Cvec};
-   |                                                                                           ^^^^^^^^^^
-
-warning: unused imports: `CvecAnalysis`, `print_cvec`
- --> src/utils.rs:7:23
-  |
-7 | use crate::analysis::{CvecAnalysis, CycleggAnalysis, print_cvec};
-  |                       ^^^^^^^^^^^^                   ^^^^^^^^^^
-
-warning: unused import: `itertools::Unique`
- --> src/goal_graph.rs:3:5
-  |
-3 | use itertools::Unique;
-  |     ^^^^^^^^^^^^^^^^^
-
-warning: unused variable: `f`
-   --> src/ast.rs:398:30
-    |
-398 | pub fn get_vars<F>(e: &Expr, f: F) -> BTreeSet<Symbol>
-    |                              ^ help: if this is intentional, prefix it with an underscore: `_f`
-    |
-    = note: `#[warn(unused_variables)]` on by default
-
-warning: unused variable: `args`
-   --> src/explain.rs:188:7
-    |
-188 |   let args: Vec<(Symbol, Type)> = params
-    |       ^^^^ help: if this is intentional, prefix it with an underscore: `_args`
-
-warning: unused variable: `lemma_number`
-   --> src/explain.rs:218:8
-    |
-218 |   for (lemma_number, lemma_proof) in state.lemma_proofs.iter() {
-    |        ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_lemma_number`
-
-warning: unused variable: `eclass`
-   --> src/goal.rs:157:32
-    |
-157 |   fn check(&self, egraph: &Eg, eclass: Id, subst: &Subst) -> bool {
-    |                                ^^^^^^ help: if this is intentional, prefix it with an underscore: `_eclass`
-
-warning: unused variable: `subst`
-   --> src/goal.rs:214:77
-    |
-214 |   fn check(&self, egraph: &EGraph<SymbolLang, CycleggAnalysis>, eclass: Id, subst: &Subst) -> bool {
-    |                                                                             ^^^^^ help: if this is intentional, prefix it with an underscore: `_subst`
-
-warning: unused variable: `pre_expr`
-    --> src/goal.rs:1246:15
-     |
-1246 |       let mut pre_expr = self.full_expr.clone();
-     |               ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pre_expr`
-
-warning: variable does not need to be mutable
-    --> src/goal.rs:1246:11
-     |
-1246 |       let mut pre_expr = self.full_expr.clone();
-     |           ----^^^^^^^^
-     |           |
-     |           help: remove this `mut`
-     |
-     = note: `#[warn(unused_mut)]` on by default
-
-warning: variable `i` is assigned to, but never used
-    --> src/goal.rs:2354:13
-     |
-2354 |     let mut i = 0;
-     |             ^
-     |
-     = note: consider using `_i` instead
-
-warning: unused variable: `goals`
-    --> src/goal.rs:2800:11
-     |
-2800 |       let goals = self.goal_graph.get_lemma(0).goals.clone();
-     |           ^^^^^ help: if this is intentional, prefix it with an underscore: `_goals`
-
-warning: associated function `make_rewrite` is never used
-    --> src/goal.rs:1113:6
-     |
-579  | impl<'a> Goal<'a> {
-     | ----------------- associated function in this implementation
-...
-1113 |   fn make_rewrite(lhs: Pat, rhs: Pat, cond: Soundness, lemma_name: String) -> (String, Rw) {
-     |      ^^^^^^^^^^^^
-     |
-     = note: `#[warn(dead_code)]` on by default
-
-warning: method `name` is never used
-    --> src/goal.rs:2030:6
-     |
-2029 | impl ProofLeaf {
-     | -------------- method in this implementation
-2030 |   fn name(&self) -> String {
-     |      ^^^^
-
-warning: methods `bulk_compare_lemma` and `build_lemma_graph` are never used
-    --> src/goal.rs:2434:6
-     |
-2337 | impl<'a> ProofState<'a> {
-     | ----------------------- methods in this implementation
-...
-2434 |   fn bulk_compare_lemma<I: IntoIterator<Item = usize>>(&self, lemma: usize, lemmas: I) -> Vec<usize> {
-     |      ^^^^^^^^^^^^^^^^^^
-...
-2474 |   fn build_lemma_graph(&self) -> (Vec<usize>, MatrixGraph<(), (), Directed, Option<()>, usize>) {
-     |      ^^^^^^^^^^^^^^^^^
-
-warning: method `re_extract_lemmas` is never used
-    --> src/goal.rs:2756:6
-     |
-2712 | impl GoalLevelPriorityQueue {
-     | --------------------------- method in this implementation
-...
-2756 |   fn re_extract_lemmas<'a>(&mut self, proof_state: &mut ProofState<'a>) {
-     |      ^^^^^^^^^^^^^^^^^
-
-warning: field `info` is never read
-  --> src/goal_graph.rs:45:5
-   |
-44 | pub struct GoalNode {
-   |            -------- field in this struct
-45 |     info: GoalInfo,
-   |     ^^^^
-
-warning: field `lemma_id` is never read
-  --> src/goal_graph.rs:66:5
-   |
-64 | pub struct LemmaNode {
-   |            --------- field in this struct
-65 |     pub goals: Vec<GoalInfo>,
-66 |     lemma_id: usize,
-   |     ^^^^^^^^
-
-warning: `cyclegg` (bin "cyclegg") generated 21 warnings (run `cargo fix --bin "cyclegg"` to apply 14 suggestions)
-    Finished release [optimized] target(s) in 0.06s
-     Running `target/release/cyclegg examples/isaplanner.ceg -d 100000 -t 60 -r`
 Proving begin goal_01: (append (take n xs) (drop n xs)) === xs
 new lemma forall n: Nat. xs: (List a). (append (take n xs) (drop n xs)) === xs
-goal_01 uncyclic: VALID (32 ms)
+goal_01 uncyclic: VALID (26 ms)
 Proving begin goal_02: (add (count n xs) (count n ys)) === (count n (append xs ys))
 new lemma forall n: Nat. xs: (List Nat). ys: (List Nat). (add (count n xs) (count n ys)) === (count n (append xs ys))
-goal_02 uncyclic: VALID (43 ms)
+goal_02 uncyclic: VALID (41 ms)
 Proving begin goal_03: (leq (count n xs) (count n (append xs ys))) === True
 new lemma forall n: Nat. xs: (List Nat). ys: (List Nat). (leq (count n xs) (count n (append xs ys))) === True
-goal_03 uncyclic: VALID (81 ms)
+goal_03 uncyclic: VALID (92 ms)
 Proving begin goal_04: (add (S Z) (count n xs)) === (count n (Cons n xs))
 new lemma forall n: Nat. xs: (List Nat). (add (S Z) (count n xs)) === (count n (Cons n xs))
-goal_04 uncyclic: VALID (47 ms)
+goal_04 uncyclic: VALID (45 ms)
 Proving begin goal_05: n === x ==> (add (S Z) (count n xs)) === (count n (Cons x xs))
-goal_05 uncyclic: INVALID (12 ms)
+new lemma forall xs: (List Nat). n: Nat. x: Nat. (add (S Z) (count n xs)) === (count n (Cons x xs))
+goal_05 uncyclic: VALID (17 ms)
 Proving begin goal_06: (sub n (add n m)) === Z
 new lemma forall n: Nat. m: Nat. (sub n (add n m)) === Z
-goal_06 uncyclic: VALID (2 ms)
+goal_06 uncyclic: VALID (1 ms)
 Proving begin goal_07: (sub (add n m) n) === m
 new lemma forall n: Nat. m: Nat. (sub (add n m) n) === m
 goal_07 uncyclic: VALID (2 ms)
 Proving begin goal_08: (sub (add k m) (add k n)) === (sub m n)
 new lemma forall k: Nat. m: Nat. n: Nat. (sub (add k m) (add k n)) === (sub m n)
-goal_08 uncyclic: VALID (2 ms)
+goal_08 uncyclic: VALID (4 ms)
 Proving begin goal_09: (sub (sub i j) k) === (sub i (add j k))
 new lemma forall i: Nat. j: Nat. k: Nat. (sub (sub i j) k) === (sub i (add j k))
-goal_09 uncyclic: VALID (12 ms)
+goal_09 uncyclic: VALID (17 ms)
 Proving begin goal_10: (sub m m) === Z
 new lemma forall m: Nat. (sub m m) === Z
 goal_10 uncyclic: VALID (1 ms)
 Proving begin goal_11: (drop Z xs) === xs
 new lemma forall xs: (List a). (drop Z xs) === xs
-goal_11 uncyclic: VALID (1 ms)
+goal_11 uncyclic: VALID (2 ms)
 Proving begin goal_12: (drop n (map f xs)) === (map f (drop n xs))
 new lemma forall n: Nat. f: (-> a b). xs: (List a). (drop n (map f xs)) === (map f (drop n xs))
 goal_12 uncyclic: VALID (11 ms)
 Proving begin goal_13: (drop (S n) (Cons x xs)) === (drop n xs)
 new lemma forall n: Nat. x: a. xs: (List a). (drop (S n) (Cons x xs)) === (drop n xs)
-goal_13 uncyclic: VALID (4 ms)
+goal_13 uncyclic: VALID (5 ms)
 Proving begin goal_14: (filter p (append xs ys)) === (append (filter p xs) (filter p ys))
 new lemma forall p: (-> a Bool). xs: (List a). ys: (List a). (filter p (append xs ys)) === (append (filter p xs) (filter p ys))
-goal_14 uncyclic: VALID (15 ms)
+goal_14 uncyclic: VALID (17 ms)
 Proving begin goal_15: (len (ins x xs)) === (S (len xs))
 new lemma forall x: Nat. xs: (List Nat). (len (ins x xs)) === (S (len xs))
-goal_15 uncyclic: VALID (35 ms)
+goal_15 uncyclic: VALID (37 ms)
 Proving begin goal_16: xs === Nil ==> (last (Cons x xs)) === x
 new lemma forall x: Nat. xs: (List Nat). (last (Cons x xs)) === x
 goal_16 uncyclic: VALID (4 ms)
 Proving begin goal_17: (leq n Z) === (eq n Z)
 new lemma forall n: Nat. (leq n Z) === (eq n Z)
-goal_17 uncyclic: VALID (3 ms)
+goal_17 uncyclic: VALID (2 ms)
 Proving begin goal_18: (lt i (S (add i m))) === True
 new lemma forall i: Nat. m: Nat. (lt i (S (add i m))) === True
 goal_18 uncyclic: VALID (2 ms)
 Proving begin goal_19: (len (drop n xs)) === (sub (len xs) n)
 new lemma forall n: Nat. xs: (List a). (len (drop n xs)) === (sub (len xs) n)
-goal_19 uncyclic: VALID (31 ms)
+goal_19 uncyclic: VALID (33 ms)
 Proving begin goal_20: (len (sort xs)) === (len xs)
 new lemma forall v0: (List Nat). v1: Nat. (S (len v0)) === (len (insort v1 v0))
 prove lemma forall xs: (List Nat). (len (sort xs)) === (len xs)
-goal_20 uncyclic: VALID (64 ms)
+goal_20 uncyclic: VALID (72 ms)
 Proving begin goal_21: (leq n (add n m)) === True
 new lemma forall n: Nat. m: Nat. (leq n (add n m)) === True
 goal_21 uncyclic: VALID (2 ms)
@@ -231,50 +70,53 @@ new lemma forall a: Nat. b: Nat. (max a b) === (max b a)
 goal_23 uncyclic: VALID (7 ms)
 Proving begin goal_24: (eq (max a b) a) === (leq b a)
 new lemma forall a: Nat. b: Nat. (eq (max a b) a) === (leq b a)
-goal_24 uncyclic: VALID (16 ms)
+goal_24 uncyclic: VALID (18 ms)
 Proving begin goal_25: (eq (max a b) b) === (leq a b)
 new lemma forall a: Nat. b: Nat. (eq (max a b) b) === (leq a b)
-goal_25 uncyclic: VALID (15 ms)
+goal_25 uncyclic: VALID (14 ms)
 Proving begin goal_26: (elem x xs) === True ==> (elem x (append xs ys)) === True
 new lemma forall x: Nat. xs: (List Nat). ys: (List Nat). (elem x (append xs ys)) === True
-goal_26 uncyclic: VALID (26 ms)
+goal_26 uncyclic: VALID (29 ms)
 Proving begin goal_27: (elem x ys) === True ==> (elem x (append xs ys)) === True
 new lemma forall xs: (List Nat). ys: (List Nat). x: Nat. (elem x (append xs ys)) === True
-goal_27 uncyclic: VALID (34 ms)
+goal_27 uncyclic: VALID (35 ms)
 Proving begin goal_28: (elem x (append xs (Cons x Nil))) === True
 new lemma forall v0: Bool. v0 === (ite v0 True False)
-new lemma forall v0: Nat. True === (eq v0 v0)
 new lemma forall x: Nat. xs: (List Nat). (elem x (append xs (Cons x Nil))) === True
-goal_28 uncyclic: VALID (78 ms)
+goal_28 uncyclic: VALID (86 ms)
 Proving begin goal_29: (elem x (ins1 x xs)) === True
 new lemma forall v0: Bool. v0 === (ite v0 True False)
-goal_29 uncyclic: INVALID (21 ms)
+new lemma forall x: Nat. xs: (List Nat). (elem x (ins1 x xs)) === True
+goal_29 uncyclic: VALID (296 ms)
 Proving begin goal_30: (elem x (ins x xs)) === True
 new lemma forall v0: Bool. v0 === (ite v0 True False)
-goal_30 uncyclic: INVALID (22 ms)
+new lemma forall v0: Bool. v1: Bool. v2: Bool. v0 === (ite (ite v1 v0 v2) v0 v0)
+new lemma forall x: Nat. xs: (List Nat). (elem x (ins x xs)) === True
+goal_30 uncyclic: VALID (63192 ms)
 Proving begin goal_31: (min (min a b) c) === (min a (min b c))
 new lemma forall a: Nat. b: Nat. c: Nat. (min (min a b) c) === (min a (min b c))
-goal_31 uncyclic: VALID (21 ms)
+goal_31 uncyclic: VALID (15 ms)
 Proving begin goal_32: (min a b) === (min b a)
 new lemma forall a: Nat. b: Nat. (min a b) === (min b a)
-goal_32 uncyclic: VALID (9 ms)
+goal_32 uncyclic: VALID (8 ms)
 Proving begin goal_33: (eq (min a b) a) === (leq a b)
 new lemma forall a: Nat. b: Nat. (eq (min a b) a) === (leq a b)
-goal_33 uncyclic: VALID (13 ms)
+goal_33 uncyclic: VALID (12 ms)
 Proving begin goal_34: (eq (min a b) b) === (leq b a)
 new lemma forall a: Nat. b: Nat. (eq (min a b) b) === (leq b a)
-goal_34 uncyclic: VALID (23 ms)
+goal_34 uncyclic: VALID (18 ms)
 Proving begin goal_35: (dropWhile ($ const False) xs) === xs
 new lemma forall xs: (List a). (dropWhile ($ const False) xs) === xs
-goal_35 uncyclic: VALID (3 ms)
+goal_35 uncyclic: VALID (2 ms)
 Proving begin goal_36: (takeWhile ($ const True) xs) === xs
 new lemma forall xs: (List a). (takeWhile ($ const True) xs) === xs
 goal_36 uncyclic: VALID (2 ms)
 Proving begin goal_37: (not (elem x (delete x xs))) === (True)
 new lemma forall x: Nat. xs: (List Nat). (not (elem x (delete x xs))) === (True)
-goal_37 uncyclic: VALID (30 ms)
+goal_37 uncyclic: VALID (32 ms)
 Proving begin goal_38: (count n (append xs (Cons n Nil))) === (S (count n xs))
-goal_38 uncyclic: INVALID (24 ms)
+new lemma forall n: Nat. xs: (List Nat). (count n (append xs (Cons n Nil))) === (S (count n xs))
+goal_38 uncyclic: VALID (56 ms)
 Proving begin goal_39: (add (count n (Cons x Nil)) (count n xs)) === (count n (Cons x xs))
 new lemma forall n: Nat. x: Nat. xs: (List Nat). (add (count n (Cons x Nil)) (count n xs)) === (count n (Cons x xs))
 goal_39 uncyclic: VALID (10 ms)
@@ -283,10 +125,10 @@ new lemma forall xs: (List a). (take Z xs) === Nil
 goal_40 uncyclic: VALID (2 ms)
 Proving begin goal_41: (take n (map f xs)) === (map f (take n xs))
 new lemma forall n: Nat. f: (-> a b). xs: (List a). (take n (map f xs)) === (map f (take n xs))
-goal_41 uncyclic: VALID (11 ms)
+goal_41 uncyclic: VALID (10 ms)
 Proving begin goal_42: (take (S n) (Cons x xs)) === (Cons x (take n xs))
 new lemma forall n: Nat. x: a. xs: (List a). (take (S n) (Cons x xs)) === (Cons x (take n xs))
-goal_42 uncyclic: VALID (4 ms)
+goal_42 uncyclic: VALID (6 ms)
 Proving begin goal_43: (append (takeWhile p xs) (dropWhile p xs)) === xs
 new lemma forall p: (-> a Bool). xs: (List a). (append (takeWhile p xs) (dropWhile p xs)) === xs
 goal_43 uncyclic: VALID (6 ms)
@@ -295,180 +137,175 @@ new lemma forall x: a. xs: (List a). ys: (List a). (zip (Cons x xs) ys) === (zip
 goal_44 uncyclic: VALID (8 ms)
 Proving begin goal_45: (zip (Cons x xs) (Cons y ys)) === (Cons (Pair x y) (zip xs ys))
 new lemma forall x: a. y: b. xs: (List a). ys: (List b). (zip (Cons x xs) (Cons y ys)) === (Cons (Pair x y) (zip xs ys))
-goal_45 uncyclic: VALID (9 ms)
+goal_45 uncyclic: VALID (8 ms)
 Proving begin goal_46: (zip Nil xs) === Nil
 new lemma forall xs: (List a). (zip Nil xs) === Nil
-goal_46 uncyclic: VALID (2 ms)
+goal_46 uncyclic: VALID (1 ms)
 Proving begin goal_47: (height (mirror t)) === (height t)
 new lemma forall v0: Nat. v1: Nat. (max v0 v1) === (max v1 v0)
 prove lemma forall t: (Tree a). (height (mirror t)) === (height t)
-goal_47 uncyclic: VALID (302 ms)
+goal_47 uncyclic: VALID (270 ms)
 Proving begin goal_48: (not (null xs)) === True ==> (append (butlast xs) (Cons (last xs) Nil)) === xs
-goal_48 uncyclic: INVALID (4 ms)
+new lemma forall xs: (List a). (append (butlast xs) (Cons (last xs) Nil)) === xs
+goal_48 uncyclic: VALID (18 ms)
 Proving begin goal_49: (butlast (append xs ys)) === (butlastConcat xs ys)
-new lemma forall v0: (List a). v0 === (append v0 Nil)
 new lemma forall xs: (List a). ys: (List a). (butlast (append xs ys)) === (butlastConcat xs ys)
-goal_49 uncyclic: VALID (538 ms)
+goal_49 uncyclic: VALID (100 ms)
 Proving begin goal_50: (butlast xs) === (take (sub (len xs) (S Z)) xs)
 new lemma forall xs: (List a). (butlast xs) === (take (sub (len xs) (S Z)) xs)
-goal_50 uncyclic: VALID (16 ms)
+goal_50 uncyclic: VALID (18 ms)
 Proving begin goal_51: (butlast (append xs (Cons x Nil))) === xs
 new lemma forall xs: (List a). x: a. (butlast (append xs (Cons x Nil))) === xs
-goal_51 uncyclic: VALID (37 ms)
+goal_51 uncyclic: VALID (30 ms)
 Proving begin goal_52: (count n xs) === (count n (rev xs))
 new lemma forall v0: (List a). v1: Nat. (count Z v0) === (count Z (append v0 (Cons (S v1) Nil)))
 new lemma forall v0: Nat. v1: (List a). (count (S v0) v1) === (count (S v0) (append v1 (Cons Z Nil)))
-goal_52 uncyclic: TIMEOUT (60475 ms)
+new lemma forall v0: Nat. v1: Nat. (S (ite (eq v0 v1) (S v0) v0)) === (ite (eq v0 v1) (S (S v0)) (S v0))
+new lemma forall v0: (List a). v1: Nat. (count Z (append v0 (Cons Z Nil))) === (count Z (append (append v0 (Cons (S v1) Nil)) (Cons Z Nil)))
+goal_52 uncyclic: TIMEOUT (600323 ms)
 Proving begin goal_53: (count n xs) === (count n (sort xs))
 new lemma forall v0: (List Nat). (S (count Z v0)) === (count Z (insort Z v0))
 new lemma forall v0: (List Nat). v1: Nat. (count Z v0) === (count Z (insort (S v1) v0))
 new lemma forall v0: Nat. v1: (List Nat). (count (S v0) v1) === (count (S v0) (insort Z v1))
-goal_53 uncyclic: TIMEOUT (61408 ms)
+new lemma forall v0: (List Nat). (Cons Z v0) === (insort Z v0)
+goal_53 uncyclic: TIMEOUT (601911 ms)
 Proving begin goal_54: (sub (add m n) n) === m
+new lemma forall v0: Nat. v1: Nat. v0 === (add (sub v1 v1) v0)
 new lemma forall v0: Nat. (S v0) === (add v0 (S Z))
 new lemma forall v0: Nat. v1: Nat. (S (add v0 v1)) === (add v0 (S v1))
 prove lemma forall n: Nat. m: Nat. (sub (add m n) n) === m
 prove lemma forall v0: Nat. v1: Nat. (sub v0 v1) === (sub (add (sub v0 v1) (S v1)) (S v1))
 prove lemma forall v0: Nat. v1: Nat. v0 === (sub (add v0 (S v1)) (S v1))
+prove lemma forall v0: Nat. v1: Nat. (add v0 (S Z)) === (sub (add v0 (S v1)) v1)
 prove lemma forall v0: Nat. v1: Nat. v0 === (sub (add v0 v1) v1)
 prove lemma forall v0: Nat. v1: Nat. v0 === (sub (add v0 (S (S v1))) (S (S v1)))
-prove lemma forall v0: Nat. v1: Nat. (S v0) === (sub (S (add v0 v1)) v1)
-goal_54 uncyclic: VALID (408 ms)
+goal_54 uncyclic: VALID (542 ms)
 Proving begin goal_55: (sub (sub i j) k) === (sub (sub i k) j)
 new lemma forall i: Nat. j: Nat. k: Nat. (sub (sub i j) k) === (sub (sub i k) j)
-goal_55 uncyclic: VALID (22 ms)
+goal_55 uncyclic: VALID (17 ms)
 Proving begin goal_56: (drop n (append xs ys)) === (append (drop n xs) (drop (sub n (len xs)) ys))
 new lemma forall n: Nat. xs: (List a). ys: (List a). (drop n (append xs ys)) === (append (drop n xs) (drop (sub n (len xs)) ys))
-goal_56 uncyclic: VALID (62 ms)
+goal_56 uncyclic: VALID (59 ms)
 Proving begin goal_57: (drop n (drop m xs)) === (drop (add n m) xs)
-new lemma forall v0: Nat. v0 === (add v0 Z)
-new lemma forall v0: Nat. v1: Nat. (S (add v0 v1)) === (add v0 (S v1))
-new lemma forall v0: Nat. v1: Nat. (S (add (add v0 Z) (add v1 Z))) === (add v0 (S v1))
-new lemma forall v0: Nat. v1: Nat. (S (add v0 v1)) === (add (add v0 Z) (S (add v1 Z)))
-new lemma forall n: Nat. m: Nat. xs: (List a). (drop n (drop m xs)) === (drop (add n m) xs)
-goal_57 uncyclic: VALID (14622 ms)
+new lemma forall v0: Nat. v1: (List a). (drop (S v0) v1) === (drop (S Z) (drop v0 v1))
+prove lemma forall n: Nat. m: Nat. xs: (List a). (drop n (drop m xs)) === (drop (add n m) xs)
+prove lemma forall v0: Nat. v1: Nat. v2: (List a). (drop (S v0) (drop v1 v2)) === (drop (S (add v0 v1)) v2)
+goal_57 uncyclic: VALID (62 ms)
 Proving begin goal_58: (drop n (take m xs)) === (take (sub m n) (drop n xs))
-new lemma forall v0: Nat. Nil === (take v0 Nil)
-new lemma forall n: Nat. m: Nat. xs: (List a). (drop n (take m xs)) === (take (sub m n) (drop n xs))
-goal_58 uncyclic: VALID (77 ms)
+new lemma forall v0: Nat. v1: Nat. (take v0 Nil) === (take v0 (drop v1 Nil))
+new lemma forall v0: Nat. v1: Nat. (take v0 Nil) === (take v1 (take v0 Nil))
+prove lemma forall n: Nat. m: Nat. xs: (List a). (drop n (take m xs)) === (take (sub m n) (drop n xs))
+goal_58 uncyclic: VALID (271 ms)
 Proving begin goal_59: (drop n (zip xs ys)) === (zip (drop n xs) (drop n ys))
 new lemma forall n: Nat. xs: (List a). ys: (List a). (drop n (zip xs ys)) === (zip (drop n xs) (drop n ys))
-goal_59 uncyclic: VALID (83 ms)
+goal_59 uncyclic: VALID (84 ms)
 Proving begin goal_60: ys === Nil ==> (last (append xs ys)) === (last xs)
 new lemma forall xs: (List a). ys: (List a). (last (append xs ys)) === (last xs)
-goal_60 uncyclic: VALID (17 ms)
+goal_60 uncyclic: VALID (15 ms)
 Proving begin goal_61: (not (null ys)) === True ==> (last (append xs ys)) === (last ys)
 new lemma forall xs: (List a). ys: (List a). (last (append xs ys)) === (last ys)
-goal_61 uncyclic: VALID (63 ms)
+goal_61 uncyclic: VALID (52 ms)
 Proving begin goal_62: (last (append xs ys)) === (lastOfTwo xs ys)
-new lemma forall v0: (List a). v0 === (append v0 Nil)
-new lemma forall v0: a. v1: (List a). v2: a. v3: (List a). (last (Cons v0 (append v1 (Cons v2 v3)))) === (last (append v1 (Cons v2 v3)))
-prove lemma forall xs: (List a). ys: (List a). (last (append xs ys)) === (lastOfTwo xs ys)
-goal_62 uncyclic: VALID (754 ms)
+new lemma forall xs: (List a). ys: (List a). (last (append xs ys)) === (lastOfTwo xs ys)
+goal_62 uncyclic: VALID (65 ms)
 Proving begin goal_63: (not (null xs)) === True ==> (last (Cons x xs)) === (last xs)
 new lemma forall xs: (List a). x: a. (last (Cons x xs)) === (last xs)
 goal_63 uncyclic: VALID (4 ms)
 Proving begin goal_64: (lt n (len xs)) === True ==> (last (drop n xs)) === (last xs)
 new lemma forall n: Nat. xs: (List a). (last (drop n xs)) === (last xs)
-goal_64 uncyclic: VALID (24 ms)
+goal_64 uncyclic: VALID (23 ms)
 Proving begin goal_65: (last (append xs (Cons x Nil))) === x
 new lemma forall x: a. xs: (List a). (last (append xs (Cons x Nil))) === x
-goal_65 uncyclic: VALID (28 ms)
+goal_65 uncyclic: VALID (25 ms)
 Proving begin goal_66: (lt i (S (add m i))) === True
 new lemma forall v0: Nat. v1: Nat. (S (add v0 v1)) === (add v0 (S v1))
 prove lemma forall i: Nat. m: Nat. (lt i (S (add m i))) === True
-goal_66 uncyclic: VALID (11 ms)
+goal_66 uncyclic: VALID (19 ms)
 Proving begin goal_67: (leq (len (filter p xs)) (len xs)) === True
-goal_67 uncyclic: TIMEOUT (60038 ms)
+goal_67 uncyclic: TIMEOUT (600591 ms)
 Proving begin goal_68: (len (butlast xs)) === (sub (len xs) (S Z))
 new lemma forall xs: (List a). (len (butlast xs)) === (sub (len xs) (S Z))
-goal_68 uncyclic: VALID (8 ms)
+goal_68 uncyclic: VALID (10 ms)
 Proving begin goal_69: (leq (len (delete n xs)) (len xs)) === True
-goal_69 uncyclic: TIMEOUT (60064 ms)
+goal_69 uncyclic: TIMEOUT (604134 ms)
 Proving begin goal_70: (leq n (add m n)) === True
 new lemma forall v0: Nat. v1: Nat. (S (add v0 v1)) === (add v0 (S v1))
 prove lemma forall n: Nat. m: Nat. (leq n (add m n)) === True
-goal_70 uncyclic: VALID (10 ms)
+goal_70 uncyclic: VALID (24 ms)
 Proving begin goal_71: (leq m n) === True ==> (leq m (S n)) === True
 new lemma forall m: Nat. n: Nat. (leq m (S n)) === True
 goal_71 uncyclic: VALID (2 ms)
 Proving begin goal_72: (lt x y) === True ==> (elem x (ins y xs)) === (elem x xs)
-new lemma forall v0: Nat. v1: Nat. True === (ite (eq v0 (S v1)) True True)
-new lemma forall v0: Bool. v0 === (ite v0 True False)
-goal_72 uncyclic: TIMEOUT (60022 ms)
+goal_72 uncyclic: INVALID (603328 ms)
 Proving begin goal_73: (eq x y) === False ==> (elem x (ins y xs)) === (elem x xs)
 new lemma forall x: Nat. y: Nat. xs: (List Nat). (elem x (ins y xs)) === (elem x xs)
-goal_73 uncyclic: VALID (375 ms)
+goal_73 uncyclic: VALID (421 ms)
 Proving begin goal_74: (rev (drop i xs)) === (take (sub (len xs) i) (rev xs))
 new lemma forall v0: Nat. v1: (List a). v2: a. (append (take v0 v1) (Cons v2 Nil)) === (take (S v0) (append (take v0 v1) (Cons v2 Nil)))
-prove lemma forall v0: (List a). v1: a. (append (rev v0) (Cons v1 Nil)) === (take (S (len v0)) (append (rev v0) (Cons v1 Nil)))
-new lemma forall v0: (List a). (rev v0) === (take (len v0) (rev v0))
-new lemma forall v0: Nat. Nil === (drop v0 Nil)
-new lemma forall v0: Nat. v1: (List a). (len (drop v0 v1)) === (sub (len v1) v0)
-new lemma forall v0: Nat. Nil === (take v0 Nil)
-goal_74 uncyclic: TIMEOUT (60133 ms)
+new lemma forall v0: (List a). v1: a. v2: (List a). v3: a. (take (S Z) (append (append v0 (Cons v1 Nil)) v2)) === (take (S Z) (append (append (append v0 (Cons v1 Nil)) v2) (Cons v3 Nil)))
+new lemma forall v0: (List a). v1: a. v2: (List a). v3: (List a). v4: (List a). v5: a. (take (S Z) (append (append (append (append v0 (Cons v1 Nil)) v2) v3) v4)) === (take (S Z) (append (append (append (append (append v0 (Cons v1 Nil)) v2) v3) (Cons v5 Nil)) v4))
+goal_74 uncyclic: TIMEOUT (600171 ms)
 Proving begin goal_75: (rev (filter p xs)) === (filter p (rev xs))
-goal_75 uncyclic: TIMEOUT (60218 ms)
+goal_75 uncyclic: TIMEOUT (600477 ms)
 Proving begin goal_76: (rev (take i xs)) === (drop (sub (len xs) i) (rev xs))
-new lemma forall v0: Nat. Nil === (take v0 Nil)
-new lemma forall v0: (List a). (rev (take (S Z) v0)) === (take (S Z) v0)
 new lemma forall v0: (List a). v0 === (append v0 Nil)
 new lemma forall v0: (List a). v1: (List a). (append (append (rev v0) v1) Nil) === (append (rev v0) v1)
-goal_76 uncyclic: TIMEOUT (60193 ms)
+new lemma forall v0: (List a). (rev (take (S Z) v0)) === (take (S Z) v0)
+new lemma forall v0: (List a). v1: Nat. v0 === (append (rev (take v1 Nil)) v0)
+goal_76 uncyclic: TIMEOUT (600125 ms)
 Proving begin goal_77: (eq n m) === False ==> (count n (append xs (Cons m Nil))) === (count n xs)
 new lemma forall n: Nat. m: Nat. xs: (List Nat). (count n (append xs (Cons m Nil))) === (count n xs)
-goal_77 uncyclic: VALID (108 ms)
+goal_77 uncyclic: VALID (112 ms)
 Proving begin goal_78: (add (count n xs) (count n (Cons m Nil))) === (count n (Cons m xs))
 new lemma forall v0: Nat. v0 === (add v0 Z)
 new lemma forall v0: Nat. (S v0) === (add v0 (S Z))
-goal_78 uncyclic: VALID (40 ms)
+goal_78 uncyclic: VALID (35 ms)
 Proving begin goal_79: (sorted xs) === True ==> (sorted (insort x xs)) === True
 new lemma forall v0: Bool. v0 === (and True v0)
-new lemma forall v0: Nat. v1: (List Nat). (and True (sorted (Cons v0 v1))) === (sorted (Cons v0 v1))
-goal_79 uncyclic: TIMEOUT (60656 ms)
-Proving begin goal_80: (sorted (sort xs)) === True
 new lemma forall v0: Bool. v0 === (and v0 True)
 new lemma forall v0: Nat. v1: Nat. (and (leq v0 v1) True) === (leq v0 v1)
-goal_80 uncyclic: TIMEOUT (60093 ms)
+new lemma forall v0: (List Nat). (sorted v0) === (sorted (Cons Z v0))
+goal_79 uncyclic: TIMEOUT (611477 ms)
+Proving begin goal_80: (sorted (sort xs)) === True
+new lemma forall v0: Bool. v0 === (and v0 True)
+new lemma forall v0: Bool. v0 === (and True v0)
+new lemma forall v0: Nat. v1: (List Nat). (and True (sorted (Cons v0 v1))) === (sorted (Cons v0 v1))
+new lemma forall v0: (List Nat). (Cons Z v0) === (insort Z v0)
+goal_80 uncyclic: TIMEOUT (600122 ms)
 Proving begin goal_81: (sub (sub (S m) n) (S k)) === (sub (sub m n) k)
 new lemma forall n: Nat. m: Nat. k: Nat. (sub (sub (S m) n) (S k)) === (sub (sub m n) k)
 goal_81 uncyclic: VALID (3 ms)
 Proving begin goal_82: (take n (append xs ys)) === (append (take n xs) (take (sub n (len xs)) ys))
 new lemma forall n: Nat. xs: (List a). ys: (List a). (take n (append xs ys)) === (append (take n xs) (take (sub n (len xs)) ys))
-goal_82 uncyclic: VALID (60 ms)
+goal_82 uncyclic: VALID (54 ms)
 Proving begin goal_83: (take n (drop m xs)) === (drop m (take (add n m) xs))
-new lemma forall v0: Nat. v0 === (add v0 Z)
+new lemma forall v0: Nat. v1: (List a). (drop v0 (take (S v0) v1)) === (take (S Z) (drop v0 v1))
+new lemma forall v0: Nat. v1: (List a). (drop v0 (take (S (S v0)) v1)) === (take (S (S Z)) (drop v0 v1))
+new lemma forall v0: Nat. v1: (List a). (drop v0 (take (S (S (S v0))) v1)) === (take (S (S (S Z))) (drop v0 v1))
+new lemma forall v0: Nat. v1: (List a). (drop v0 (take (S (S (S (S v0)))) v1)) === (take (S (S (S (S Z)))) (drop v0 v1))
 new lemma forall v0: Nat. v1: Nat. (S (add v0 v1)) === (add v0 (S v1))
-new lemma forall v0: Nat. v1: Nat. v2: Nat. (take (S (add v0 v1)) v2) === (take (add v0 (S v1)) v2)
-new lemma forall v0: Nat. v1: Nat. (S (add (add v0 Z) (add v1 Z))) === (add v0 (S v1))
-new lemma forall v0: Nat. v1: Nat. (S (add v0 v1)) === (add (add v0 Z) (S (add v1 Z)))
-new lemma forall v0: Nat. v1: Nat. v2: (List a). (take (S (add (add v0 Z) v1)) v2) === (take (add v0 (S v1)) v2)
-new lemma forall v0: Nat. v1: Nat. v2: Nat. (take (S (add v0 v1)) v2) === (take (add v0 (S (add v1 Z))) v2)
-new lemma forall v0: Nat. v1: Nat. v2: (List a). (take (S (add v0 (add v1 Z))) v2) === (take (add v0 (S v1)) v2)
-new lemma forall v0: Nat. v1: Nat. v2: Nat. (take (S (add v0 v1)) v2) === (take (add (add v0 Z) (S v1)) v2)
-new lemma forall v0: Nat. v1: Nat. v2: Nat. (take (S (add v0 v1)) v2) === (take (add (add v0 Z) (S (add v1 Z))) v2)
-new lemma forall v0: Nat. v1: Nat. v2: (List a). (take (S (add (add v0 Z) (add v1 Z))) v2) === (take (add v0 (S v1)) v2)
-new lemma forall n: Nat. m: Nat. xs: (List a). (take n (drop m xs)) === (drop m (take (add n m) xs))
-goal_83 uncyclic: VALID (217 ms)
+prove lemma forall n: Nat. m: Nat. xs: (List a). (take n (drop m xs)) === (drop m (take (add n m) xs))
+prove lemma forall v0: Nat. v1: Nat. v2: (List a). (drop v0 (take (S (add v1 v0)) v2)) === (take (S v1) (drop v0 v2))
+prove lemma forall v0: Nat. v1: Nat. v2: (List a). (drop v0 (take (S (S (add v1 v0))) v2)) === (take (S (S v1)) (drop v0 v2))
+goal_83 uncyclic: VALID (1730 ms)
 Proving begin goal_84: (take n (zip xs ys)) === (zip (take n xs) (take n ys))
 new lemma forall n: Nat. xs: (List a). ys: (List a). (take n (zip xs ys)) === (zip (take n xs) (take n ys))
-goal_84 uncyclic: VALID (89 ms)
+goal_84 uncyclic: VALID (95 ms)
 Proving begin goal_85: (zip (append xs ys) zs) === (append (zip xs (take (len xs) zs)) (zip ys (drop (len xs) zs)))
 new lemma forall v0: (List (Pair a b)). v0 === (append v0 Nil)
 new lemma forall v0: (List a). v1: Nat. v2: (List a). (append (zip v0 (take v1 v2)) Nil) === (zip v0 (take v1 v2))
 new lemma forall v0: a. v1: (List a). v2: (List a). (append (zip (Cons v0 v1) v2) Nil) === (zip (Cons v0 v1) v2)
-new lemma forall v0: (List a). v1: (List a). (zip v0 v1) === (zip v0 (take (len v0) v1))
 new lemma forall xs: (List a). ys: (List a). zs: (List a). (zip (append xs ys) zs) === (append (zip xs (take (len xs) zs)) (zip ys (drop (len xs) zs)))
-goal_85 uncyclic: VALID (758 ms)
+goal_85 uncyclic: VALID (162 ms)
 Proving begin goal_86: (zip xs (append ys zs)) === (append (zip (take (len ys) xs) ys) (zip (drop (len ys) xs) zs))
-new lemma forall v0: Nat. Nil === (drop v0 Nil)
-new lemma forall v0: Nat. Nil === (take v0 Nil)
+new lemma forall v0: Nat. (drop v0 Nil) === (take v0 Nil)
+new lemma forall v0: Nat. v1: (List a). (take v0 Nil) === (zip (take v0 Nil) v1)
 new lemma forall xs: (List a). ys: (List a). zs: (List a). (zip xs (append ys zs)) === (append (zip (take (len ys) xs) ys) (zip (drop (len ys) xs) zs))
-goal_86 uncyclic: VALID (145 ms)
+goal_86 uncyclic: VALID (164 ms)
 Proving begin goal_87: (len xs) === (len ys) ==> (zip (rev xs) (rev ys)) === (rev (zip xs ys))
-goal_87 uncyclic: INVALID (13010 ms)
+goal_87 uncyclic: INVALID (13104 ms)
 Attempted 87 goals:
-  71 solved (no cyclic)
+  76 solved (no cyclic)
 
 Process finished with exit code 0
 
