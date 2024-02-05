@@ -216,11 +216,12 @@ impl<'a> SearchCondition<SymbolLang, CycleggAnalysis> for TypeRestriction {
     let op = egraph[eclass].nodes.first().unwrap().op;
     if let Some(op_type) = self.ctx.get(&op) {
       res = get_output_type_name(op_type) == self.ty
+    } else if let Some(var_type) = egraph.analysis.local_ctx.get(&op) {
+      res = get_output_type_name(var_type) == self.ty
+    } else if op.to_string().starts_with("g_") {
+      res = self.ty == BOOL_TYPE.parse().unwrap()
     } else {
-      let cvec_cons = get_cvec_constructor(&egraph.analysis.cvec_analysis, &egraph[eclass].data.cvec_data);
-      if let Some(cons) = cvec_cons {
-        res = get_output_type_name(self.ctx.get(&cons).unwrap()) == self.ty
-      }
+      println!("unknown type of variable {} {:?}", op, egraph.analysis.local_ctx);
     }
     if CONFIG.verbose && !res {
       println!("reject rewrite on {} {}", egraph[eclass].nodes.first().unwrap().op, self.ty);
@@ -616,6 +617,7 @@ impl<'a> Goal<'a> {
       res.add_scrutinee(*name, &ty, 0);
       res.local_context.insert(*name, ty.clone());
     }
+    res.egraph.analysis.local_ctx = res.local_context.clone();
     res.build_cvecs();
     res
   }
@@ -844,10 +846,11 @@ impl<'a> Goal<'a> {
       type_cons: None,
     };
     if let Some(ty) = self.get_expected_type(lhs_expr, rhs_expr) {
-      condition.type_cons = Some(TypeRestriction{ ty: ty, ctx: self.global_search_state.context.clone() })
+      condition.type_cons = Some(TypeRestriction{ ty: ty, ctx: self.global_search_state.context.clone()})
     }
 
     let rewrite_eq = Equation::from_exprs(lhs_expr, rhs_expr);
+    // println!("make lemma {} {}", rewrite_eq, params.iter().map(|(name, ty)| format!("{}[{}]", name, ty)).join(" "));
     let mut lemma_rw = LemmaRewrite {
       lhs_to_rhs: None,
       rhs_to_lhs: None,
@@ -933,10 +936,11 @@ impl<'a> Goal<'a> {
       type_cons: None,
     };
     if let Some(ty) = self.get_expected_type(lhs_expr, rhs_expr) {
-      condition.type_cons = Some(TypeRestriction{ ty: ty, ctx: self.global_search_state.context.clone() })
+      condition.type_cons = Some(TypeRestriction{ ty: ty, ctx: self.global_search_state.context.clone()})
     }
 
     let rewrite_eq = Equation::from_exprs(lhs_expr, rhs_expr);
+    // println!("make lemma {} {}", rewrite_eq, params.iter().map(|(name, ty)| format!("{}[{}]", name, ty)).join(" "));
     let mut lemma_rw = LemmaRewrite {
       lhs_to_rhs: None,
       rhs_to_lhs: None,
@@ -1266,6 +1270,7 @@ impl<'a> Goal<'a> {
           new_goal.add_grounding(scrutinee.name, fresh_var);
         }
       }
+      new_goal.egraph.analysis.local_ctx = new_goal.local_context.clone();
 
       // Create an application of the constructor to the fresh vars
       let fresh_var_strings_iter = fresh_vars.iter().map(|x| x.to_string());
@@ -2219,6 +2224,7 @@ impl<'a> LemmaProofState<'a> {
   pub fn try_goal(&mut self, info: &GoalInfo, timer: &Timer, lemmas_state: &mut LemmasState) -> Option<(Vec<(usize, Prop)>, Vec<GoalInfo>)> {
     let pos = self.get_info_index(info);
     let goal = self.goals.get_mut(pos).unwrap();
+
     goal.saturate(&lemmas_state.lemma_rewrites);
 
 
@@ -2227,11 +2233,17 @@ impl<'a> LemmaProofState<'a> {
     }
     if let Some(proof_leaf) = goal.find_proof() {
       match proof_leaf {
-        ProofLeaf::Todo => self.outcome = Some(Outcome::Invalid),
-        _ => ()
-      };
-      self.process_goal_explanation(proof_leaf, &self.goals[pos].name.clone());
-      return None;
+        ProofLeaf::Todo => {
+          if goal.premises.is_empty() {
+            self.outcome = Some(Outcome::Invalid);
+            return None;
+          }
+        },
+        _ => {
+          self.process_goal_explanation(proof_leaf, &self.goals[pos].name.clone());
+          return None;
+        }
+      }
     }
     if CONFIG.verbose {
       explain_goal_failure(&goal);
@@ -2836,7 +2848,7 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
     }
 
     if CONFIG.verbose {
-      println!("try goal {} from {}", info.full_exp, self.prop_map[&info.lemma_id]);
+      println!("\ntry goal {} from {}", info.full_exp, self.prop_map[&info.lemma_id]);
     }
     let lemma_state = proof_state.lemma_proofs.get_mut(&lemma_index).unwrap();
     if lemma_state.outcome.is_some() {
@@ -2962,20 +2974,12 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
   // Have we proven LHS == RHS?
   if resolved_lhs_id == resolved_rhs_id {
     if egraph.lookup_expr(&eq.lhs.expr).is_none() || egraph.lookup_expr(&eq.rhs.expr).is_none() {
-      println!("One of {} or {} was removed from the e-graph! We can't emit a proof", eq.lhs.expr, eq.rhs.expr);
-      return Some(ProofLeaf::Todo);
+      panic!("One of {} or {} was removed from the e-graph! We can't emit a proof", eq.lhs.expr, eq.rhs.expr);
     }
     return Some(ProofLeaf::Refl(
       egraph
           .explain_equivalence(&eq.lhs.expr, &eq.rhs.expr)
     ));
-  }
-
-  match (&egraph[resolved_lhs_id].data.canonical_form_data, &egraph[resolved_rhs_id].data.canonical_form_data) {
-    (CanonicalForm::Const(c1), CanonicalForm::Const(c2)) if c1.op != c2.op => {
-      return Some(ProofLeaf::Todo);
-    }
-    _ => {}
   }
 
   // Check if this case in unreachable (i.e. if there are any inconsistent
@@ -3016,11 +3020,18 @@ fn find_proof(eq: &ETermEquation, egraph: &mut Eg) -> Option<ProofLeaf> {
       None
     }
   });
-  inconsistent_exprs.map(|(expr1, expr2)| {
+  if let Some((expr1, expr2)) = inconsistent_exprs {
     let explanation = egraph.explain_equivalence(&expr1, &expr2);
-    ProofLeaf::Contradiction(explanation)
-  })
-
+    Some(ProofLeaf::Contradiction(explanation))
+  } else {
+    /*match (&egraph[resolved_lhs_id].data.canonical_form_data, &egraph[resolved_rhs_id].data.canonical_form_data) {
+      (CanonicalForm::Const(c1), CanonicalForm::Const(c2)) if c1.op != c2.op => {
+        Some(ProofLeaf::Todo)
+      }
+      _ => None
+    }*/
+    None
+  }
 }
 
 pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_search_state: GlobalSearchState<'a>) -> (Outcome, ProofState) {
