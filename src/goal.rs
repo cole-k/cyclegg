@@ -2718,6 +2718,7 @@ struct GoalLevelPriorityQueue {
   goal_graph: GoalGraph,
   next_goal: Option<GoalInfo>,
   prop_map: HashMap<usize, Prop>,
+  progress_set: HashSet<usize>,
   is_found_new_lemma: bool
 }
 
@@ -2807,8 +2808,8 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
       self.update_subsumed_lemmas(proof_state);
     }
     self.is_found_new_lemma = true;
-    let frontier = self.goal_graph.get_frontier_goals();
-    if false && CONFIG.verbose {
+    let mut frontier = self.goal_graph.get_frontier_goals();
+    if CONFIG.verbose {
       let goals = self.goal_graph.get_lemma(0).goals.clone();
       /*println!("\n\n================= current target ==============");
       for goal in goals {
@@ -2822,8 +2823,14 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
       }
       println!("\n\n");
     }
+    if frontier.iter().any(|info| {self.progress_set.contains(&info.lemma_id)}) {
+      frontier = frontier.into_iter().filter(|info| self.progress_set.contains(&info.lemma_id)).collect();
+    }
     if let Some(optimal) = frontier.into_iter().min_by_key(|info| {info.size}) {
       self.next_goal = Some(optimal.clone());
+      if self.progress_set.contains(&optimal.lemma_id) {
+        self.progress_set.remove(&optimal.lemma_id);
+      }
       Ok(vec!(optimal.lemma_id))
     } else {
       println!("report unknown because of an empty queue");
@@ -2872,6 +2879,9 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
     } else {
       if lemma_proof_state.outcome.is_none() {
         self.goal_graph.record_node_status(&info, GraphProveStatus::Valid);
+
+        self.progress_set.insert(info.lemma_id);
+
       } else if lemma_proof_state.outcome == Some(Outcome::Invalid) {
         self.goal_graph.record_node_status(&info, GraphProveStatus::Invalid);
       }
@@ -2908,6 +2918,7 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
 
       for goal in proved_goals.into_iter() {
         self.goal_graph.record_node_status(&goal, GraphProveStatus::Valid);
+        self.progress_set.insert(goal.lemma_id);
         if self.goal_graph.is_lemma_proved(goal.lemma_id) {
           let lemma_state = proof_state.lemma_proofs.get_mut(&goal.lemma_id).unwrap();
           if lemma_state.outcome.is_some() {continue;}
