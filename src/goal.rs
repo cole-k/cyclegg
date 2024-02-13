@@ -221,7 +221,7 @@ impl<'a> SearchCondition<SymbolLang, CycleggAnalysis> for TypeRestriction {
     } else if op.to_string().starts_with("g_") {
       res = self.ty == BOOL_TYPE.parse().unwrap()
     } else {
-      println!("unknown type of variable {} {:?}", op, egraph.analysis.local_ctx);
+      // println!("unknown type of variable {} {:?}", op, egraph.analysis.local_ctx);
     }
     if CONFIG.verbose && !res {
       println!("reject rewrite on {} {}", egraph[eclass].nodes.first().unwrap().op, self.ty);
@@ -342,6 +342,10 @@ fn find_generalizations_prop(prop: &Prop, global_context: &Context, fresh_name: 
         Sexp::String(s) => s,
         Sexp::List(list) => list.first().unwrap().string().unwrap(),
       };
+      // HACK: Skip partial applications because they have no type
+      if op == "$" {
+        continue;
+      }
       let op_ty = &global_context[&Symbol::new(op)];
       // Again, we assume that the expression here is fully applied, i.e. it is not a $
       let (_, ty) = op_ty.args_ret();
@@ -1838,6 +1842,10 @@ impl<'a> Goal<'a> {
   fn make_generalized_goal(&self, class: Id) -> Option<(Prop, Goal)> {
     // Get an op (function/constructor/var) that is a representative of this class.
     let class_op = self.egraph[class].data.canonical_form_data.get_enode().op;
+    // HACK: Skip partial applications because we don't know how to find their type.
+    if class_op == "$".into() {
+      return None;
+    }
     // NOTE We're assuming that we don't have to deal with higher-order
     // functions for generalizations, because we never will inspect a function's
     // value when pattern matching. However, a more correct analysis would take
@@ -2168,6 +2176,9 @@ impl<'a> LemmaProofState<'a> {
       // FIXME: Handle premises in cvecs so that we can reject invalid props
       // with preconditions
       if premise.is_none() && !is_valid {
+        // println!("Mismatched cvecs for goal {}", prop);
+        // print_cvec(&goal.egraph.analysis.cvec_analysis, &goal.egraph[goal.eq.lhs.id].data.cvec_data);
+        // print_cvec(&goal.egraph.analysis.cvec_analysis, &goal.egraph[goal.eq.rhs.id].data.cvec_data);
         Some(Outcome::Invalid)
       } else {
         None

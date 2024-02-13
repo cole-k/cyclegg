@@ -127,6 +127,32 @@ pub fn get_all_expressions_with_loop<L: Language, A: Analysis<L>>(
     memo
 }
 
+
+pub fn eclasses_descended_from<L: Language, A: Analysis<L>>(
+  egraph: &EGraph<L, A>,
+  root: Id,
+) -> BTreeSet<Id> {
+  let mut seen = BTreeSet::new();
+  eclasses_descended_from_helper(egraph, root, &mut seen);
+  seen
+}
+
+fn eclasses_descended_from_helper<L: Language, A: Analysis<L>>(
+  egraph: &EGraph<L, A>,
+  root: Id,
+  seen: &mut BTreeSet<Id>,
+) {
+  if seen.contains(&root) {
+    return;
+  }
+  seen.insert(root);
+  for node in egraph[root].nodes.iter() {
+    for child in node.children() {
+      eclasses_descended_from_helper(egraph, *child, seen);
+    }
+  }
+}
+
 /// Remove node from egraph
 pub fn remove_node<L: Language, A: Analysis<L>>(egraph: &mut EGraph<L, A>, node: &L) {
   for c in egraph.classes_mut() {
