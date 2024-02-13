@@ -220,7 +220,7 @@ pub fn explain_top(
       continue;
     }
     let lemma_info = LemmaInfo {
-      name: format!("lemma_{}", ih_lemma_number),
+      name: format!("lemma_{}", lemma_number),
       params: lemma_proof.prop.params.iter().map(|(param, ty)| {
         (param.to_string(), convert_ty(&ty.repr))
       }).collect(),
@@ -428,51 +428,51 @@ fn explain_proof(
   top_goal_name: &str,
   lemma_map: &mut BTreeMap<String, LemmaInfo>,
 ) -> String {
+  match proof_info.solved_goal_proofs.get_mut(goal) {
+    Some(proof_leaf) => {
+      // We have a proper explanation
+      return match proof_leaf {
+        ProofLeaf::Contradiction(expl) => {
+            let mut str_explanation = String::new();
+            add_indentation(&mut str_explanation, depth);
+            str_explanation.push_str(UNREACHABLE);
+            // Open paren (we will pass the proof to unreachable to prove by contradiction)
+            str_explanation.push(' ');
+            str_explanation.push('(');
+            str_explanation.push('\n');
+            let proof = explain_goal(
+              // Increase depth of the proof because we want `unreachable` to
+              // be at a lower depth.
+              depth + 1,
+              expl,
+              top_goal_name,
+              lemma_map,
+            );
+            // Add the proof itself
+            str_explanation.push_str(&proof);
+            // Close the paren
+            add_indentation(&mut str_explanation, depth);
+            str_explanation.push(')');
+            str_explanation.push('\n');
+            str_explanation.push('\n');
+            str_explanation
+        }
+        ProofLeaf::Refl(expl) => {
+          // Just use this proof on its own.
+          explain_goal(depth, expl, top_goal_name, lemma_map)
+        }
+        // It doesn't matter what we do here
+        ProofLeaf::Todo => todo!("Proof not implemented for proof of {}", goal),
+      };
+    }
+    None => {}// unreachable!("Missing proof explanation for {}", goal),
+  }
   // If it's not in the proof tree, it must be a leaf.
   if !proof_info.proof.contains_key(goal) {
-    match proof_info.solved_goal_proofs.get_mut(goal) {
-      Some(proof_leaf) => {
-        // We have a proper explanation
-        return match proof_leaf {
-          ProofLeaf::Contradiction(expl) => {
-              let mut str_explanation = String::new();
-              add_indentation(&mut str_explanation, depth);
-              str_explanation.push_str(UNREACHABLE);
-              // Open paren (we will pass the proof to unreachable to prove by contradiction)
-              str_explanation.push(' ');
-              str_explanation.push('(');
-              str_explanation.push('\n');
-              let proof = explain_goal(
-                // Increase depth of the proof because we want `unreachable` to
-                // be at a lower depth.
-                depth + 1,
-                expl,
-                top_goal_name,
-                lemma_map,
-              );
-              // Add the proof itself
-              str_explanation.push_str(&proof);
-              // Close the paren
-              add_indentation(&mut str_explanation, depth);
-              str_explanation.push(')');
-              str_explanation.push('\n');
-              str_explanation.push('\n');
-              str_explanation
-          }
-          ProofLeaf::Refl(expl) => {
-            // Just use this proof on its own.
-            explain_goal(depth, expl, top_goal_name, lemma_map)
-          }
-          // It doesn't matter what we do here
-          ProofLeaf::Todo => todo!("Proof not implemented for proof of {}", goal),
-        };
-      }
-      None => unreachable!("Missing proof explanation for {}", goal),
-    }
   }
   // Need to clone to avoid borrowing... unfortunately this is all because we need
   // a mutable reference to the explanations for some annoying reason
-  let proof_term = proof_info.proof.get(goal).unwrap().clone();
+  let proof_term = proof_info.proof.get(goal).expect(&format!("Missing proof term: {}", goal)).clone();
   let mut str_explanation = String::new();
   let mut proof_depth = depth;
   let mut case_depth = depth + 1;
@@ -703,16 +703,16 @@ fn extract_lemma_invocation(
       get_flat_term_from_trace(&trace, next_term),
     ),
   };
-  // println!("lemma rest: {}", lemma_rest);
+  // println!("lemma {} and rest: {}", lemma_name, lemma_rest);
   let lemma_info = lemma_map.get(lemma_name).unwrap();
   let lemma: Vec<&str> = lemma_rest
     .split(EQUALS)
     .collect();
-  // println!("lhs: {}, rhs: {}", lemma[0], lemma[1]);
-  // println!("lhs_term: {}, rhs_term: {}", &flat_term_to_sexp(&rewritten_from).to_string(), &flat_term_to_sexp(&rewritten_to).to_string());
 
   let lhs_sexp = symbolic_expressions::parser::parse_str(lemma[0]).unwrap();
   let rhs_sexp = symbolic_expressions::parser::parse_str(lemma[1]).unwrap();
+  // println!("lhs: {:?}, rhs: {:?}, params: {:?}", lhs_sexp, rhs_sexp, lemma_info.params);
+  // println!("lhs_term: {:?}, rhs_term: {:?}", &flat_term_to_sexp(&rewritten_from), &flat_term_to_sexp(&rewritten_to));
   // HACK: It's a variable if it is a lemma parameter without the ?
   //
   // We actually know the LHS and RHS of the lemma, but we don't know what order
