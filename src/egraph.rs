@@ -424,3 +424,34 @@ fn any_enode_in_eclass_matches<N>(egraph: &EGraph<SymbolLang, N>, rec_expr: &Rec
     memo.insert((*rec_expr_id, *eclass), res);
     res
 }
+
+/// Antiunifies the two enodes, returning two Ids that need to be unified.
+///
+/// Intuitively, this takes enodes that looks like
+///
+/// (f (g a) x y)
+/// (f (g b) x y)
+///
+/// and finds the smallest part that needs to be unified to make them equal, in
+/// this case
+///
+/// (a, b)
+///
+/// If the enodes differ in multiple places, this returns None
+// NOTE: We might want to consider multiple anti-unifications, such as
+//
+// (f x y)
+// (f a b)
+//
+// returning
+//
+// (a,x), (b, y)
+fn anti_unify<N>(egraph: &EGraph<SymbolLang, N>, enode_1: &SymbolLang, enode_2: &SymbolLang) -> Option<(Id, Id)>
+  where
+  N: Analysis<SymbolLang>
+{
+  if enode_1.op != enode_2.op {
+    return None;
+  }
+  todo!()
+}
