@@ -155,7 +155,7 @@ impl ParserState {
         lhs_str = format!("({} {} ?x{})", APPLY, lhs_str, i);
       }
       let lhs: Pat = lhs_str.parse().unwrap();
-      Some(Rewrite::new(ParserState::part_app_rule(name), lhs, rhs).unwrap())
+      Some(Rewrite::new(ParserState::part_app_rule(name), lhs.clone(), DestructiveApplier::new(lhs, rhs)).unwrap())
     }
   }
 
