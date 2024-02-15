@@ -51,6 +51,10 @@
 (:: snd (-> ((Pair a b)) b))
 (let snd ((MakePair ?x ?y)) ?y)
 
+(:: map (-> ((-> (a) b) (List a)) (List b)))
+(let map (?f Nil          ) Nil                          )
+(let map (?f (Cons ?x ?xs)) (Cons ($ ?f ?x) (map ?f ?xs)))
+
 (:: mtp (-> ((List Nat)) (Pair Nat Nat)))
 (let mtp (Nil)      (MakePair (S Z) (S Z))          )
 (let mtp ((Cons ?h ?t)) (MakePair
@@ -59,7 +63,7 @@
 ))
 
 (=== mtp_optimize (xs) ((List Nat))
-    (maximum (mapproduct (tails xs))) (fst (mtp xs))
+    (maximum (map product (tails xs))) (fst (mtp xs))
 )
 
 (=== max_commute (m n) (Nat Nat)
