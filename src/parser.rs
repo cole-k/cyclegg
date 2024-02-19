@@ -102,16 +102,23 @@ impl ParserState {
   }
 
   /// Name of the rule that converts a partial application of name into a first-order application.
-  fn part_app_rule(name: &Symbol) -> String {
-    format!("apply-{}", name)
+  fn is_part_app_rule(rule_name: &Symbol, name: &Symbol) -> bool {
+    let prefix = format!("apply-{}-", name);
+    rule_name.to_string().starts_with(&prefix)
   }
+
+  fn get_part_app_rule(name: &Symbol, id: usize) -> String {
+    format!("apply-{}-{}", name, id)
+  }
+
 
   /// Return all rules that define the function name,
   /// including the rule that defines conversion from partial to first-order application.
   fn definition(&self, name: &Symbol) -> Vec<&Rw> {
     let mut res = Vec::new();
     for r in &self.rules {
-      if r.name.to_string() == ParserState::part_app_rule(name) {
+      if Self::is_part_app_rule(&r.name, name) {
+      //if r.name.to_string() == ParserState::part_app_rule(name) {
         res.push(r);
       } else {
         let lhs_pat = r.searcher.get_pattern_ast().unwrap();
@@ -128,7 +135,7 @@ impl ParserState {
 
   /// If type_ is an arrow type, return a rewrite that allows converting partial applications into regular first-order applications,
   /// that is: ($ ... ($ name ?x0) ... ?xn) => (name ?x0 ... ?xn).
-  fn partial_application<A>(name: &Symbol, type_: &Type) -> Option<Rewrite<SymbolLang, A>>
+  fn partial_application<A>(name: &Symbol, type_: &Type) -> Option<Vec<Rewrite<SymbolLang, A>>>
     where
         A: Analysis<SymbolLang>
   {
@@ -139,23 +146,24 @@ impl ParserState {
     } else {
       let wildcard = |i: usize| format!("?x{}", i).parse().unwrap();
       // RHS is a full first-order application of name to as many wildcards as there are arguments:
-      let rhs: Pat = format!(
-        "({} {})",
-        name,
-        (0..args.len())
-            .map(wildcard)
-            .collect::<Vec<String>>()
-            .join(" ")
-      )
-          .parse()
-          .unwrap();
-      // LHS is looks like this "($ ... ($ name ?x0) ... ?xn)":
-      let mut lhs_str: String = format!("({} {} ?x0)", APPLY, name);
-      for i in (0..args.len()).skip(1) {
-        lhs_str = format!("({} {} ?x{})", APPLY, lhs_str, i);
+      let mut pre_rhs = name.to_string();
+      let mut res: Vec<Rewrite<SymbolLang, A>> = vec![];
+      for num in 0..args.len() {
+        let rhs = format!(
+          "({} {})",
+          name,
+          (0..=num)
+              .map(wildcard)
+              .collect::<Vec<String>>()
+              .join(" ")
+        );
+        let mut lhs = format!("({} {} ?x{})", APPLY, pre_rhs, num);
+        pre_rhs = rhs.clone();
+        let rhs: Pat = rhs.parse().unwrap();
+        let lhs: Pat = lhs.parse().unwrap();
+        res.push(Rewrite::new(ParserState::get_part_app_rule(name, num), lhs.clone(), DestructiveApplier::new(lhs, rhs)).unwrap());
       }
-      let lhs: Pat = lhs_str.parse().unwrap();
-      Some(Rewrite::new(ParserState::part_app_rule(name), lhs.clone(), DestructiveApplier::new(lhs, rhs)).unwrap())
+      Some(res)
     }
   }
 
@@ -278,12 +286,12 @@ pub fn parse_file(filename: &str) -> Result<ParserState, SexpError> {
         // Mangle each of the elements in the sexp.
         let mangled_type = Type::new(mangle_sexp(&decl.list()?[2]));
         if let Some(rw) = ParserState::partial_application(&mangled_name, &mangled_type) {
-          state.rules.push(rw);
+          state.rules.extend(rw)
         }
         // HACK: add the exact same rule to a vector of different types because
         // we can't store universally quantified types.
         if let Some(rw) = ParserState::partial_application(&mangled_name, &mangled_type) {
-          state.cvec_rules.push(rw);
+          state.cvec_rules.extend(rw);
         }
         state.context.insert(mangled_name, mangled_type);
       }

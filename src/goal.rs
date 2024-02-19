@@ -2176,11 +2176,16 @@ impl<'a> LemmaProofState<'a> {
       // FIXME: Handle premises in cvecs so that we can reject invalid props
       // with preconditions
       if premise.is_none() && !is_valid {
-        // println!("Mismatched cvecs for goal {}", prop);
-        // print_cvec(&goal.egraph.analysis.cvec_analysis, &goal.egraph[goal.eq.lhs.id].data.cvec_data);
-        // print_cvec(&goal.egraph.analysis.cvec_analysis, &goal.egraph[goal.eq.rhs.id].data.cvec_data);
+        if lemma_number == 0 {
+          println!("Property rejected by cvec analysis");
+        }
+        //print_cvec(&goal.egraph.analysis.cvec_analysis, &goal.egraph[goal.eq.lhs.id].data.cvec_data);
+        //print_cvec(&goal.egraph.analysis.cvec_analysis, &goal.egraph[goal.eq.rhs.id].data.cvec_data);
         Some(Outcome::Invalid)
       } else {
+        if lemma_number == 0 {
+          println!("Property accepted by cvec analysis");
+        }
         None
       }
     });

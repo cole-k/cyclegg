@@ -58,13 +58,17 @@ where
 
   // Has any base cases (depth 0 terms)? This could be precomputed to speed
   // things up.
+  let is_base_case = |dt_name: &String, args: &Vec<Type>| -> bool {
+    args.iter().all(|name| {!name.to_string().contains(dt_name)})
+  } ;
   let has_base_case = cons.iter().any(|con| {
     let con_ty = ctx.get(con).unwrap();
     let (args, _ret) = con_ty.args_ret();
-    args.is_empty()
+    is_base_case(dt_name, &args)
   });
 
   let mut rng = thread_rng();
+
   let weights_opt = constructor_weights.get(dt_name);
 
   loop {
@@ -77,7 +81,7 @@ where
     //
     // NOTE: I think there is the possibility for infinite loops here if the
     // weights are wrong (e.g. base cases all have 0 weights).
-    if max_depth == 0 && has_base_case && !args.is_empty() {
+    if max_depth == 0 && has_base_case && !is_base_case(dt_name, &args) {
       continue;
     }
 
@@ -238,6 +242,7 @@ impl CvecAnalysis {
     self.cvec_egraph.replace_with(|egraph|{
       let runner = Runner::default()
         .with_egraph(egraph.to_owned())
+          .with_iter_limit(10000000)
         .run(&self.reductions);
       runner.egraph
     });
