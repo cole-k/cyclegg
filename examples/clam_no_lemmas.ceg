@@ -49,6 +49,11 @@
 (let and (?x False) False)
 (let and (True True) True)
 
+(:: or (-> (Bool Bool) Bool))
+(let or (True ?y) True)
+(let or (?x True) True)
+(let or (False False) False)
+
 (:: plus (-> (Nat Nat) Nat))
 (let plus (Z      ?y) ?y             )
 (let plus ((S ?x) ?y) (S (plus ?x ?y)))
@@ -270,6 +275,21 @@
 (:: qexp (-> (Nat Nat Nat) Nat))
 (let qexp (?m Z ?acc) (?acc))
 (let qexp (?m (S ?n) ?acc) (qexp ?m ?n (mult ?acc ?m)))
+
+(:: lst-union (-> ((List Nat) (List Nat)) (List Nat)))
+(let lst-union (Nil           ?ys          ) ?ys )
+(let lst-union ((Cons ?x ?xs) ?ys) (ite (mem ?x ?ys) (lst-union ?xs ?ys) (Cons ?x (lst-union ?xs ?ys))))
+
+(:: lst-intersection (-> ((List Nat) (List Nat)) (List Nat)))
+(let lst-intersection (Nil           ?ys          ) Nil )
+(let lst-intersection ((Cons ?x ?xs) ?ys) (ite (mem ?x ?ys) (Cons ?x (lst-union ?xs ?ys)) (lst-union ?xs ?ys)))
+
+(:: lst-subset (-> ((List Nat) (List Nat)) Bool))
+(let lst-subset (Nil           ?ys          ) True)
+(let lst-subset ((Cons ?x ?xs) ?ys) (and (lst-subset ?xs ?ys) (mem ?x ?ys)))
+
+(:: lst-eq  (-> ((List Nat) (List Nat)) Bool))
+(let lst-eq (?xs ?ys) (and (lst-subset ?xs ?ys) (lst-subset ?ys ?xs)))
 
 (=== clam_1 (x) (Nat)
   (double x)
@@ -506,6 +526,90 @@
   (qexp x y (S Z))
 )
 
+(==> clam_36 (x y z) (Nat (List Nat) (List Nat))
+  (mem x y)
+  True
+  (mem x (append y z))
+  True
+)
+
+(==> clam_37 (x y z) (Nat (List Nat) (List Nat))
+  (mem x z)
+  True
+  (mem x (append y z))
+  True
+)
+
+(==> clam_38 (x y z) (Nat (List Nat) (List Nat))
+  (or (mem x y) (mem x z))
+  True
+  (mem x (append y z))
+  True
+)
+
+(// Skipping for now since y doesn't occur in the main body
+    and we don't know how to handle that
+(==> clam_39 (x y z) (Nat Nat (List Nat))
+  (mem x (drop y z))
+  True
+  (mem x z)
+  True
+)
+)
+
+(==> clam_40 (x y) ((List Nat) (List Nat))
+  (lst-subset x y)
+  True
+  (lst-eq (lst-union x y) y)
+  True
+)
+
+(==> clam_41 (x y) ((List Nat) (List Nat))
+  (lst-subset x y)
+  True
+  (lst-eq (lst-intersection x y) x)
+  True
+)
+
+(==> clam_42 (x y z) (Nat (List Nat) (List Nat))
+  (mem x y)
+  True
+  (mem x (lst-union y z))
+  True
+)
+
+(==> clam_43 (x y z) (Nat (List Nat) (List Nat))
+  (mem x y)
+  True
+  (mem x (lst-union z y))
+  True
+)
+
+(==> clam_44 (x y z) (Nat (List Nat) (List Nat))
+  (and (mem x y) (mem x z))
+  True
+  (mem x (lst-intersection y z))
+  True
+)
+
+(=== clam_45 (x y) (Nat (List Nat))
+  (mem x (insort x y))
+  True
+)
+
+(==> clam_46 (x y z) (Nat Nat (List Nat))
+  (eq x y)
+  True
+  (mem x (insort y z))
+  True
+)
+
+(==> clam_47 (x y z) (Nat Nat (List Nat))
+  (eq x y)
+  False
+  (mem x (insort y z))
+  (mem x z)
+)
 
 (=== clam_48 (x) ((List Nat))
   (len (sort x))
@@ -603,10 +707,24 @@
 )
 
 
-(//(=== clam_86 (x y z) (Nat Nat Nat)
+(=== clam_86 (x y z) (Nat Nat Nat)
   (mult (exp x y) z)
   (qexp x y z)
-))
+)
+
+(//
+(==> even_test (n) (Nat)
+  (even n)
+  True
+  (half n)
+  (half (S n))
+)
+
+(=== clam_test (x y z) ((List a) (List a) (List a))
+  (append x (append y z))
+  (append (append x y) z)
+)
+)
 
 (//
 (=== test_clam_27 (x y) ((List a) (List a))
