@@ -351,9 +351,14 @@ impl Cvec {
     // println!("making cvec for enode: {}", enode);
     let mut max_child_timestamp = egraph.analysis.cvec_analysis.current_timestamp;
     if enode.is_leaf() {
+      // if egraph.analysis.global_ctx.contains_key(&enode.op) {
+      //   println!("making dummy cvec for {}", &enode.op);
+      // }
       // We can't evaluate vars (we need outside input, i.e. type information to create them)
       // This could be resolved by having a type information analysis.
-      if is_var(&enode.op.to_string()) {
+      //
+      // The second check is to verify that this isn't a function.
+      if is_var(&enode.op.to_string()) && !egraph.analysis.global_ctx.contains_key(&enode.op) {
         return (Cvec::Stuck, max_child_timestamp);
       } else {
         // This cvec is for a value like Z or Leaf, so make a concrete cvec out of it.
@@ -639,7 +644,8 @@ impl CanonicalFormAnalysis {
 pub struct CycleggAnalysis {
   pub cvec_analysis: CvecAnalysis,
   pub blocking_vars: BTreeSet<Symbol>,
-  pub local_ctx: Context
+  pub local_ctx: Context,
+  pub global_ctx: Context,
 }
 
 #[derive(Debug, Clone)]

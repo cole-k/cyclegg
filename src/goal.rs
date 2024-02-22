@@ -590,6 +590,7 @@ impl<'a> Goal<'a> {
     global_search_state: GlobalSearchState<'a>,
   ) -> Self {
     let mut egraph: Eg = EGraph::default().with_explanations_enabled();
+    egraph.analysis.global_ctx = global_search_state.context.clone();
     let eq = ETermEquation::new(&prop.eq, &mut egraph, false);
     let premise = premise
         .as_ref()
