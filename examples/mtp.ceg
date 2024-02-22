@@ -55,6 +55,17 @@
 (let map (?f Nil          ) Nil                          )
 (let map (?f (Cons ?x ?xs)) (Cons ($ ?f ?x) (map ?f ?xs)))
 
+(:: fold (-> ((-> (a b) b) b (List a)) b))
+(let fold (?f ?e Nil) ?e)
+(let fold (?f ?e (Cons ?x ?xs)) ($ ($ ?f ?x) (fold ?f ?e ?xs)))
+
+(:: step (-> (Nat (Pair Nat Nat)) (Pair Nat Nat)))
+(let step (?x (MakePair ?a ?b)) (
+  MakePair
+  (max ?a (mult ?x ?b))
+  (mult ?x ?b)
+))
+
 (:: mtp (-> ((List Nat)) (Pair Nat Nat)))
 (let mtp (Nil)      (MakePair (S Z) (S Z))          )
 (let mtp ((Cons ?h ?t)) (MakePair
@@ -64,6 +75,10 @@
 
 (=== mtp_optimize (xs) ((List Nat))
     (maximum (map product (tails xs))) (fst (mtp xs))
+)
+
+(=== mtp_optimize_fold (xs) ((List Nat))
+    (maximum (map product (tails xs))) (fst (fold step (MakePair (S Z) (S Z)) xs))
 )
 
 (=== max_commute (m n) (Nat Nat)
