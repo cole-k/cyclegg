@@ -269,8 +269,8 @@
 (let qexp (?m Z ?acc) (?acc))
 (let qexp (?m (S ?n) ?acc) (qexp ?m ?n (mult ?acc ?m)))
 
-(=== clam_78 (x y) ((List a) (List a))
-  (rev (qreva x (rev y)))
+(=== clam_11  (x y) ((List a) (List a))
+  (rev (append (rev x) (rev y)))
   (append y x)
 )
 

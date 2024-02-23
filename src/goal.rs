@@ -1239,6 +1239,7 @@ impl<'a> Goal<'a> {
     // for our datatypes in our definitions files. It's not a very principled
     // iteration order)
     for &con in cons.iter().rev() {
+      if scrutinee.depth >= CONFIG.max_split_depth {continue;}
       let mut new_goal = self.clone();
       new_goal.case_split_vars.insert(scrutinee.name);
       new_goal.lemmas = new_lemmas.clone();
@@ -1606,13 +1607,13 @@ impl<'a> Goal<'a> {
     self.egraph.analysis.cvec_analysis.saturate();
     let resolved_lhs_id = self.egraph.find(self.eq.lhs.id);
     let resolved_rhs_id = self.egraph.find(self.eq.rhs.id);
-    /*if CONFIG.verbose {
+    if CONFIG.verbose {
       println!("lhs: ");
       print_expressions_in_eclass(&self.egraph, resolved_lhs_id);
       println!("rhs: ");
       print_expressions_in_eclass(&self.egraph, resolved_rhs_id);
-      //print_all_expressions_in_egraph(&self.egraph, 7);
-    }*/
+      // print_all_expressions_in_egraph(&self.egraph, 7);
+    }
     let class_ids: Vec<Id> = self.egraph.classes().map(|c| c.id).collect();
 
     for class_1_id in &class_ids {
@@ -2885,11 +2886,14 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
     }
 
     let lemma_proof_state = proof_state.lemma_proofs.get_mut(&lemma_index).unwrap();
+    // println!("\ntry goal {} from {} {}", info.full_exp, self.prop_map[&info.lemma_id], lemma_proof_state.case_split_depth);
 
     let step_res = lemma_proof_state.try_goal(&info, &proof_state.timer, &mut proof_state.lemmas_state);
 
     if let Some((related_lemmas, related_goals)) = step_res {
       if CONFIG.verbose {
+        println!("\nFrom {}", info.full_exp);
+        println!("(Lemma) {}", self.prop_map[&info.lemma_id]);
         println!("  lemmas: {}, goals: {}", related_lemmas.len(), related_goals.len());
         for lemma in related_lemmas.iter() {
           println!("  {}", lemma.1);

@@ -107,13 +107,25 @@ pub fn collect_expressions_with_loops_aux<L: Language, A: Analysis<L>>(egraph: &
             }
         }
     }
+    trace.entry(id).and_modify(|w| {*w = *w - 1usize;});
+
+    /*println!("  {}: {}", "extract from node", id);
+    for node in class.nodes.iter() {
+      println!("     {:?}", node);
+    }
+    for expr in res.iter() {
+      println!("     {:?}", expr);
+    }*/
     res
 }
 
 
 pub fn collect_expressions_with_loops<L: Language, A: Analysis<L>>(egraph: &EGraph<L, A>, id: Id) -> Vec<RecExpr<L>>{
     let mut trace: HashMap<Id, _> = egraph.classes().map(|class| (class.id, 0usize)).collect();
-    collect_expressions_with_loops_aux(egraph, id, 0, 0, &mut trace)
+    //println!("start collect");
+    let res = collect_expressions_with_loops_aux(egraph, id, 0, 0, &mut trace);
+    //println!("found {}", res.len());
+    res
 }
 
 pub fn get_all_expressions_with_loop<L: Language, A: Analysis<L>>(

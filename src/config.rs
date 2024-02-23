@@ -7,7 +7,7 @@ use log::Level;
 #[derive(Parser)]
 pub struct Args {
   pub filename: String,
-  #[clap(short = 'd', long = "max-depth", default_value = "3")]
+  #[clap(short = 'd', long = "max-depth", default_value = "1000")]
   pub max_split_depth: usize,
   #[clap(short = 's', long = "single-rhs")]
   pub single_rhs: bool,
@@ -225,7 +225,7 @@ impl Config {
       extraction_loop_limit: 0,
       extraction_allow_end_loop: true,
       extraction_max_depth: 10,
-      extraction_max_num: 1000
+      extraction_max_num: 1000,
     }
   }
 
