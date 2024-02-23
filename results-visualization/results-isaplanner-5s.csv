@@ -1,4 +1,5 @@
-name,result,time,num_lemmas,num_lemmas_attempted,num_lemmas_proven,result_cyclic,time_cyclic,num_lemmas_cyclic,num_attempted_lemmas_cyclic,num_proven_lemmas_cyclicgoal_01,Valid,14.556125,0,0,0,Unknown,0,0,0,0
+name,result,time,num_lemmas,num_lemmas_attempted,num_lemmas_proven,result_cyclic,time_cyclic,num_lemmas_cyclic,num_attempted_lemmas_cyclic,num_proven_lemmas_cyclic
+goal_01,Valid,14.556125,0,0,0,Unknown,0,0,0,0
 goal_02,Valid,26.182457,0,0,0,Unknown,0,0,0,0
 goal_03,Valid,43.438126,0,0,0,Unknown,0,0,0,0
 goal_04,Valid,24.27554,0,0,0,Unknown,0,0,0,0

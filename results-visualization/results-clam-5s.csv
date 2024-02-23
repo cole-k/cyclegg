@@ -1,4 +1,5 @@
-name,result,time,num_lemmas,num_lemmas_attempted,num_lemmas_proven,result_cyclic,time_cyclic,num_lemmas_cyclic,num_attempted_lemmas_cyclic,num_proven_lemmas_cyclicclam_1,Valid,13.24975,3,2,2,Unknown,0,0,0,0
+name,result,time,num_lemmas,num_lemmas_attempted,num_lemmas_proven,result_cyclic,time_cyclic,num_lemmas_cyclic,num_attempted_lemmas_cyclic,num_proven_lemmas_cyclic
+clam_1,Valid,13.24975,3,2,2,Unknown,0,0,0,0
 clam_2,Valid,92.57708,3,2,2,Unknown,0,0,0,0
 clam_3,Valid,8.154416,0,0,0,Unknown,0,0,0,0
 clam_4,Valid,82.536415,3,2,2,Unknown,0,0,0,0
