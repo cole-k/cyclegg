@@ -166,7 +166,7 @@ impl SearchCondition<SymbolLang, CycleggAnalysis> for Soundness {
           // because we did the filtering when creating SmallerVars
           let new_id = subst.get(v).unwrap();
           // Exit early with something guaranteed to be LE if this var is not blocking
-          if CONFIG.better_termination && !egraph.analysis.blocking_vars.contains(x) {
+          if CONFIG.better_termination && !egraph.analysis.case_split_vars.contains(x) {
             // FIXME: we need to give the actual value here
             return Some((*x, vec!().into(), vec!().into()))
           }
@@ -193,7 +193,7 @@ impl SearchCondition<SymbolLang, CycleggAnalysis> for Soundness {
       Some(triples) => {
         // Check that the actuals are smaller than the formals
         // and that the actual premise holds
-        let terminates = self.smaller_tuple(&triples, &egraph.analysis.blocking_vars);
+        let terminates = self.smaller_tuple(&triples, &egraph.analysis.case_split_vars);
         // Let's not check the premises if the termination check doesn't hold:
         let res = terminates && self.check_premises(&triples, egraph);
         //println!("  {}", res);
@@ -1242,6 +1242,7 @@ impl<'a> Goal<'a> {
       if scrutinee.depth >= CONFIG.max_split_depth {continue;}
       let mut new_goal = self.clone();
       new_goal.case_split_vars.insert(scrutinee.name);
+      new_goal.egraph.analysis.case_split_vars = new_goal.case_split_vars.clone();
       new_goal.lemmas = new_lemmas.clone();
 
       // Get the arguments of the constructor.

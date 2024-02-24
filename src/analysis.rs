@@ -644,6 +644,7 @@ impl CanonicalFormAnalysis {
 pub struct CycleggAnalysis {
   pub cvec_analysis: CvecAnalysis,
   pub blocking_vars: BTreeSet<Symbol>,
+  pub case_split_vars: BTreeSet<Symbol>,
   pub local_ctx: Context,
   pub global_ctx: Context,
 }
