@@ -697,6 +697,18 @@ impl<'a> Goal<'a> {
           }
         })
         .run(rewrites);
+    /*let second_round_runner = Runner::default()
+        .with_egraph(runner.egraph)
+        .with_hook(move |runner| {
+          // Stop iteration if we have proven lhs == rhs
+          if runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id) {
+            Err("Goal proven".to_string())
+          } else {
+            Ok(())
+          }
+        }).with_iter_limit(10000)
+        .run(self.global_search_state.reductions);*/
+    //let runner = runner.with_iter_limit(10000).run(self.global_search_state.reductions);
     /*println!("after saturate");
     print_all_expressions_in_egraph(&runner.egraph, 5);
     let mut line = String::new();
@@ -1866,7 +1878,7 @@ impl<'a> Goal<'a> {
     // println!("starting generalization {} {} {}", lhs_id, rhs_id, class);
     let lhs_expr = self.extract_generalized_expr(class, fresh_symb, lhs_id);
     let rhs_expr = self.extract_generalized_expr(class, fresh_symb, rhs_id);
-    // println!("generalizing {} === {}", lhs_expr, rhs_expr);
+
     let params: Vec<(Symbol, Type)> = get_vars(&lhs_expr, is_var).union(&get_vars(&rhs_expr, is_var)).into_iter().flat_map(|var| {
       let var_ty_opt = if var == &fresh_symb {
         Some(class_ty.clone())
@@ -1881,6 +1893,10 @@ impl<'a> Goal<'a> {
       })
     }).collect();
     let eq = Equation::from_exprs(&lhs_expr, &rhs_expr);
+    if sexp_size(&eq.lhs) > CONFIG.extraction_max_size || sexp_size(&eq.rhs) > CONFIG.extraction_max_size {
+      return None;
+    }
+
     let prop = Prop::new(eq.clone(), params.clone());
     let mut new_goal = Goal::top(&format!("{}_gen", self.name),
                                  &prop,
@@ -2270,7 +2286,17 @@ impl<'a> LemmaProofState<'a> {
     if CONFIG.verbose {
       explain_goal_failure(&goal);
     }
+
+    /*let resolved_lhs_id = goal.egraph.find(goal.eq.lhs.id);
+    let resolved_rhs_id = goal.egraph.find(goal.eq.rhs.id);
+    let extractor = Extractor::new(&goal.egraph, AstSize);
+    let (best_l_cost, best_l_prog) = extractor.find_best(resolved_lhs_id);
+    let (best_r_cost, best_r_prog) = extractor.find_best(resolved_rhs_id);
+    println!("cost pair {} {}", best_l_cost, best_l_prog);
+    println!("cost pair {} {}", best_r_cost, best_r_prog);*/
+
     goal.split_ite();
+
     if goal.scrutinees.is_empty() {
       self.outcome = Some(Outcome::Invalid);
       return None;
@@ -2768,7 +2794,7 @@ impl GoalLevelPriorityQueue {
         full_exp: prop.eq.to_string(),
         size: prop.size(),
       };
-      related_lemma_root.push(start_info);
+      related_lemma_root.push((start_info, prop));
     }
     self.goal_graph.record_related_lemmas(info, &related_lemma_root);
   }
@@ -2789,7 +2815,7 @@ impl GoalLevelPriorityQueue {
   }
 
   fn re_extract_lemmas<'a>(&mut self, proof_state: &mut ProofState<'a>) {
-    let waiting_goals = self.goal_graph.get_waiting_goals();
+    let waiting_goals = self.goal_graph.get_waiting_goals(None);
     for info in waiting_goals.iter() {
       let state = proof_state.lemma_proofs.get_mut(&info.lemma_id).unwrap();
       let new_lemmas = state.extract_lemmas(info, &proof_state.timer, &mut proof_state.lemmas_state);
@@ -2891,13 +2917,22 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
 
     let step_res = lemma_proof_state.try_goal(&info, &proof_state.timer, &mut proof_state.lemmas_state);
 
-    if let Some((related_lemmas, related_goals)) = step_res {
+    if let Some((raw_related_lemmas, related_goals)) = step_res {
+      let mut related_lemmas = raw_related_lemmas;
+      if CONFIG.exclude_bid_reachable {
+        let pre_size = related_lemmas.len();
+        related_lemmas = self.goal_graph.exclude_bid_reachable_lemmas(&related_lemmas);
+        /*if pre_size > related_lemmas.len() {
+          println!("Reduce from {} to {}", pre_size, related_lemmas.len());
+        }*/
+      }
+
       if CONFIG.verbose {
         println!("\nFrom {}", info.full_exp);
         println!("(Lemma) {}", self.prop_map[&info.lemma_id]);
         println!("  lemmas: {}, goals: {}", related_lemmas.len(), related_goals.len());
         for lemma in related_lemmas.iter() {
-          println!("  {}", lemma.1);
+          println!("  ({}) {}", sexp_size(&lemma.1.eq.lhs) + sexp_size(&lemma.1.eq.rhs), lemma.1);
         }
       }
       self.insert_waiting(&info, related_lemmas, related_goals, proof_state);
@@ -2914,6 +2949,16 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
         let state = proof_state.lemma_proofs.get_mut(&info.lemma_id).unwrap();
         state.outcome = Some(Outcome::Valid);
         println!("new lemma {}", state.prop);
+
+        if CONFIG.exclude_bid_reachable {
+          state.rw_no_analysis.clone().map(
+            |rw| {
+              if rw.lhs_to_rhs.is_some() && rw.rhs_to_lhs.is_some() {
+                self.goal_graph.add_bid_rewrites(rw.lhs_to_rhs.unwrap().1, rw.rhs_to_lhs.unwrap().1);
+              }
+            }
+          );
+        }
       }
       if let Some(outcome) = proof_state.lemma_proofs.get(&info.lemma_id).unwrap().outcome.clone() {
         self.is_found_new_lemma = true;
@@ -2927,21 +2972,24 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
   }
 
   fn on_proven_lemma<'a>(&mut self, _lemma: usize, proof_state: &mut ProofState<'a>) {
-    let mut is_new_lemma = true;
+    let mut new_lemma = HashSet::new();
+    new_lemma.insert(_lemma);
 
-    while is_new_lemma {
-      is_new_lemma = false;
+    while !new_lemma.is_empty() {
       // update those subsumed lemmas
       self.update_subsumed_lemmas(proof_state);
 
-      let proved_goals: Vec<_> = self.goal_graph.get_waiting_goals().into_iter().filter(
+      let proved_goals: Vec<_> = self.goal_graph.get_waiting_goals(Some(&new_lemma)).into_iter().filter(
         |info| {
           let state = proof_state.lemma_proofs.get_mut(&info.lemma_id).unwrap();
           state.try_finish(&info, &mut proof_state.lemmas_state)
         }
       ).collect();
 
+      new_lemma.clear();
+
       for goal in proved_goals.into_iter() {
+        println!("  retry and prove ({}) {}", goal.lemma_id, goal.full_exp);
         self.goal_graph.record_node_status(&goal, GraphProveStatus::Valid);
         self.progress_set.insert(goal.lemma_id);
         if self.goal_graph.is_lemma_proved(goal.lemma_id) {
@@ -2950,9 +2998,22 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
           lemma_state.outcome = Some(Outcome::Valid);
           self.goal_graph.set_lemma_res(goal.lemma_id, GraphProveStatus::Valid);
           if goal.full_exp == lemma_state.goals[0].full_expr.to_string() {continue;}
+
           println!("prove lemma {}", lemma_state.prop);
-          is_new_lemma = true;
+          new_lemma.insert(goal.lemma_id);
+
+          if CONFIG.exclude_bid_reachable {
+            lemma_state.rw_no_analysis.clone().map(
+              |rw| {
+                if rw.lhs_to_rhs.is_some() && rw.rhs_to_lhs.is_some() {
+                  self.goal_graph.add_bid_rewrites(rw.lhs_to_rhs.unwrap().1, rw.rhs_to_lhs.unwrap().1);
+                }
+              }
+            );
+          }
+
           ProofState::handle_lemma_outcome(&mut proof_state.lemmas_state, lemma_state);
+          if goal.lemma_id == 0 {return;}
         }
       }
     }
@@ -3083,7 +3144,7 @@ pub fn prove_top<'a>(goal_prop: Prop, goal_premise: Option<Equation>, global_sea
 
   let start_info = GoalInfo::new(&top_goal_lemma_proof.goals[0], top_goal_lemma_number);
   let mut scheduler = GoalLevelPriorityQueue::default();
-  scheduler.goal_graph.new_lemma(&start_info);
+  scheduler.goal_graph.new_lemma(&start_info, None);
   scheduler.prop_map.insert(top_goal_lemma_number, top_goal_lemma_proof.prop.clone());
 
 

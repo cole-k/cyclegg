@@ -71,7 +71,27 @@ fn collect_expressions<L: Language, A: Analysis<L>>(
   }
 }
 
-pub fn collect_expressions_with_loops_aux<L: Language, A: Analysis<L>>(egraph: &EGraph<L, A>, id: Id, loop_num: usize, depth: usize, trace: &mut HashMap<Id, usize>) -> Vec<RecExpr<L>> {
+#[derive(Copy, Clone)]
+struct ExtractInfo {
+    size: usize,
+    loop_num: usize
+}
+
+fn merge_infos(infos: &Vec<ExtractInfo>) -> ExtractInfo{
+    let mut size = 1usize;
+    let mut loop_num = 0usize;
+    for info in infos.iter() {
+        size += info.size;
+        loop_num += info.loop_num;
+    }
+    return ExtractInfo {size, loop_num}
+}
+
+fn is_valid_info(info: &ExtractInfo) -> bool {
+    info.size <= CONFIG.extraction_max_size// && info.loop_num <= CONFIG.extraction_loop_limit
+}
+
+pub fn collect_expressions_with_loops_aux<L: Language, A: Analysis<L>>(egraph: &EGraph<L, A>, id: Id, loop_num: usize, depth: usize, trace: &mut HashMap<Id, usize>) -> Vec<(ExtractInfo, RecExpr<L>)> {
     let mut res = Vec::new();
     if depth > CONFIG.extraction_max_depth {return res;}
     let class = &egraph[id];
@@ -80,7 +100,7 @@ pub fn collect_expressions_with_loops_aux<L: Language, A: Analysis<L>>(egraph: &
             for node in class.nodes.iter() {
                 if node.children().is_empty() {
                     let expr = RecExpr::from(vec![node.clone()]);
-                    res.push(expr);
+                    res.push((ExtractInfo {size: 1usize, loop_num: 0usize}, expr));
                 }
             }
         }
@@ -88,11 +108,16 @@ pub fn collect_expressions_with_loops_aux<L: Language, A: Analysis<L>>(egraph: &
     }
     trace.entry(id).and_modify(|w| {*w = *w + 1usize;});
     for node in class.nodes.iter() {
-        let mut sub_exprs = Vec::new();
+        let mut sub_exprs: Vec<Vec<(ExtractInfo, RecExpr<L>)>> = Vec::new();
         for child in node.children() {
             let next_id = egraph.find(*child);
-            let next_loop_num = loop_num + if trace[&next_id] > 0 {1usize} else {0usize};
-            sub_exprs.push(collect_expressions_with_loops_aux(egraph, next_id, next_loop_num, depth + 1, trace));
+            let extra_loop = if trace[&next_id] > 0 {1usize} else {0usize};
+            let raw_res = collect_expressions_with_loops_aux(egraph, next_id, extra_loop + loop_num, depth + 1, trace);
+            sub_exprs.push(raw_res.into_iter().map(
+                |(info, expr)| {
+                    (ExtractInfo {loop_num: info.loop_num + extra_loop, size: info.size}, expr)
+                }
+            ).collect());
         }
         let mut local_node = node.clone();
         for (index, child) in local_node.children_mut().iter_mut().enumerate() {
@@ -100,9 +125,13 @@ pub fn collect_expressions_with_loops_aux<L: Language, A: Analysis<L>>(egraph: &
         }
         if sub_exprs.iter().any(|exprs| exprs.is_empty()) {continue;}
         for sub_expr in cartesian_product(&sub_exprs) {
-            let expr = local_node.join_recexprs(|id| {sub_expr[usize::from(id)].clone()});
-            res.push(expr);
+            let sub_infos: Vec<ExtractInfo> = sub_expr.iter().map(|x| x.0).collect();
+            let new_info = merge_infos(&sub_infos);
+            if !is_valid_info(&new_info) {continue;}
+            let expr = local_node.join_recexprs(|id| {sub_expr[usize::from(id)].1.clone()});
+            res.push((new_info, expr));
             if res.len() > CONFIG.extraction_max_num {
+                println!("Reach the limit");
                 return res;
             }
         }
@@ -124,8 +153,7 @@ pub fn collect_expressions_with_loops<L: Language, A: Analysis<L>>(egraph: &EGra
     let mut trace: HashMap<Id, _> = egraph.classes().map(|class| (class.id, 0usize)).collect();
     //println!("start collect");
     let res = collect_expressions_with_loops_aux(egraph, id, 0, 0, &mut trace);
-    //println!("found {}", res.len());
-    res
+    res.into_iter().map(|(_, expr)| {expr}).collect()
 }
 
 pub fn get_all_expressions_with_loop<L: Language, A: Analysis<L>>(

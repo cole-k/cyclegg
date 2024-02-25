@@ -1,7 +1,9 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet, VecDeque};
+use egg::{EGraph, Id, Rewrite, Runner, SymbolLang};
 use itertools::Unique;
-use crate::ast::sexp_size;
+use crate::ast::{Prop, sexp_size};
+use crate::config::CONFIG;
 use crate::goal::Goal;
 use crate::goal_graph::GraphProveStatus::{Subsumed, Unknown, Valid};
 
@@ -64,15 +66,17 @@ impl GoalNode {
 pub struct LemmaNode {
     pub goals: Vec<GoalInfo>,
     lemma_id: usize,
-    status: GraphProveStatus
+    status: GraphProveStatus,
+    nodes: Option<(Id, Id)>
 }
 
 impl LemmaNode {
-    fn new(root: &GoalInfo) -> LemmaNode {
+    fn new(root: &GoalInfo, nodes: Option<(Id, Id)>) -> LemmaNode {
         LemmaNode {
             goals: vec![root.clone()],
             lemma_id: root.lemma_id,
-            status: GraphProveStatus::Unknown
+            status: GraphProveStatus::Unknown,
+            nodes /* TODO: rewrite names of properties */
         }
     }
 }
@@ -80,7 +84,9 @@ impl LemmaNode {
 #[derive(Default)]
 pub struct GoalGraph {
     goal_index_map: HashMap<GoalInfo, GoalNode>,
-    lemma_index_map: HashMap<usize, LemmaNode>
+    lemma_index_map: HashMap<usize, LemmaNode>,
+    egraph: EGraph<SymbolLang, ()>,
+    lemma_rewrites: Vec<Rewrite<SymbolLang, ()>>
 }
 
 impl GoalGraph {
@@ -103,13 +109,44 @@ impl GoalGraph {
             GoalNode::new(info, father)
         );
     }
-    pub fn new_lemma(&mut self, root: &GoalInfo) {
+
+    fn get_prop_id(&mut self, prop: &Prop) -> (Id, Id) {
+        let lhs = prop.eq.lhs.to_string().parse().unwrap();
+        let rhs = prop.eq.rhs.to_string().parse().unwrap();
+        (self.egraph.add_expr(&lhs), self.egraph.add_expr(&rhs))
+    }
+
+    fn saturate(&mut self) {
+        let runner = Runner::default().with_egraph(self.egraph.clone()).run(&self.lemma_rewrites);
+        self.egraph = runner.egraph;
+    }
+    pub fn new_lemma(&mut self, root: &GoalInfo, prop: Option<&Prop>) {
         self.new_goal(root, None);
+        let prop_id = prop.map(|p| {self.get_prop_id(p)});
         self.lemma_index_map.insert(
             root.lemma_id,
-            LemmaNode::new(root)
+            LemmaNode::new(root, prop_id)
         );
     }
+    pub fn exclude_bid_reachable_lemmas(&mut self, prop_list: &Vec<(usize, Prop)>) -> Vec<(usize, Prop)> {
+        let id_list: Vec<_> = prop_list.iter().map(|(_,prop)| {self.get_prop_id(prop)}).collect();
+        self.saturate();
+
+        let mut visited = HashMap::new();
+        for (prop, (x, y)) in prop_list.iter().zip(id_list.iter()) {
+            let x = self.egraph.find(*x);
+            let y = self.egraph.find(*y);
+            let feature = if x < y {(x, y)} else {(y, x)};
+            match visited.get_mut(&feature) {
+                None => {
+                    visited.insert(feature, prop.clone());
+                },
+                Some(pre) => if prop.1.to_string().len() < pre.1.to_string().len() {*pre = prop.clone();}
+            }
+        }
+        visited.into_iter().map(|(a, b)| {b}).collect()
+    }
+
     pub fn record_case_split(&mut self, from: &GoalInfo, to: &Vec<GoalInfo>) {
         self.get_goal_mut(from).split_children = Some(to.clone());
         for child in to.iter() {
@@ -117,15 +154,67 @@ impl GoalGraph {
             self.get_lemma_mut(from.lemma_id).goals.push(child.clone())
         }
     }
-    pub fn record_related_lemmas(&mut self, from: &GoalInfo, lemmas: &Vec<GoalInfo>) {
-        for lemma_root in lemmas.iter() {
+
+    fn get_new_id(&self, id: (Id, Id)) -> (Id, Id){
+        let classes = (self.egraph.find(id.0), self.egraph.find(id.1));
+        if classes.0 > classes.1 {(classes.1, classes.0)} else {classes}
+    }
+
+    pub fn relink_related_lemmas(&mut self) {
+        self.saturate();
+
+        let mut repr_map = HashMap::new();
+        for lemma in self.lemma_index_map.values() {
+            if lemma.nodes.is_none() {continue;}
+            let nodes = lemma.nodes.unwrap();
+            let classes = self.get_new_id(nodes);
+            let start_size = lemma.goals.first().unwrap().size;
+
+            match repr_map.get_mut(&classes) {
+                None => {
+                    repr_map.insert(classes, lemma.lemma_id);
+                },
+                Some(id) => if *id > lemma.lemma_id {
+                    *id = lemma.lemma_id;
+                }
+            }
+        }
+
+        let mut repr_id_map = HashMap::new();
+        for lemma in self.lemma_index_map.values() {
+            if lemma.nodes.is_none() {
+                repr_id_map.insert(lemma.lemma_id, lemma.lemma_id);
+                continue;
+            }
+            let classes = self.get_new_id(lemma.nodes.unwrap());
+            repr_id_map.insert(lemma.lemma_id, repr_map[&classes]);
+        }
+
+        for goal in self.goal_index_map.values_mut() {
+            goal.related_lemmas = goal.related_lemmas.iter().map(
+                |lemma_id| {repr_id_map[lemma_id]}
+            ).collect();
+        }
+    }
+
+    pub fn add_bid_rewrites(&mut self, lhs: Rewrite<SymbolLang, ()>, rhs: Rewrite<SymbolLang, ()>) {
+        self.lemma_rewrites.push(lhs);
+        self.lemma_rewrites.push(rhs);
+        self.relink_related_lemmas();
+    }
+
+    pub fn record_related_lemmas(&mut self, from: &GoalInfo, lemmas: &Vec<(GoalInfo, Prop)>) {
+        for (lemma_root, prop) in lemmas.iter() {
             if !self.lemma_index_map.contains_key(&lemma_root.lemma_id) {
-                self.new_lemma(lemma_root);
+                self.new_lemma(lemma_root, Some(prop));
             }
         }
         let node = self.get_goal_mut(from);
-        for lemma_root in lemmas.iter() {
+        for (lemma_root, _) in lemmas.iter() {
             node.related_lemmas.insert(lemma_root.lemma_id);
+        }
+        if CONFIG.exclude_bid_reachable {
+            self.relink_related_lemmas();
         }
     }
 
@@ -222,8 +311,20 @@ impl GoalGraph {
         self.get_working_goals().1
     }
 
-    pub fn get_waiting_goals(&self) -> Vec<GoalInfo> {
-        self.get_working_goals().0
+    pub fn get_waiting_goals(&self, raw_active_lemmas: Option<&HashSet<usize>>) -> Vec<GoalInfo> {
+        let raw_res = self.get_working_goals().0;
+        if CONFIG.saturate_only_parent {
+            if let Some(active_lemmas) = raw_active_lemmas {
+                let mut res = Vec::new();
+                for info in raw_res {
+                    if self.get_goal(&info).related_lemmas.iter().any(|w| { active_lemmas.contains(w) }) {
+                        res.push(info);
+                    }
+                }
+                return res;
+            }
+        }
+        raw_res
     }
 
     pub fn is_lemma_proved(&self, lemma_id: usize) -> bool {

@@ -113,7 +113,13 @@ pub struct Args {
   pub no_better_termination: bool,
 
   #[clap(long = "only-generalize")]
-  pub only_generalize: bool
+  pub only_generalize: bool,
+
+  #[clap(long = "exclude-bid-reachable")]
+  pub exclude_bid_reachable: bool,
+
+  #[clap(long = "saturate-only-parent")]
+  pub saturate_only_parent: bool
 }
 
 impl Args {
@@ -166,7 +172,11 @@ pub struct Config {
   pub extraction_loop_limit: usize,
   pub extraction_allow_end_loop: bool,
   pub extraction_max_depth: usize,
-  pub extraction_max_num: usize
+  pub extraction_max_size: usize,
+  pub extraction_max_num: usize,
+  pub exclude_bid_reachable: bool,
+  pub symbolic_max_term: usize,
+  pub saturate_only_parent: bool
 }
 
 impl Config {
@@ -225,7 +235,11 @@ impl Config {
       extraction_loop_limit: 0,
       extraction_allow_end_loop: true,
       extraction_max_depth: 10,
+      extraction_max_size: 20,
       extraction_max_num: 1000,
+      symbolic_max_term: 100,
+      exclude_bid_reachable: args.exclude_bid_reachable,
+      saturate_only_parent: args.saturate_only_parent
     }
   }
 
