@@ -2944,7 +2944,7 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
       } else if lemma_proof_state.outcome == Some(Outcome::Invalid) {
         self.goal_graph.record_node_status(&info, GraphProveStatus::Invalid);
       }
-      if self.goal_graph.is_lemma_proved(info.lemma_id) && (!CONFIG.reduce_proven_lemma || !self.goal_graph.is_root(&info)) {
+      if self.goal_graph.is_lemma_proved(info.lemma_id) && (!CONFIG.reduce_proven_lemma || !self.goal_graph.is_root(&info) || info.lemma_id == 0) {
         let state = proof_state.lemma_proofs.get_mut(&info.lemma_id).unwrap();
         state.outcome = Some(Outcome::Valid);
         println!("new lemma {} {}", state.prop, info.full_exp);
@@ -2990,7 +2990,7 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
       let mut directly_improved_lemmas = HashSet::new();
       if CONFIG.reduce_proven_lemma {
         for goal in proved_goals.iter() {
-          if self.goal_graph.is_root(goal) {
+          if self.goal_graph.is_root(goal) && goal.lemma_id != 0 {
             directly_improved_lemmas.insert(goal.lemma_id);
           }
         }
