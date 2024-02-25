@@ -2939,16 +2939,15 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
     } else {
       if lemma_proof_state.outcome.is_none() {
         self.goal_graph.record_node_status(&info, GraphProveStatus::Valid);
-
         self.progress_set.insert(info.lemma_id);
 
       } else if lemma_proof_state.outcome == Some(Outcome::Invalid) {
         self.goal_graph.record_node_status(&info, GraphProveStatus::Invalid);
       }
-      if self.goal_graph.is_lemma_proved(info.lemma_id) {
+      if self.goal_graph.is_lemma_proved(info.lemma_id) && (!CONFIG.reduce_proven_lemma || !self.goal_graph.is_root(&info)) {
         let state = proof_state.lemma_proofs.get_mut(&info.lemma_id).unwrap();
         state.outcome = Some(Outcome::Valid);
-        println!("new lemma {}", state.prop);
+        println!("new lemma {} {}", state.prop, info.full_exp);
 
         if CONFIG.exclude_bid_reachable {
           state.rw_no_analysis.clone().map(
@@ -2988,16 +2987,24 @@ impl BreadthFirstScheduler for GoalLevelPriorityQueue {
 
       new_lemma.clear();
 
+      let mut directly_improved_lemmas = HashSet::new();
+      if CONFIG.reduce_proven_lemma {
+        for goal in proved_goals.iter() {
+          if self.goal_graph.is_root(goal) {
+            directly_improved_lemmas.insert(goal.lemma_id);
+          }
+        }
+      }
+
       for goal in proved_goals.into_iter() {
-        println!("  retry and prove ({}) {}", goal.lemma_id, goal.full_exp);
+        // println!("  retry and prove ({}) {}", goal.lemma_id, goal.full_exp);
         self.goal_graph.record_node_status(&goal, GraphProveStatus::Valid);
         self.progress_set.insert(goal.lemma_id);
-        if self.goal_graph.is_lemma_proved(goal.lemma_id) {
+        if self.goal_graph.is_lemma_proved(goal.lemma_id) && !directly_improved_lemmas.contains(&goal.lemma_id) {
           let lemma_state = proof_state.lemma_proofs.get_mut(&goal.lemma_id).unwrap();
           if lemma_state.outcome.is_some() {continue;}
           lemma_state.outcome = Some(Outcome::Valid);
           self.goal_graph.set_lemma_res(goal.lemma_id, GraphProveStatus::Valid);
-          if goal.full_exp == lemma_state.goals[0].full_expr.to_string() {continue;}
 
           println!("prove lemma {}", lemma_state.prop);
           new_lemma.insert(goal.lemma_id);

@@ -307,6 +307,11 @@ impl GoalGraph {
         (waiting_goals, frontier_goals)
     }
 
+    pub fn is_root(&self, info: &GoalInfo) -> bool {
+        let lemma_node = self.get_lemma(info.lemma_id);
+        let root_goal = lemma_node.goals.first().unwrap();
+        info.full_exp == root_goal.full_exp
+    }
     pub fn get_frontier_goals(&self) -> Vec<GoalInfo> {
         self.get_working_goals().1
     }
