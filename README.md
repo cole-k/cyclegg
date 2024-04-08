@@ -2,6 +2,23 @@
 
 **🚧 Here be dragons: research code ahead! 🚧**
 
+## A note to visitors from the future
+
+Today is April 07, 2024. The state of this repo is presently **chaotic**. The
+last commit was `a91eb7b` on Feburary 28, 2024. Especially during Feburary we
+made changes with little regard for the cleanliness or organization of code or
+repository. You may discover -- for example -- that there are feature flags
+which do nothing, code that is completely dead, or that this repository's name
+does not match the name we use in places that are not this repository. Please
+accept my apologies.
+
+Instead of cleaning up this repository, our plan is to do a rewrite of the
+messiest parts in a fresh repository. If you see this message and the rewrite is
+not clearly linked here, I advise that you look for it first before continuing!
+
+Best of luck,
+Cole
+
 ## Overview
 
 `cyclegg` is a fast theorem prover for equational reasoning powered by e-graphs. It
